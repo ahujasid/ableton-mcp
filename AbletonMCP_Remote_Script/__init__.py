@@ -303,6 +303,38 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_browser_items_at_path":
                 path = params.get("path", "")
                 response["result"] = self.get_browser_items_at_path(path)
+            elif command_type == "get_device_parameters":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                try:
+                    result = self._get_device_parameters(track_index, device_index)
+                    self.log_message(f"[GET_DEVICE_PARAMS] Got result from _get_device_parameters: {result}")
+                    # Make sure we return a properly structured response
+                    response = {
+                        "status": "success",
+                        "result": result
+                    }
+                    self.log_message(f"[GET_DEVICE_PARAMS] Returning response: {response}")
+                    return response
+                except Exception as e:
+                    self.log_message(f"[GET_DEVICE_PARAMS] Error in get_device_parameters: {str(e)}")
+                    self.log_message(traceback.format_exc())
+                    response["status"] = "error"
+                    response["message"] = str(e)
+                    response["result"] = {
+                        "device_name": "Error",
+                        "parameters": []
+                    }
+            elif command_type == "set_device_parameter":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                parameter_name = params.get("parameter_name")
+                value = params.get("value")
+                if parameter_name is None or value is None:
+                    response["status"] = "error"
+                    response["message"] = "Missing parameter_name or value"
+                else:
+                    response["result"] = self._set_device_parameter(track_index, device_index, parameter_name, value)
             else:
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
@@ -1034,5 +1066,111 @@ class AbletonMCP(ControlSurface):
             
         except Exception as e:
             self.log_message(f"Error getting browser items at path: {str(e)}")
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _get_device_parameters(self, track_index, device_index):
+        """Get all parameters for a device on a track"""
+        try:
+            self.log_message(f"[GET_DEVICE_PARAMS] Starting for device {device_index} on track {track_index}")
+            
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                error_msg = f"Track index {track_index} out of range"
+                self.log_message(f"[GET_DEVICE_PARAMS] Error: {error_msg}")
+                raise IndexError(error_msg)
+            
+            track = self._song.tracks[track_index]
+            self.log_message(f"[GET_DEVICE_PARAMS] Found track: {track.name}")
+            
+            if device_index < 0 or device_index >= len(track.devices):
+                error_msg = f"Device index {device_index} out of range. Track has {len(track.devices)} devices"
+                self.log_message(f"[GET_DEVICE_PARAMS] Error: {error_msg}")
+                raise IndexError(error_msg)
+            
+            device = track.devices[device_index]
+            self.log_message(f"[GET_DEVICE_PARAMS] Found device: {device.name} (class: {device.class_name})")
+            
+            parameters = []
+            self.log_message(f"[GET_DEVICE_PARAMS] Getting parameters for device {device.name}")
+            
+            for param in device.parameters:
+                self.log_message(f"[GET_DEVICE_PARAMS] Processing parameter: {param.name}")
+                param_info = {
+                    "name": param.name,
+                    "value": param.value,
+                    "min": param.min,
+                    "max": param.max,
+                    "is_enabled": param.is_enabled,
+                    "is_automated": param.automation_state > 0
+                }
+                parameters.append(param_info)
+                self.log_message(f"[GET_DEVICE_PARAMS] Parameter info: {param_info}")
+            
+            result = {
+                "device_name": device.name,
+                "parameters": parameters
+            }
+            
+            # Log the complete result before returning
+            self.log_message(f"[GET_DEVICE_PARAMS] Complete result: {result}")
+            return result
+        except Exception as e:
+            self.log_message(f"[GET_DEVICE_PARAMS] Error: {str(e)}")
+            self.log_message(f"[GET_DEVICE_PARAMS] Traceback: {traceback.format_exc()}")
+            raise
+
+    def _set_device_parameter(self, track_index, device_index, parameter_name, value):
+        """Set a device parameter value"""
+        try:
+            self.log_message(f"Setting parameter {parameter_name} to {value} for device {device_index} on track {track_index}")
+            
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                self.log_message(f"Track index {track_index} out of range")
+                raise IndexError("Track index out of range")
+            
+            track = self._song.tracks[track_index]
+            self.log_message(f"Found track: {track.name}")
+            
+            if device_index < 0 or device_index >= len(track.devices):
+                self.log_message(f"Device index {device_index} out of range. Track has {len(track.devices)} devices")
+                raise IndexError("Device index out of range")
+            
+            device = track.devices[device_index]
+            self.log_message(f"Found device: {device.name} (class: {device.class_name})")
+            
+            # Find parameter by name
+            target_param = None
+            self.log_message(f"Searching for parameter: {parameter_name}")
+            for param in device.parameters:
+                self.log_message(f"Checking parameter: {param.name}")
+                if param.name == parameter_name:
+                    target_param = param
+                    self.log_message(f"Found matching parameter: {param.name}")
+                    break
+            
+            if not target_param:
+                self.log_message(f"Parameter {parameter_name} not found in device {device.name}")
+                raise ValueError(f"Parameter {parameter_name} not found")
+            
+            # Ensure value is within bounds
+            value = float(value)
+            original_value = value
+            value = max(min(value, target_param.max), target_param.min)
+            if value != original_value:
+                self.log_message(f"Value {original_value} clamped to {value} (min: {target_param.min}, max: {target_param.max})")
+            
+            # Set the parameter value
+            target_param.value = value
+            self.log_message(f"Parameter value set successfully")
+            
+            result = {
+                "device_name": device.name,
+                "parameter_name": parameter_name,
+                "value": value
+            }
+            self.log_message(f"Returning result: {result}")
+            return result
+        except Exception as e:
+            self.log_message(f"Error setting device parameter: {str(e)}")
             self.log_message(traceback.format_exc())
             raise

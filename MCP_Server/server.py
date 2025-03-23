@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, List, Union
+import traceback
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -132,16 +133,9 @@ class AbletonConnection:
             response = json.loads(response_data.decode('utf-8'))
             logger.info(f"Response parsed, status: {response.get('status', 'unknown')}")
             
-            if response.get("status") == "error":
-                logger.error(f"Ableton error: {response.get('message')}")
-                raise Exception(response.get("message", "Unknown error from Ableton"))
+            # Return the full response instead of just the result
+            return response
             
-            # For state-modifying commands, add another small delay after receiving response
-            if is_modifying_command:
-                import time
-                time.sleep(0.1)  # 100ms delay
-            
-            return response.get("result", {})
         except socket.timeout:
             logger.error("Socket timeout while waiting for response from Ableton")
             self.sock = None
@@ -651,6 +645,113 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) 
     except Exception as e:
         logger.error(f"Error loading drum kit: {str(e)}")
         return f"Error loading drum kit: {str(e)}"
+
+@mcp.tool()
+def get_device_parameters(ctx: Context, track_index: int, device_index: int) -> str:
+    """Get all parameters for a device on a track.
+    
+    Args:
+        track_index: The index of the track containing the device
+        device_index: The index of the device on the track
+        
+    Returns:
+        A string containing the device name and all its parameters with their current values
+    """
+    try:
+        logger.info(f"Getting parameters for device {device_index} on track {track_index}")
+        conn = get_ableton_connection()
+        
+        # Send command to Ableton
+        logger.info("Sending get_device_parameters command to Ableton")
+        response = conn.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        logger.info(f"Received response from Ableton: {response}")
+        
+        # Check for error status
+        if response.get("status") == "error":
+            error_msg = response.get("message", "Unknown error")
+            logger.error(f"Error from Ableton: {error_msg}")
+            return f"Error getting device parameters: {error_msg}"
+            
+        # Get the result from the response
+        result = response.get("result", {})
+        if not result:
+            logger.error("Empty result in response")
+            return "Error: Empty result from Ableton"
+            
+        # Format the response nicely
+        try:
+            device_name = result.get("device_name", "Unknown Device")
+            parameters = result.get("parameters", [])
+            
+            if not parameters:
+                logger.warning(f"No parameters found for device {device_name}")
+                return f"Device: {device_name}\nNo parameters found"
+            
+            output = [f"Device: {device_name}"]
+            output.append("\nParameters:")
+            
+            for param in parameters:
+                param_name = param.get("name", "Unknown")
+                param_value = param.get("value", 0.0)
+                param_min = param.get("min", 0.0)
+                param_max = param.get("max", 1.0)
+                param_enabled = param.get("is_enabled", True)
+                param_automated = param.get("is_automated", False)
+                
+                param_line = f"- {param_name}: {param_value:.2f} (range: {param_min:.2f} to {param_max:.2f})"
+                if not param_enabled:
+                    param_line += " (disabled)"
+                if param_automated:
+                    param_line += " (automated)"
+                output.append(param_line)
+            
+            formatted_output = "\n".join(output)
+            logger.info(f"Returning formatted output: {formatted_output}")
+            return formatted_output
+            
+        except Exception as e:
+            logger.error(f"Error formatting parameters: {str(e)}")
+            return f"Error formatting parameters: {str(e)}"
+            
+    except Exception as e:
+        logger.error(f"Error getting device parameters: {str(e)}")
+        return f"Error getting device parameters: {str(e)}"
+
+@mcp.tool()
+def set_device_parameter(ctx: Context, track_index: int, device_index: int, parameter_name: str, value: float) -> str:
+    """Set a device parameter value.
+    
+    Args:
+        track_index: The index of the track containing the device
+        device_index: The index of the device on the track
+        parameter_name: The name of the parameter to set
+        value: The new value for the parameter
+        
+    Returns:
+        A string confirming the parameter was set
+    """
+    try:
+        logger.info(f"Setting parameter {parameter_name} to {value} for device {device_index} on track {track_index}")
+        conn = get_ableton_connection()
+        
+        # Send command to Ableton
+        logger.info("Sending set_device_parameter command to Ableton")
+        result = conn.send_command("set_device_parameter", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameter_name": parameter_name,
+            "value": value
+        })
+        logger.info(f"Received result from Ableton: {result}")
+        
+        return f"Set {result['device_name']} parameter '{result['parameter_name']}' to {result['value']:.2f}"
+    except Exception as e:
+        logger.error(f"Error setting device parameter: {str(e)}")
+        logger.error(traceback.format_exc())
+        return f"Error setting device parameter: {str(e)}"
 
 # Main execution
 def main():
