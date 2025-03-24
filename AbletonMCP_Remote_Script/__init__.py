@@ -201,12 +201,28 @@ class AbletonMCP(ControlSurface):
         
         try:
             # Route the command to the appropriate handler
-            if command_type == "get_session_info":
+            if command_type == "set_clip_properties":
+                track_index = params.get("track_index", 0)
+                clip_index = params.get("clip_index", 0)
+                properties = params.get("properties", {})
+                response["result"] = self.set_clip_properties(track_index, clip_index, properties)
+            elif command_type == "set_device_parameters":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                parameters = params.get("parameters", {})
+                response["result"] = self.set_device_parameters(track_index, device_index, parameters)
+            elif command_type == "search_browser_items":
+                query = params.get("query", "")
+                category_type = params.get("category_type", "all")
+                max_results = params.get("max_results", 50)
+                response["result"] = self.search_browser_items(query, category_type, max_results)
+            elif command_type == "get_session_info":
                 response["result"] = self._get_session_info()
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
-            # Commands that modify Live's state should be scheduled on the main thread
+            elif command_type == "get_master_track_info":
+                response["result"] = self._get_master_track_info()
             elif command_type in ["create_midi_track", "set_track_name", 
                                  "create_clip", "add_notes_to_clip", "set_clip_name", 
                                  "set_tempo", "fire_clip", "stop_clip",
@@ -303,6 +319,38 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_browser_items_at_path":
                 path = params.get("path", "")
                 response["result"] = self.get_browser_items_at_path(path)
+            elif command_type == "get_device_parameters":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                try:
+                    result = self._get_device_parameters(track_index, device_index)
+                    self.log_message(f"[GET_DEVICE_PARAMS] Got result from _get_device_parameters: {result}")
+                    # Make sure we return a properly structured response
+                    response = {
+                        "status": "success",
+                        "result": result
+                    }
+                    self.log_message(f"[GET_DEVICE_PARAMS] Returning response: {response}")
+                    return response
+                except Exception as e:
+                    self.log_message(f"[GET_DEVICE_PARAMS] Error in get_device_parameters: {str(e)}")
+                    self.log_message(traceback.format_exc())
+                    response["status"] = "error"
+                    response["message"] = str(e)
+                    response["result"] = {
+                        "device_name": "Error",
+                        "parameters": []
+                    }
+            elif command_type == "set_device_parameter":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                parameter_name = params.get("parameter_name")
+                value = params.get("value")
+                if parameter_name is None or value is None:
+                    response["status"] = "error"
+                    response["message"] = "Missing parameter_name or value"
+                else:
+                    response["result"] = self._set_device_parameter(track_index, device_index, parameter_name, value)
             else:
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
@@ -389,6 +437,54 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error getting track info: " + str(e))
+            raise
+    
+    def _get_master_track_info(self):
+        """Get detailed information about the master track"""
+        try:
+            master = self._song.master_track
+            
+            # Get devices on master track
+            devices = []
+            for device_index, device in enumerate(master.devices):
+                devices.append({
+                    "index": device_index,
+                    "name": device.name,
+                    "class_name": device.class_name,
+                    "type": self._get_device_type(device)
+                })
+            
+            # Get clip slots if they exist
+            clip_slots = []
+            if hasattr(master, 'clip_slots'):
+                for slot_index, slot in enumerate(master.clip_slots):
+                    clip_info = None
+                    if slot.has_clip:
+                        clip = slot.clip
+                        clip_info = {
+                            "name": clip.name,
+                            "length": clip.length,
+                            "is_playing": clip.is_playing,
+                            "is_recording": clip.is_recording
+                        }
+                    
+                    clip_slots.append({
+                        "index": slot_index,
+                        "has_clip": slot.has_clip,
+                        "clip": clip_info
+                    })
+            
+            result = {
+                "name": "Master",
+                "volume": master.mixer_device.volume.value,
+                "panning": master.mixer_device.panning.value,
+                "devices": devices,
+                "clip_slots": clip_slots,
+                "is_master_track": True
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error getting master track info: " + str(e))
             raise
     
     def _create_midi_track(self, index):
@@ -1036,3 +1132,366 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"Error getting browser items at path: {str(e)}")
             self.log_message(traceback.format_exc())
             raise
+
+    def _get_device_parameters(self, track_index, device_index):
+        """Get all parameters for a device on a track"""
+        try:
+            self.log_message(f"[GET_DEVICE_PARAMS] Starting for device {device_index} on track {track_index}")
+            
+            # Special handling for master track
+            if track_index == -1:
+                track = self._song.master_track
+                self.log_message(f"[GET_DEVICE_PARAMS] Using master track")
+            else:
+                if track_index < 0 or track_index >= len(self._song.tracks):
+                    error_msg = f"Track index {track_index} out of range"
+                    self.log_message(f"[GET_DEVICE_PARAMS] Error: {error_msg}")
+                    raise IndexError(error_msg)
+                track = self._song.tracks[track_index]
+            
+            self.log_message(f"[GET_DEVICE_PARAMS] Found track: {track.name}")
+            
+            if device_index < 0 or device_index >= len(track.devices):
+                error_msg = f"Device index {device_index} out of range. Track has {len(track.devices)} devices"
+                self.log_message(f"[GET_DEVICE_PARAMS] Error: {error_msg}")
+                raise IndexError(error_msg)
+            
+            device = track.devices[device_index]
+            self.log_message(f"[GET_DEVICE_PARAMS] Found device: {device.name} (class: {device.class_name})")
+            
+            parameters = []
+            self.log_message(f"[GET_DEVICE_PARAMS] Getting parameters for device {device.name}")
+            
+            for param in device.parameters:
+                self.log_message(f"[GET_DEVICE_PARAMS] Processing parameter: {param.name}")
+                param_info = {
+                    "name": param.name,
+                    "value": param.value,
+                    "min": param.min,
+                    "max": param.max,
+                    "is_enabled": param.is_enabled,
+                    "is_automated": param.automation_state > 0
+                }
+                parameters.append(param_info)
+                self.log_message(f"[GET_DEVICE_PARAMS] Parameter info: {param_info}")
+            
+            result = {
+                "device_name": device.name,
+                "parameters": parameters
+            }
+            
+            # Log the complete result before returning
+            self.log_message(f"[GET_DEVICE_PARAMS] Complete result: {result}")
+            return result
+        except Exception as e:
+            self.log_message(f"[GET_DEVICE_PARAMS] Error: {str(e)}")
+            self.log_message(f"[GET_DEVICE_PARAMS] Traceback: {traceback.format_exc()}")
+            raise
+
+    def _set_device_parameter(self, track_index, device_index, parameter_name, value):
+        """Set a device parameter value"""
+        try:
+            self.log_message(f"Setting parameter {parameter_name} to {value} for device {device_index} on track {track_index}")
+            
+            # Special handling for master track
+            if track_index == -1:
+                track = self._song.master_track
+                self.log_message(f"Using master track")
+            else:
+                if track_index < 0 or track_index >= len(self._song.tracks):
+                    self.log_message(f"Track index {track_index} out of range")
+                    raise IndexError("Track index out of range")
+                track = self._song.tracks[track_index]
+            
+            if device_index < 0 or device_index >= len(track.devices):
+                self.log_message(f"Device index {device_index} out of range. Track has {len(track.devices)} devices")
+                raise IndexError("Device index out of range")
+            
+            device = track.devices[device_index]
+            self.log_message(f"Found device: {device.name} (class: {device.class_name})")
+            
+            # Find parameter by name
+            target_param = None
+            self.log_message(f"Searching for parameter: {parameter_name}")
+            for param in device.parameters:
+                self.log_message(f"Checking parameter: {param.name}")
+                if param.name == parameter_name:
+                    target_param = param
+                    self.log_message(f"Found matching parameter: {param.name}")
+                    break
+            
+            if not target_param:
+                self.log_message(f"Parameter {parameter_name} not found in device {device.name}")
+                raise ValueError(f"Parameter {parameter_name} not found")
+            
+            # Ensure value is within bounds
+            value = float(value)
+            original_value = value
+            value = max(min(value, target_param.max), target_param.min)
+            if value != original_value:
+                self.log_message(f"Value {original_value} clamped to {value} (min: {target_param.min}, max: {target_param.max})")
+            
+            # Set the parameter value
+            target_param.value = value
+            self.log_message(f"Parameter value set successfully")
+            
+            result = {
+                "device_name": device.name,
+                "parameter_name": parameter_name,
+                "value": value
+            }
+            self.log_message(f"Returning result: {result}")
+            return result
+        except Exception as e:
+            self.log_message(f"Error setting device parameter: {str(e)}")
+            self.log_message(traceback.format_exc())
+            raise
+
+    def set_clip_properties(self, track_index, clip_index, properties):
+        """Set multiple properties of a clip at once.
+        
+        Args:
+            track_index: Index of the track
+            clip_index: Index of the clip slot
+            properties: Dictionary of properties to set
+        """
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            
+            track = self._song.tracks[track_index]
+            
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+            
+            clip_slot = track.clip_slots[clip_index]
+            
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+            
+            clip = clip_slot.clip
+            result = {"name": clip.name}
+            
+            # Handle each property
+            for prop, value in properties.items():
+                if prop == "name":
+                    clip.name = str(value)
+                    result["name"] = clip.name
+                elif prop == "color":
+                    clip.color = int(value)
+                    result["color"] = clip.color
+                elif prop == "warping":
+                    clip.warping = bool(value)
+                    result["warping"] = clip.warping
+                elif prop == "gain":
+                    clip.gain = float(value)
+                    result["gain"] = clip.gain
+                elif prop == "pitch_coarse":
+                    clip.pitch_coarse = int(value)
+                    result["pitch_coarse"] = clip.pitch_coarse
+                elif prop == "pitch_fine":
+                    clip.pitch_fine = float(value)
+                    result["pitch_fine"] = clip.pitch_fine
+                elif prop == "looping":
+                    clip.looping = bool(value)
+                    result["looping"] = clip.looping
+                elif prop == "loop_start":
+                    clip.loop_start = float(value)
+                    result["loop_start"] = clip.loop_start
+                elif prop == "loop_end":
+                    clip.loop_end = float(value)
+                    result["loop_end"] = clip.loop_end
+                elif prop == "start_marker":
+                    clip.start_marker = float(value)
+                    result["start_marker"] = clip.start_marker
+                elif prop == "end_marker":
+                    clip.end_marker = float(value)
+                    result["end_marker"] = clip.end_marker
+                elif prop == "signature_numerator":
+                    clip.signature_numerator = int(value)
+                    result["signature_numerator"] = clip.signature_numerator
+                elif prop == "signature_denominator":
+                    clip.signature_denominator = int(value)
+                    result["signature_denominator"] = clip.signature_denominator
+            
+            return result
+            
+        except Exception as e:
+            self.log_message(f"Error setting clip properties: {str(e)}")
+            raise
+
+    def set_device_parameters(self, track_index, device_index, parameters):
+        """Set multiple parameters of a device at once.
+        
+        Args:
+            track_index: Index of the track (-1 for master track)
+            device_index: Index of the device
+            parameters: Dictionary of parameter names and values
+        """
+        try:
+            # Special handling for master track
+            if track_index == -1:
+                track = self._song.master_track
+                self.log_message(f"Using master track")
+            else:
+                if track_index < 0 or track_index >= len(self._song.tracks):
+                    self.log_message(f"Track index {track_index} out of range")
+                    raise IndexError("Track index out of range")
+                track = self._song.tracks[track_index]
+            
+            if device_index < 0 or device_index >= len(track.devices):
+                self.log_message(f"Device index {device_index} out of range")
+                raise IndexError("Device index out of range")
+            
+            device = track.devices[device_index]
+            self.log_message(f"Found device: {device.name}")
+            
+            result = {
+                "device_name": device.name,
+                "parameters": {}
+            }
+            
+            # Create parameter name lookup for faster access
+            param_lookup = {param.name: param for param in device.parameters}
+            
+            # Set each parameter
+            for param_name, value in parameters.items():
+                if param_name not in param_lookup:
+                    self.log_message(f"Parameter {param_name} not found")
+                    continue
+                    
+                param = param_lookup[param_name]
+                
+                # Ensure value is within bounds
+                value = float(value)
+                original_value = value
+                value = max(min(value, param.max), param.min)
+                
+                if value != original_value:
+                    self.log_message(f"Value {original_value} clamped to {value} for {param_name}")
+                
+                # Set the parameter value
+                param.value = value
+                
+                # Store the result
+                result["parameters"][param_name] = {
+                    "value": value,
+                    "min": param.min,
+                    "max": param.max
+                }
+            
+            return result
+            
+        except Exception as e:
+            self.log_message(f"Error setting device parameters: {str(e)}")
+            self.log_message(traceback.format_exc())
+            raise
+
+    def search_browser_items(self, query, category_type="all", max_results=50):
+        """Search for browser items matching a query string.
+        
+        Args:
+            query: Search string to match against item names
+            category_type: Type of categories to search ("all", "instruments", "sounds", "drums", "audio_effects", "midi_effects")
+            max_results: Maximum number of results to return
+        """
+        try:
+            self.log_message(f"Searching for '{query}' in {category_type} (max: {max_results})")
+            
+            # Access the application's browser instance
+            app = self.application()
+            if not app:
+                raise RuntimeError("Could not access Live application")
+                
+            # Check if browser is available
+            if not hasattr(app, 'browser') or app.browser is None:
+                raise RuntimeError("Browser is not available in the Live application")
+            
+            # Get all items to search through based on category_type
+            items_to_search = []
+            
+            def collect_items(item, depth=0, max_depth=5):
+                if depth >= max_depth:
+                    return
+                    
+                if hasattr(item, 'children'):
+                    for child in item.children:
+                        items_to_search.append(child)
+                        collect_items(child, depth + 1, max_depth)
+            
+            # Determine which categories to search
+            categories = []
+            if category_type == "all" or category_type == "instruments":
+                if hasattr(app.browser, 'instruments'):
+                    categories.append(app.browser.instruments)
+            if category_type == "all" or category_type == "sounds":
+                if hasattr(app.browser, 'sounds'):
+                    categories.append(app.browser.sounds)
+            if category_type == "all" or category_type == "drums":
+                if hasattr(app.browser, 'drums'):
+                    categories.append(app.browser.drums)
+            if category_type == "all" or category_type == "audio_effects":
+                if hasattr(app.browser, 'audio_effects'):
+                    categories.append(app.browser.audio_effects)
+            if category_type == "all" or category_type == "midi_effects":
+                if hasattr(app.browser, 'midi_effects'):
+                    categories.append(app.browser.midi_effects)
+            
+            # Collect all items from selected categories
+            for category in categories:
+                collect_items(category)
+            
+            # Search through collected items
+            query = query.lower()
+            matching_items = []
+            
+            for item in items_to_search:
+                if len(matching_items) >= max_results:
+                    break
+                    
+                try:
+                    if hasattr(item, 'name') and query in item.name.lower():
+                        item_info = {
+                            "name": item.name,
+                            "path": self._get_item_path(item),
+                            "is_loadable": hasattr(item, 'is_loadable') and item.is_loadable,
+                            "is_device": hasattr(item, 'is_device') and item.is_device,
+                            "uri": item.uri if hasattr(item, 'uri') else None
+                        }
+                        matching_items.append(item_info)
+                except Exception as e:
+                    self.log_message(f"Error processing item: {str(e)}")
+                    continue
+            
+            result = {
+                "total_results": len(matching_items),
+                "results": matching_items[:max_results]
+            }
+            
+            self.log_message(f"Found {len(matching_items)} matches for '{query}'")
+            return result
+            
+        except Exception as e:
+            self.log_message(f"Error searching browser items: {str(e)}")
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _get_item_path(self, item):
+        """Get the full path of a browser item"""
+        try:
+            path_parts = []
+            current = item
+            
+            # Walk up the parent chain
+            while hasattr(current, 'name') and hasattr(current, 'parent') and current.parent:
+                path_parts.insert(0, current.name)
+                current = current.parent
+            
+            # Add root category name
+            if hasattr(current, 'name'):
+                path_parts.insert(0, current.name)
+            
+            return '/'.join(path_parts)
+        except Exception as e:
+            self.log_message(f"Error getting item path: {str(e)}")
+            return "Unknown Path"
