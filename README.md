@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/ahujasid-ableton-mcp-badge.png)](https://mseep.ai/app/ahujasid-ableton-mcp)
+
 # AbletonMCP - Ableton Live Model Context Protocol Integration
 [![smithery badge](https://smithery.ai/badge/@ahujasid/ableton-mcp)](https://smithery.ai/server/@ahujasid/ableton-mcp)
 
