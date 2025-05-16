@@ -76,6 +76,14 @@ uvx ableton-mcp
 
 ⚠️ Only run one instance of the MCP server (either on Cursor or Claude Desktop), not both
 
+### Claude Code Integration
+
+In the terminal, run:
+
+```
+claude mcp add AbletonMCP uvx ableton-mcp
+```
+
 ### Installing the Ableton Remote Script
 
 [Follow along with the setup instructions video](https://youtu.be/iJWJqyVuPS8)
