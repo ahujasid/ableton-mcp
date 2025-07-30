@@ -3,9 +3,13 @@
 
 AbletonMCP connects Ableton Live to Claude AI through the Model Context Protocol (MCP), allowing Claude to directly interact with and control Ableton Live. This integration enables prompt-assisted music production, track creation, and Live session manipulation.
 
+<a href="https://glama.ai/mcp/servers/@ahujasid/ableton-mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@ahujasid/ableton-mcp/badge" alt="AbletonMCP MCP server" />
+</a>
+
 ### Join the Community
 
-Give feedback, get inspired, and build on top of the MCP: [Discord](https://discord.gg/3ZrMyGKnaU). Made by [Siddharth](https://x.com/sidahuj)
+Give feedback, get inspired, and build on top of the MCP: [Discord](https://discord.gg/3ZrMyGKnaU). Made by [Siddharth](https://x.com/sidahuj) 
 
 ## Features
 
@@ -145,7 +149,6 @@ Here are some examples of what you can ask Claude to do:
 - "Add a jazz chord progression to the clip in track 1"
 - "Set the tempo to 120 BPM"
 - "Play the clip in track 2"
-
 
 ## Troubleshooting
 
