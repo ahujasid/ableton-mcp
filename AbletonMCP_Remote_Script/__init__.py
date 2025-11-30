@@ -795,7 +795,8 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
             # Load the rack
             browser.load_item(rack_item)
             
-            # Give it a moment to load
+            # browser.load_item() is asynchronous - brief delay needed for device to appear
+            # This is a known limitation of the Live API
             import time
             time.sleep(0.1)
             
@@ -829,14 +830,12 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
             chains_before = len(device.chains)
             self.log_message("Chains before: " + str(chains_before))
             
-            chain_created = False
+            # Use insert_chain to create a new chain at the end
+            if not hasattr(device, 'insert_chain'):
+                raise Exception("Device does not support insert_chain")
             
-            # Method 1: Use insert_chain (works for empty and non-empty racks!)
-            if hasattr(device, 'insert_chain'):
-                self.log_message("Trying insert_chain...")
-                device.insert_chain(chains_before)  # Insert at end
-                chain_created = True
-                self.log_message("insert_chain succeeded")
+            self.log_message("Creating chain with insert_chain...")
+            device.insert_chain(chains_before)  # Insert at end
             
             # Check if we succeeded
             chains_after = len(device.chains)
@@ -999,6 +998,8 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
             self._song.view.selected_track = track
             browser.load_item(effect_item)
             
+            # browser.load_item() is asynchronous - delay needed for device to appear
+            # This is a known limitation of the Live API
             import time
             time.sleep(0.3)
             
