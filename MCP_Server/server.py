@@ -528,7 +528,7 @@ def create_audio_effect_rack(ctx: Context, track_index: int, device_index: int =
     
     Parameters:
     - track_index: The index of the track to add the rack to
-    - device_index: Where to insert the rack in the device chain (-1 = end)
+    - device_index: Reserved for future use. Currently the rack is always appended to the end of the device chain.
     """
     try:
         ableton = get_ableton_connection()

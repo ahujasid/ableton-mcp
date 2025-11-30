@@ -628,6 +628,10 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
             
             source_clip = source_clip_slot.clip
             
+            # Only MIDI clips are supported for duplication
+            if not source_clip.is_midi_clip:
+                raise Exception("duplicate_clip only supports MIDI clips. Audio clip duplication is not yet implemented.")
+            
             # Validate destination track and clip slot
             if dest_track_index < 0 or dest_track_index >= len(self._song.tracks):
                 raise IndexError("Destination track index out of range")
@@ -768,7 +772,11 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
             raise
     
     def _create_audio_effect_rack(self, track_index, device_index=-1):
-        """Create an empty Audio Effect Rack on a track"""
+        """Create an empty Audio Effect Rack on a track.
+        
+        Note: device_index parameter is reserved for future use.
+        Currently the rack is always appended to the end of the device chain.
+        """
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
@@ -879,11 +887,11 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
                 if chain_index >= len(rack.chains):
                     raise IndexError("Chain index out of range")
                 chain = rack.chains[chain_index]
-                if device_index >= len(chain.devices):
+                if device_index < 0 or device_index >= len(chain.devices):
                     raise IndexError("Device index out of range in chain (have {}, requested {})".format(len(chain.devices), device_index))
                 device = chain.devices[device_index]
             else:
-                if device_index >= len(track.devices):
+                if device_index < 0 or device_index >= len(track.devices):
                     raise IndexError("Device index out of range")
                 device = track.devices[device_index]
             
@@ -926,11 +934,11 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
                 if chain_index >= len(rack.chains):
                     raise IndexError("Chain index out of range")
                 chain = rack.chains[chain_index]
-                if device_index >= len(chain.devices):
+                if device_index < 0 or device_index >= len(chain.devices):
                     raise IndexError("Device index out of range in chain")
                 device = chain.devices[device_index]
             else:
-                if device_index >= len(track.devices):
+                if device_index < 0 or device_index >= len(track.devices):
                     raise IndexError("Device index out of range")
                 device = track.devices[device_index]
             
@@ -1027,10 +1035,11 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
             self.log_message("Devices in chain after: " + str(devices_after))
             
             # Verify the effect is now in the chain
-            if devices_after == 0:
-                self.log_message("Effect may have loaded outside chain. Track devices: " + str(len(track.devices)))
+            if devices_after <= devices_before:
+                self.log_message("Effect failed to load into chain. Track devices: " + str(len(track.devices)))
                 for i, d in enumerate(track.devices):
                     self.log_message("  Device {}: {}".format(i, d.name))
+                raise Exception("Failed to load effect into chain. The effect may have loaded to the track instead.")
             
             result = {
                 "track_index": track_index,
