@@ -774,14 +774,16 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
     def _create_audio_effect_rack(self, track_index, device_index=-1):
         """Create an empty Audio Effect Rack on a track.
         
-        Note: device_index parameter is reserved for future use.
-        Currently the rack is always appended to the end of the device chain.
+        Parameters:
+        - track_index: The track to add the rack to
+        - device_index: Position in device chain to insert the rack (-1 = append to end)
         """
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
             
             track = self._song.tracks[track_index]
+            devices_before = len(track.devices)
             
             # Select the track first
             self._song.view.selected_track = track
@@ -800,7 +802,7 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
             if not rack_item:
                 raise Exception("Could not find Audio Effect Rack in browser")
             
-            # Load the rack
+            # Load the rack (loads to end of device chain)
             browser.load_item(rack_item)
             
             # browser.load_item() is asynchronous - brief delay needed for device to appear
@@ -808,8 +810,17 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
             import time
             time.sleep(0.1)
             
+            # If device_index is specified and valid, move the rack to that position
+            devices_after = len(track.devices)
+            if devices_after > devices_before and device_index >= 0:
+                new_rack = track.devices[devices_after - 1]  # The newly loaded rack
+                if device_index < devices_after - 1:  # Only move if not already at desired position
+                    self._song.move_device(new_rack, track, device_index)
+                    self.log_message("Moved rack to device index: " + str(device_index))
+            
             result = {
                 "track_index": track_index,
+                "device_index": device_index if device_index >= 0 else len(track.devices) - 1,
                 "device_count": len(track.devices)
             }
             return result
