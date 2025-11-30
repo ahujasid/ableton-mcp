@@ -1,11 +1,11 @@
 # ableton_mcp_server.py
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.fastmcp import FastMCP, Context  # type: ignore[import-not-found]
 import socket
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Any, List, Union
+from typing import AsyncIterator, Dict, Any, List, Union, Optional
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -16,7 +16,7 @@ logger = logging.getLogger("AbletonMCPServer")
 class AbletonConnection:
     host: str
     port: int
-    sock: socket.socket = None
+    sock: Optional[socket.socket] = field(default=None)
     
     def connect(self) -> bool:
         """Connect to the Ableton Remote Script socket server"""
@@ -90,7 +90,7 @@ class AbletonConnection:
         else:
             raise Exception("No data received")
 
-    def send_command(self, command_type: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+    def send_command(self, command_type: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Send a command to Ableton and return the response"""
         if not self.sock and not self.connect():
             raise ConnectionError("Not connected to Ableton")
@@ -103,13 +103,20 @@ class AbletonConnection:
         # Check if this is a state-modifying command
         is_modifying_command = command_type in [
             "create_midi_track", "create_audio_track", "set_track_name",
-            "create_clip", "add_notes_to_clip", "set_clip_name",
+            "create_clip", "add_notes_to_clip", "set_clip_name", "duplicate_clip", "remove_clip", "move_clip",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
-            "start_playback", "stop_playback", "load_instrument_or_effect"
+            "start_playback", "stop_playback", "load_instrument_or_effect",
+            "set_track_volume", "set_master_volume",
+            "create_audio_effect_rack", "create_rack_chain", "set_chain_name",
+            "load_effect_to_chain", "get_device_parameters", "set_device_param"
         ]
         
+        response_data: bytes = b''
         try:
             logger.info(f"Sending command: {command_type} with params: {params}")
+            
+            # Assert sock is not None (we checked above)
+            assert self.sock is not None
             
             # Send the command
             self.sock.sendall(json.dumps(command).encode('utf-8'))
@@ -152,7 +159,7 @@ class AbletonConnection:
             raise Exception(f"Connection to Ableton lost: {str(e)}")
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON response from Ableton: {str(e)}")
-            if 'response_data' in locals() and response_data:
+            if response_data:
                 logger.error(f"Raw response (first 200 bytes): {response_data[:200]}")
             self.sock = None
             raise Exception(f"Invalid response from Ableton: {str(e)}")
@@ -186,7 +193,6 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
 # Create the MCP server with lifespan support
 mcp = FastMCP(
     "AbletonMCP",
-    description="Ableton Live integration through the Model Context Protocol",
     lifespan=server_lifespan
 )
 
@@ -391,6 +397,81 @@ def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) ->
         return f"Error setting clip name: {str(e)}"
 
 @mcp.tool()
+def duplicate_clip(
+    ctx: Context, 
+    source_track_index: int, 
+    source_clip_index: int, 
+    dest_track_index: int, 
+    dest_clip_index: int
+) -> str:
+    """
+    Duplicate a clip from one slot to another (can be on the same or different track).
+    
+    Parameters:
+    - source_track_index: The index of the track containing the source clip
+    - source_clip_index: The index of the clip slot containing the source clip
+    - dest_track_index: The index of the destination track
+    - dest_clip_index: The index of the destination clip slot (must be empty)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_clip", {
+            "source_track_index": source_track_index,
+            "source_clip_index": source_clip_index,
+            "dest_track_index": dest_track_index,
+            "dest_clip_index": dest_clip_index
+        })
+        return f"Duplicated clip from track {source_track_index}, slot {source_clip_index} to track {dest_track_index}, slot {dest_clip_index}"
+    except Exception as e:
+        logger.error(f"Error duplicating clip: {str(e)}")
+        return f"Error duplicating clip: {str(e)}"
+
+@mcp.tool()
+def empty_clip_slot(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Empty a clip slot.
+    
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the clip slot to empty
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("remove_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        return f"Emptied clip slot at track {track_index}, slot {clip_index}"
+    except Exception as e:
+        logger.error(f"Error emptying clip slot: {str(e)}")
+        return f"Error emptying clip slot: {str(e)}"
+
+@mcp.tool()
+def relocate_clip(ctx: Context, source_track_index: int, source_clip_index: int, dest_track_index: int, dest_clip_index: int) -> str:
+    """
+    Relocate a clip from one slot to another (can be on the same or different track).
+    This duplicates the clip to the destination and empties the source.
+    
+    Parameters:
+    - source_track_index: The index of the track containing the source clip
+    - source_clip_index: The index of the clip slot containing the source clip
+    - dest_track_index: The index of the destination track
+    - dest_clip_index: The index of the destination clip slot (must be empty)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("move_clip", {
+            "source_track_index": source_track_index,
+            "source_clip_index": source_clip_index,
+            "dest_track_index": dest_track_index,
+            "dest_clip_index": dest_clip_index
+        })
+        return f"Relocated clip from track {source_track_index}, slot {source_clip_index} to track {dest_track_index}, slot {dest_clip_index}"
+    except Exception as e:
+        logger.error(f"Error relocating clip: {str(e)}")
+        return f"Error relocating clip: {str(e)}"
+
+@mcp.tool()
 def set_tempo(ctx: Context, tempo: float) -> str:
     """
     Set the tempo of the Ableton session.
@@ -405,6 +486,163 @@ def set_tempo(ctx: Context, tempo: float) -> str:
     except Exception as e:
         logger.error(f"Error setting tempo: {str(e)}")
         return f"Error setting tempo: {str(e)}"
+
+@mcp.tool()
+def set_track_volume(ctx: Context, track_index: int, volume: float) -> str:
+    """
+    Set the volume of a track.
+    
+    Parameters:
+    - track_index: The index of the track to adjust
+    - volume: The volume level (0.0 to 1.0, where 0.85 is 0dB)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_volume", {"track_index": track_index, "volume": volume})
+        return f"Set track {track_index} volume to {volume}"
+    except Exception as e:
+        logger.error(f"Error setting track volume: {str(e)}")
+        return f"Error setting track volume: {str(e)}"
+
+@mcp.tool()
+def set_master_volume(ctx: Context, volume: float) -> str:
+    """
+    Set the volume of the master track.
+    
+    Parameters:
+    - volume: The volume level (0.0 to 1.0, where 0.85 is 0dB)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_master_volume", {"volume": volume})
+        return f"Set master volume to {volume}"
+    except Exception as e:
+        logger.error(f"Error setting master volume: {str(e)}")
+        return f"Error setting master volume: {str(e)}"
+
+
+@mcp.tool()
+def create_audio_effect_rack(ctx: Context, track_index: int, device_index: int = -1) -> str:
+    """
+    Create an empty Audio Effect Rack on a track.
+    
+    Parameters:
+    - track_index: The index of the track to add the rack to
+    - device_index: Where to insert the rack in the device chain (-1 = end)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_audio_effect_rack", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        return f"Created Audio Effect Rack on track {track_index}"
+    except Exception as e:
+        logger.error(f"Error creating audio effect rack: {str(e)}")
+        return f"Error creating audio effect rack: {str(e)}"
+
+
+@mcp.tool()
+def create_rack_chain(ctx: Context, track_index: int, device_index: int, chain_name: str = "") -> str:
+    """
+    Create a new chain in an Audio Effect Rack or Instrument Rack.
+    
+    Parameters:
+    - track_index: The index of the track containing the rack
+    - device_index: The index of the rack device on the track
+    - chain_name: Optional name for the new chain
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_rack_chain", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "chain_name": chain_name
+        })
+        chain_idx = result.get("chain_index", "?")
+        return f"Created chain '{chain_name}' (index {chain_idx}) in rack at track {track_index}, device {device_index}"
+    except Exception as e:
+        logger.error(f"Error creating rack chain: {str(e)}")
+        return f"Error creating rack chain: {str(e)}"
+
+
+@mcp.tool()
+def get_device_parameters(ctx: Context, track_index: int, device_index: int, chain_index: int = -1, rack_device_index: int = -1) -> str:
+    """
+    Get all parameters of a device.
+    
+    Parameters:
+    - track_index: The index of the track containing the device
+    - device_index: The index of the device on the track, or within the chain if chain_index >= 0
+    - chain_index: Optional chain index if the device is inside a rack chain (-1 = device is on track)
+    - rack_device_index: The index of the rack device on the track (required when chain_index >= 0)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "chain_index": chain_index,
+            "rack_device_index": rack_device_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device parameters: {str(e)}")
+        return f"Error getting device parameters: {str(e)}"
+
+
+@mcp.tool()
+def set_device_parameter(ctx: Context, track_index: int, device_index: int, parameter_name: str, value: float, chain_index: int = -1, rack_device_index: int = -1) -> str:
+    """
+    Set a parameter value on a device.
+    
+    Parameters:
+    - track_index: The index of the track containing the device
+    - device_index: The index of the device on the track, or within the chain if chain_index >= 0
+    - parameter_name: The name of the parameter to set
+    - value: The value to set (normalized 0.0-1.0 for most parameters)
+    - chain_index: Optional chain index if the device is inside a rack chain (-1 = device is on track)
+    - rack_device_index: The index of the rack device on the track (required when chain_index >= 0)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_device_param", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameter_name": parameter_name,
+            "value": value,
+            "chain_index": chain_index,
+            "rack_device_index": rack_device_index
+        })
+        return f"Set '{parameter_name}' to {value} on device {device_index}"
+    except Exception as e:
+        logger.error(f"Error setting device parameter: {str(e)}")
+        return f"Error setting device parameter: {str(e)}"
+
+
+@mcp.tool()
+def load_effect_to_chain(ctx: Context, track_index: int, rack_device_index: int, chain_index: int, effect_uri: str) -> str:
+    """
+    Load an audio effect into a specific chain of a rack.
+    
+    Parameters:
+    - track_index: The index of the track containing the rack
+    - rack_device_index: The index of the rack device on the track
+    - chain_index: The index of the chain to load the effect into
+    - effect_uri: The browser URI of the effect to load
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("load_effect_to_chain", {
+            "track_index": track_index,
+            "rack_device_index": rack_device_index,
+            "chain_index": chain_index,
+            "effect_uri": effect_uri
+        })
+        return f"Loaded effect into chain {chain_index} of rack on track {track_index}"
+    except Exception as e:
+        logger.error(f"Error loading effect to chain: {str(e)}")
+        return f"Error loading effect to chain: {str(e)}"
 
 
 @mcp.tool()
