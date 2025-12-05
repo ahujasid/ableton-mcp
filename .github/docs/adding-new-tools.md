@@ -55,6 +55,8 @@ When adding new MCP tools (functions with `@mcp.tool()` decorator):
 
 ## Naming Considerations
 
-- GitHub Copilot may block tools with certain names (e.g., "delete") for safety
-- Use alternative names like "remove" instead of "delete"
+- GitHub Copilot may block tools with certain names for safety reasons
+- Known blocked words: "delete", "master" 
+- Use alternative names: "remove" instead of "delete", "main" instead of "master"
 - Tools must have `@mcp.tool()` decorator to be discovered
+- If a new tool appears disabled or won't enable, try renaming it

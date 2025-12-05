@@ -21,6 +21,32 @@ tail -50 ~/Library/Preferences/Ableton/Live*/Log.txt | grep AbletonMCP
 tail -50 ~/.ableton/Live*/Preferences/Log.txt | grep AbletonMCP
 ```
 
+## VS Code MCP Tool Cache
+
+VS Code caches MCP tool configurations in multiple locations. If new tools aren't appearing or old tools persist:
+
+### Clear Copilot's MCP Cache
+
+**Windows (PowerShell):**
+```powershell
+Remove-Item "$env:APPDATA\Code\User\globalStorage\github.copilot\mcp.json" -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:APPDATA\Code\User\globalStorage\github.copilot-chat\toolEmbeddingsCache.bin" -Force -ErrorAction SilentlyContinue
+```
+
+**macOS (bash):**
+```bash
+rm -f ~/Library/Application\ Support/Code/User/globalStorage/github.copilot/mcp.json
+rm -f ~/Library/Application\ Support/Code/User/globalStorage/github.copilot-chat/toolEmbeddingsCache.bin
+```
+
+**Linux (bash):**
+```bash
+rm -f ~/.config/Code/User/globalStorage/github.copilot/mcp.json
+rm -f ~/.config/Code/User/globalStorage/github.copilot-chat/toolEmbeddingsCache.bin
+```
+
+Then fully quit VS Code (check Task Manager/Activity Monitor) and restart.
+
 ## Adding Debug Output
 
 Use `self.log_message("message")` in the Remote Script to add debug output:

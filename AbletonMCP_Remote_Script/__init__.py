@@ -238,7 +238,8 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
                                  "start_playback", "stop_playback", "load_browser_item",
                                  "set_track_volume", "set_master_volume",
                                  "create_audio_effect_rack", "create_rack_chain",
-                                 "get_device_parameters", "set_device_param", "load_effect_to_chain"]:
+                                 "get_device_parameters", "set_device_param", "load_effect_to_chain",
+                                 "load_effect_on_master"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -302,7 +303,10 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
                         elif command_type == "load_instrument_or_effect":
                             track_index = params.get("track_index", 0)
                             uri = params.get("uri", "")
-                            result = self._load_instrument_or_effect(track_index, uri)
+                            result = self._load_browser_item(track_index, uri)
+                        elif command_type == "load_effect_on_master":
+                            uri = params.get("uri", "")
+                            result = self._load_effect_on_master(uri)
                         elif command_type == "load_browser_item":
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
@@ -769,6 +773,42 @@ class AbletonMCP(ControlSurface):  # type: ignore[misc]
             return result
         except Exception as e:
             self.log_message("Error setting master volume: " + str(e))
+            raise
+    
+    def _load_effect_on_master(self, uri):
+        """Load an audio effect onto the master track by its URI"""
+        try:
+            master_track = self._song.master_track
+            
+            # Access the application's browser instance
+            app = self.application()
+            
+            # Find the browser item by URI
+            item = self._find_browser_item_by_uri(app.browser, uri)
+            
+            if not item:
+                raise ValueError("Browser item with URI '{0}' not found".format(uri))
+            
+            # Select the master track
+            self._song.view.selected_track = master_track
+            
+            # Load the item
+            app.browser.load_item(item)
+            
+            # Brief delay for async load
+            import time
+            time.sleep(0.1)
+            
+            result = {
+                "loaded": True,
+                "item_name": item.name,
+                "track_name": "Master",
+                "uri": uri,
+                "device_count": len(master_track.devices)
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error loading effect on master: {0}".format(str(e)))
             raise
     
     def _create_audio_effect_rack(self, track_index, device_index=-1):

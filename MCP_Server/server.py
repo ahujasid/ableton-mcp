@@ -105,7 +105,7 @@ class AbletonConnection:
             "create_midi_track", "create_audio_track", "set_track_name",
             "create_clip", "add_notes_to_clip", "set_clip_name", "duplicate_clip", "remove_clip", "move_clip",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
-            "start_playback", "stop_playback", "load_instrument_or_effect",
+            "start_playback", "stop_playback", "load_instrument_or_effect", "load_effect_on_main",
             "set_track_volume", "set_master_volume",
             "create_audio_effect_rack", "create_rack_chain", "set_chain_name",
             "load_effect_to_chain", "get_device_parameters", "set_device_param"
@@ -519,6 +519,23 @@ def set_master_volume(ctx: Context, volume: float) -> str:
     except Exception as e:
         logger.error(f"Error setting master volume: {str(e)}")
         return f"Error setting master volume: {str(e)}"
+
+
+@mcp.tool()
+def load_effect_on_main(ctx: Context, uri: str) -> str:
+    """
+    Load an audio effect onto the main output track.
+    
+    Parameters:
+    - uri: The URI of the effect to load (e.g., 'query:AudioFx#Glue%20Compressor')
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("load_effect_on_master", {"uri": uri})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error loading effect on main: {str(e)}")
+        return f"Error loading effect on main: {str(e)}"
 
 
 @mcp.tool()
