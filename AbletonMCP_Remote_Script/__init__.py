@@ -225,6 +225,8 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "get_all_track_info":
+                response["result"] = self._get_all_track_info()
             # Read-only commands for new features
             elif command_type == "get_arrangement_clips":
                 track_index = params.get("track_index", 0)
@@ -576,7 +578,60 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error getting track info: " + str(e))
             raise
-    
+
+    def _get_all_track_info(self):
+        """Get information about all tracks in the session"""
+        try:
+            tracks = []
+            for track_index in range(len(self._song.tracks)):
+                track = self._song.tracks[track_index]
+
+                # Get clip slots (basic info only to keep response size manageable)
+                clip_slots = []
+                for slot_index, slot in enumerate(track.clip_slots):
+                    clip_info = None
+                    if slot.has_clip:
+                        clip = slot.clip
+                        clip_info = {
+                            "name": clip.name,
+                            "length": clip.length,
+                            "is_playing": clip.is_playing
+                        }
+
+                    clip_slots.append({
+                        "index": slot_index,
+                        "has_clip": slot.has_clip,
+                        "clip": clip_info
+                    })
+
+                # Get devices (basic info only)
+                devices = []
+                for device_index, device in enumerate(track.devices):
+                    devices.append({
+                        "index": device_index,
+                        "name": device.name,
+                        "class_name": device.class_name
+                    })
+
+                tracks.append({
+                    "index": track_index,
+                    "name": track.name,
+                    "is_audio_track": track.has_audio_input,
+                    "is_midi_track": track.has_midi_input,
+                    "mute": track.mute,
+                    "solo": track.solo,
+                    "arm": track.arm,
+                    "volume": track.mixer_device.volume.value,
+                    "panning": track.mixer_device.panning.value,
+                    "clip_slots": clip_slots,
+                    "devices": devices
+                })
+
+            return {"tracks": tracks, "count": len(tracks)}
+        except Exception as e:
+            self.log_message("Error getting all track info: " + str(e))
+            raise
+
     def _create_midi_track(self, index):
         """Create a new MIDI track at the specified index"""
         try:

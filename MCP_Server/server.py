@@ -283,7 +283,7 @@ def get_session_info(ctx: Context) -> str:
 def get_track_info(ctx: Context, track_index: int) -> str:
     """
     Get detailed information about a specific track in Ableton.
-    
+
     Parameters:
     - track_index: The index of the track to get information about
     """
@@ -294,6 +294,21 @@ def get_track_info(ctx: Context, track_index: int) -> str:
     except Exception as e:
         logger.error(f"Error getting track info from Ableton: {str(e)}")
         return f"Error getting track info: {str(e)}"
+
+@mcp.tool()
+def get_all_track_info(ctx: Context) -> str:
+    """
+    Get information about all tracks in the Ableton session.
+    Returns a list of all tracks with their properties, clip slots, and devices.
+    More efficient than calling get_track_info for each track individually.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_all_track_info", {})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting all track info from Ableton: {str(e)}")
+        return f"Error getting all track info: {str(e)}"
 
 @mcp.tool()
 def create_midi_track(ctx: Context, index: int = -1) -> str:
