@@ -263,7 +263,9 @@ class AbletonMCP(ControlSurface):
                                  "set_send_level", "duplicate_clip", "set_clip_loop",
                                  "set_clip_start_end", "clear_clip_notes",
                                  "create_cue_point", "delete_cue_point",
-                                 "set_playhead_position"]:
+                                 "set_playhead_position",
+                                 "split_arrangement_clip", "move_arrangement_clip",
+                                 "set_arrangement_clip_file_position", "duplicate_arrangement_clip_to_time"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -419,6 +421,30 @@ class AbletonMCP(ControlSurface):
                             position = params.get("position", 0)
                             self._song.current_song_time = position
                             result = {"position": self._song.current_song_time}
+                        # Arrangement clip manipulation
+                        elif command_type == "split_arrangement_clip":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            split_time = params.get("split_time", 0.0)
+                            result = self._split_arrangement_clip(track_index, clip_index, split_time)
+                        elif command_type == "move_arrangement_clip":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            new_start_time = params.get("new_start_time", 0.0)
+                            result = self._move_arrangement_clip(track_index, clip_index, new_start_time)
+                        elif command_type == "set_arrangement_clip_file_position":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            start_marker = params.get("start_marker", None)
+                            end_marker = params.get("end_marker", None)
+                            loop_start = params.get("loop_start", None)
+                            loop_end = params.get("loop_end", None)
+                            result = self._set_arrangement_clip_file_position(track_index, clip_index, start_marker, end_marker, loop_start, loop_end)
+                        elif command_type == "duplicate_arrangement_clip_to_time":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            destination_time = params.get("destination_time", 0.0)
+                            result = self._duplicate_arrangement_clip_to_time(track_index, clip_index, destination_time)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -976,6 +1002,261 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error deleting arrangement clip: " + str(e))
+            raise
+
+    def _split_arrangement_clip(self, track_index, clip_index, split_time):
+        """
+        Split an arrangement clip at a specific time.
+        Creates two clips: one ending at split_time, one starting at split_time.
+
+        Note: Live doesn't have a direct split API, so we:
+        1. Duplicate the clip
+        2. Trim the original to end at split_time
+        3. Trim the duplicate to start at split_time
+        """
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if not hasattr(track, 'arrangement_clips'):
+                raise RuntimeError("arrangement_clips not available (requires Live 11+)")
+
+            if clip_index < 0 or clip_index >= len(track.arrangement_clips):
+                raise IndexError("Clip index out of range")
+
+            clip = track.arrangement_clips[clip_index]
+            clip_name = clip.name
+            original_start = clip.start_time
+            original_end = clip.end_time
+
+            # Validate split_time is within clip bounds
+            if split_time <= original_start or split_time >= original_end:
+                raise ValueError("split_time must be within clip bounds ({0} to {1})".format(original_start, original_end))
+
+            # For audio clips, we need to calculate the file position offset
+            is_audio = not clip.is_midi_clip
+
+            if is_audio:
+                # Get the current loop/warp settings
+                original_loop_start = clip.loop_start if hasattr(clip, 'loop_start') else 0
+
+                # Calculate the offset in the audio file for the split point
+                # The split point in the file = loop_start + (split_time - clip_start)
+                split_file_position = original_loop_start + (split_time - original_start)
+
+            # Duplicate the clip first
+            if hasattr(track, 'duplicate_clip_to_arrangement'):
+                track.duplicate_clip_to_arrangement(clip, split_time)
+            else:
+                raise RuntimeError("duplicate_clip_to_arrangement not available")
+
+            # Find the new clip (should be at the split position)
+            new_clip = None
+            new_clip_index = None
+            for i, c in enumerate(track.arrangement_clips):
+                if abs(c.start_time - split_time) < 0.001 and i != clip_index:
+                    new_clip = c
+                    new_clip_index = i
+                    break
+
+            if not new_clip:
+                raise RuntimeError("Could not find duplicated clip")
+
+            # For audio clips, adjust the loop_start of the new clip
+            if is_audio and hasattr(new_clip, 'loop_start'):
+                new_clip.loop_start = split_file_position
+
+            # Note: We can't easily trim the original clip's end in arrangement view
+            # The user may need to manually adjust or we need to delete and recreate
+
+            return {
+                "success": True,
+                "original_clip": {
+                    "index": clip_index,
+                    "name": clip_name,
+                    "start": original_start,
+                    "end": original_end
+                },
+                "new_clip": {
+                    "index": new_clip_index,
+                    "name": new_clip.name,
+                    "start": new_clip.start_time,
+                    "end": new_clip.end_time
+                },
+                "split_time": split_time,
+                "note": "Original clip end may need manual adjustment"
+            }
+        except Exception as e:
+            self.log_message("Error splitting arrangement clip: " + str(e))
+            raise
+
+    def _move_arrangement_clip(self, track_index, clip_index, new_start_time):
+        """
+        Move an arrangement clip to a new start time.
+
+        Note: Live's arrangement clips don't have a direct 'move' API.
+        We duplicate to the new position and delete the original.
+        """
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if not hasattr(track, 'arrangement_clips'):
+                raise RuntimeError("arrangement_clips not available (requires Live 11+)")
+
+            if clip_index < 0 or clip_index >= len(track.arrangement_clips):
+                raise IndexError("Clip index out of range")
+
+            clip = track.arrangement_clips[clip_index]
+            clip_name = clip.name
+            original_start = clip.start_time
+            original_end = clip.end_time
+            clip_length = original_end - original_start
+
+            if abs(new_start_time - original_start) < 0.001:
+                return {
+                    "success": True,
+                    "message": "Clip already at target position",
+                    "start_time": original_start
+                }
+
+            # Duplicate the clip to the new position
+            if hasattr(track, 'duplicate_clip_to_arrangement'):
+                track.duplicate_clip_to_arrangement(clip, new_start_time)
+            else:
+                raise RuntimeError("duplicate_clip_to_arrangement not available")
+
+            # Delete the original clip
+            if hasattr(track, 'delete_clip'):
+                track.delete_clip(clip)
+            else:
+                raise RuntimeError("delete_clip not available - clip duplicated but original not deleted")
+
+            # Find the new clip
+            new_clip = None
+            new_clip_index = None
+            for i, c in enumerate(track.arrangement_clips):
+                if abs(c.start_time - new_start_time) < 0.001:
+                    new_clip = c
+                    new_clip_index = i
+                    break
+
+            return {
+                "success": True,
+                "clip_name": clip_name,
+                "original_start": original_start,
+                "new_start": new_start_time,
+                "new_clip_index": new_clip_index
+            }
+        except Exception as e:
+            self.log_message("Error moving arrangement clip: " + str(e))
+            raise
+
+    def _set_arrangement_clip_file_position(self, track_index, clip_index, start_marker=None, end_marker=None, loop_start=None, loop_end=None):
+        """
+        Set the file position markers for an arrangement clip.
+        This controls which part of the source audio/MIDI file is played.
+
+        For audio clips:
+        - start_marker/end_marker: Control the visible region in the clip
+        - loop_start/loop_end: Control which part of the file plays (in beats, relative to file start)
+        """
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if not hasattr(track, 'arrangement_clips'):
+                raise RuntimeError("arrangement_clips not available (requires Live 11+)")
+
+            if clip_index < 0 or clip_index >= len(track.arrangement_clips):
+                raise IndexError("Clip index out of range")
+
+            clip = track.arrangement_clips[clip_index]
+            result = {
+                "clip_name": clip.name,
+                "clip_index": clip_index,
+                "changes": []
+            }
+
+            # Set start marker if provided
+            if start_marker is not None and hasattr(clip, 'start_marker'):
+                clip.start_marker = start_marker
+                result["changes"].append("start_marker")
+                result["start_marker"] = clip.start_marker
+
+            # Set end marker if provided
+            if end_marker is not None and hasattr(clip, 'end_marker'):
+                clip.end_marker = end_marker
+                result["changes"].append("end_marker")
+                result["end_marker"] = clip.end_marker
+
+            # Set loop start if provided (this is key for audio file position)
+            if loop_start is not None and hasattr(clip, 'loop_start'):
+                clip.loop_start = loop_start
+                result["changes"].append("loop_start")
+                result["loop_start"] = clip.loop_start
+
+            # Set loop end if provided
+            if loop_end is not None and hasattr(clip, 'loop_end'):
+                clip.loop_end = loop_end
+                result["changes"].append("loop_end")
+                result["loop_end"] = clip.loop_end
+
+            return result
+        except Exception as e:
+            self.log_message("Error setting arrangement clip file position: " + str(e))
+            raise
+
+    def _duplicate_arrangement_clip_to_time(self, track_index, clip_index, destination_time):
+        """
+        Duplicate an arrangement clip to a new time position.
+        """
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if not hasattr(track, 'arrangement_clips'):
+                raise RuntimeError("arrangement_clips not available (requires Live 11+)")
+
+            if clip_index < 0 or clip_index >= len(track.arrangement_clips):
+                raise IndexError("Clip index out of range")
+
+            clip = track.arrangement_clips[clip_index]
+            clip_name = clip.name
+
+            # Duplicate to arrangement
+            if hasattr(track, 'duplicate_clip_to_arrangement'):
+                track.duplicate_clip_to_arrangement(clip, destination_time)
+            else:
+                raise RuntimeError("duplicate_clip_to_arrangement not available")
+
+            # Find the new clip
+            new_clip = None
+            new_clip_index = None
+            for i, c in enumerate(track.arrangement_clips):
+                if abs(c.start_time - destination_time) < 0.001:
+                    new_clip = c
+                    new_clip_index = i
+                    break
+
+            return {
+                "success": True,
+                "source_clip": clip_name,
+                "source_index": clip_index,
+                "destination_time": destination_time,
+                "new_clip_index": new_clip_index,
+                "new_clip_name": new_clip.name if new_clip else "Unknown"
+            }
+        except Exception as e:
+            self.log_message("Error duplicating arrangement clip: " + str(e))
             raise
 
     # ============================================

@@ -779,6 +779,126 @@ def delete_arrangement_clip(ctx: Context, track_index: int, clip_index: int) -> 
         return f"Error deleting arrangement clip: {str(e)}"
 
 
+@mcp.tool()
+def split_arrangement_clip(ctx: Context, track_index: int, clip_index: int, split_time: float) -> str:
+    """
+    Split an arrangement clip at a specific time, creating two clips.
+    Useful for sectioning audio for macro alignment before micro-warping.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the arrangement clip to split
+    - split_time: The beat position where to split the clip
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("split_arrangement_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "split_time": split_time
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error splitting arrangement clip: {str(e)}")
+        return f"Error splitting arrangement clip: {str(e)}"
+
+
+@mcp.tool()
+def move_arrangement_clip(ctx: Context, track_index: int, clip_index: int, new_start_time: float) -> str:
+    """
+    Move an arrangement clip to a new start time.
+    Useful for aligning sections to a target groove.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the arrangement clip to move
+    - new_start_time: The new beat position for the clip start
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("move_arrangement_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "new_start_time": new_start_time
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error moving arrangement clip: {str(e)}")
+        return f"Error moving arrangement clip: {str(e)}"
+
+
+@mcp.tool()
+def set_arrangement_clip_file_position(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    start_marker: float = None,
+    end_marker: float = None,
+    loop_start: float = None,
+    loop_end: float = None
+) -> str:
+    """
+    Set the file position markers for an arrangement clip.
+    Controls which part of the source audio file is played.
+
+    For audio clips:
+    - loop_start/loop_end control which beats in the audio file are played
+    - Changing loop_start effectively shifts where in the audio the clip starts
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the arrangement clip
+    - start_marker: Start marker position (optional)
+    - end_marker: End marker position (optional)
+    - loop_start: Which beat in the audio file to start from (optional)
+    - loop_end: Which beat in the audio file to end at (optional)
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "clip_index": clip_index
+        }
+        if start_marker is not None:
+            params["start_marker"] = start_marker
+        if end_marker is not None:
+            params["end_marker"] = end_marker
+        if loop_start is not None:
+            params["loop_start"] = loop_start
+        if loop_end is not None:
+            params["loop_end"] = loop_end
+
+        result = ableton.send_command("set_arrangement_clip_file_position", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting clip file position: {str(e)}")
+        return f"Error setting clip file position: {str(e)}"
+
+
+@mcp.tool()
+def duplicate_arrangement_clip_to_time(ctx: Context, track_index: int, clip_index: int, destination_time: float) -> str:
+    """
+    Duplicate an arrangement clip to a new time position.
+    Creates a copy of the clip at the specified beat position.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the arrangement clip to duplicate
+    - destination_time: The beat position where to place the copy
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_arrangement_clip_to_time", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "destination_time": destination_time
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error duplicating arrangement clip: {str(e)}")
+        return f"Error duplicating arrangement clip: {str(e)}"
+
+
 # ============================================
 # DEVICE PARAMETER OPERATIONS
 # ============================================
