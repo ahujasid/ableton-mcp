@@ -1078,6 +1078,27 @@ def get_clip_notes(ctx: Context, track_index: int, clip_index: int) -> str:
 
 
 @mcp.tool()
+def get_arrangement_clip_notes(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Get all MIDI notes from an arrangement clip.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the arrangement clip
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_arrangement_clip_notes", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting arrangement clip notes: {str(e)}")
+        return f"Error getting arrangement clip notes: {str(e)}"
+
+
+@mcp.tool()
 def duplicate_clip(ctx: Context, track_index: int, source_slot: int, dest_slot: int) -> str:
     """
     Duplicate a clip to another slot in the same track.
@@ -1470,6 +1491,283 @@ def audio_capture(ctx: Context, start_time: float, duration: float) -> str:
     except Exception as e:
         logger.error(f"Error during audio capture: {str(e)}")
         return f"Error during audio capture: {str(e)}"
+
+
+# ============================================
+# GROOVE ALIGNMENT TOOLS
+# ============================================
+
+@mcp.tool()
+def groove_analyze(
+    ctx: Context,
+    source_track_index: int,
+    source_clip_index: int,
+    target_track_index: int,
+    target_clip_index: int,
+    source_offset: float = 0.0
+) -> str:
+    """
+    Analyze alignment between source MIDI (e.g., vocal rhythm) and target MIDI (e.g., drums).
+
+    Compares timing of notes in both clips and calculates how far off each note is.
+    Use this to understand how well two patterns align before quantizing.
+
+    Parameters:
+    - source_track_index: Track index of the source MIDI clip (e.g., vocal rhythm)
+    - source_clip_index: Arrangement clip index for source
+    - target_track_index: Track index of the target MIDI clip (e.g., drums)
+    - target_clip_index: Arrangement clip index for target
+    - source_offset: Beat offset to add to source times (e.g., if source clip starts at beat 104)
+
+    Returns analysis with per-note offsets and statistics.
+    """
+    try:
+        from MCP_Server.audio_analysis import groove_align_analyze
+
+        ableton = get_ableton_connection()
+
+        # Get session tempo
+        session = ableton.send_command("get_session_info")
+        bpm = session.get("result", {}).get("tempo", 120.0)
+
+        # Get source notes
+        source_result = ableton.send_command("get_arrangement_clip_notes", {
+            "track_index": source_track_index,
+            "clip_index": source_clip_index
+        })
+        source_notes = source_result.get("result", {}).get("notes", [])
+
+        # Get target notes
+        target_result = ableton.send_command("get_arrangement_clip_notes", {
+            "track_index": target_track_index,
+            "clip_index": target_clip_index
+        })
+        target_notes = target_result.get("result", {}).get("notes", [])
+
+        if not source_notes:
+            return "Error: No notes found in source clip"
+        if not target_notes:
+            return "Error: No notes found in target clip"
+
+        # Analyze alignment
+        analysis = groove_align_analyze(
+            source_notes, target_notes, source_offset, bpm, match_by_pitch=True
+        )
+
+        stats = analysis['statistics']
+        summary = f"""Groove Alignment Analysis:
+- Source notes: {len(source_notes)}
+- Target notes: {len(target_notes)}
+- Matched alignments: {stats['total_notes']}
+
+Timing Statistics:
+- Mean offset: {stats['mean_offset_ms']:.1f}ms ({stats['mean_offset_beats']:.3f} beats)
+- Std deviation: {stats['std_offset_ms']:.1f}ms
+- Range: {stats['min_offset_ms']:.1f}ms to {stats['max_offset_ms']:.1f}ms
+
+BPM: {bpm}
+Source offset: {source_offset} beats"""
+
+        return summary
+
+    except Exception as e:
+        logger.error(f"Error analyzing groove alignment: {str(e)}")
+        return f"Error analyzing groove alignment: {str(e)}"
+
+
+@mcp.tool()
+def groove_quantize_to_track(
+    ctx: Context,
+    source_track_index: int,
+    source_clip_index: int,
+    target_track_index: int,
+    target_clip_index: int,
+    source_offset: float = 0.0,
+    output_track_name: str = "Quantized"
+) -> str:
+    """
+    Create a new MIDI track with source notes quantized to match target groove.
+
+    Takes a source MIDI clip (e.g., vocal rhythm) and snaps each note to the
+    nearest note in the target clip (e.g., drums). Creates a new track with
+    the quantized MIDI that can be used as a warp guide.
+
+    Parameters:
+    - source_track_index: Track index of the source MIDI clip
+    - source_clip_index: Arrangement clip index for source
+    - target_track_index: Track index of the target MIDI clip (groove to snap to)
+    - target_clip_index: Arrangement clip index for target
+    - source_offset: Beat offset for source clip start position
+    - output_track_name: Name for the new quantized track
+
+    Returns confirmation with the new track index.
+    """
+    try:
+        from MCP_Server.audio_analysis import groove_align_quantize
+
+        ableton = get_ableton_connection()
+
+        # Get source clip info
+        source_result = ableton.send_command("get_arrangement_clip_notes", {
+            "track_index": source_track_index,
+            "clip_index": source_clip_index
+        })
+        source_data = source_result.get("result", {})
+        source_notes = source_data.get("notes", [])
+        source_start = source_data.get("start_time", source_offset)
+        source_length = source_data.get("length", 64)
+
+        # Get target notes
+        target_result = ableton.send_command("get_arrangement_clip_notes", {
+            "track_index": target_track_index,
+            "clip_index": target_clip_index
+        })
+        target_notes = target_result.get("result", {}).get("notes", [])
+
+        if not source_notes:
+            return "Error: No notes found in source clip"
+        if not target_notes:
+            return "Error: No notes found in target clip"
+
+        # Quantize notes
+        quantized_notes = groove_align_quantize(
+            source_notes, target_notes, source_offset, max_snap_beats=1.0, match_by_pitch=True
+        )
+
+        # Create new track
+        track_result = ableton.send_command("create_midi_track", {"index": -1})
+        new_track_index = track_result.get("result", {}).get("index")
+
+        if new_track_index is None:
+            # Parse from message
+            import re
+            msg = track_result.get("message", "")
+            match = re.search(r'(\d+)-', msg)
+            if match:
+                new_track_index = int(match.group(1)) - 1
+
+        # Rename track
+        ableton.send_command("set_track_name", {
+            "track_index": new_track_index,
+            "name": output_track_name
+        })
+
+        # Create clip in arrangement
+        ableton.send_command("create_clip_in_arrangement", {
+            "track_index": new_track_index,
+            "start_time": source_start,
+            "length": source_length
+        })
+
+        # Add quantized notes in batches
+        batch_size = 100
+        for i in range(0, len(quantized_notes), batch_size):
+            batch = quantized_notes[i:i+batch_size]
+            ableton.send_command("add_notes_to_arrangement_clip", {
+                "track_index": new_track_index,
+                "clip_index": 0,
+                "notes": batch
+            })
+
+        return f"Created '{output_track_name}' track (index {new_track_index}) with {len(quantized_notes)} quantized notes aligned to target groove"
+
+    except Exception as e:
+        logger.error(f"Error creating quantized track: {str(e)}")
+        return f"Error creating quantized track: {str(e)}"
+
+
+@mcp.tool()
+def groove_export_warp_markers(
+    ctx: Context,
+    source_track_index: int,
+    source_clip_index: int,
+    target_track_index: int,
+    target_clip_index: int,
+    source_offset: float = 0.0,
+    min_offset_ms: float = 20.0,
+    min_spacing_beats: float = 0.0,
+    pitch_filter: str = "",
+    max_markers: int = 0,
+    quantize_targets_to: float = 0.0,
+    output_path: str = "/tmp/warp_markers.json"
+) -> str:
+    """
+    Export warp marker data for aligning source audio to target groove.
+
+    Generates a list of time adjustments needed to align source to target.
+    Can be used manually or with a Max for Live device to apply warping.
+
+    Parameters:
+    - source_track_index: Track index of the source MIDI clip (vocal rhythm)
+    - source_clip_index: Arrangement clip index for source
+    - target_track_index: Track index of the target MIDI clip (drums)
+    - target_clip_index: Arrangement clip index for target
+    - source_offset: Beat offset for source clip start position
+    - min_offset_ms: Minimum timing offset to include (ignore smaller adjustments)
+    - min_spacing_beats: Minimum spacing between markers in beats (e.g., 2.0 = half notes, 4.0 = bars)
+    - pitch_filter: Comma-separated pitches to include (e.g., "36,38" for kick/snare only, empty = all)
+    - max_markers: Maximum number of markers (0 = unlimited, prioritizes largest offsets)
+    - quantize_targets_to: Snap target beats to grid (e.g., 1.0 = quarter notes, 4.0 = bars)
+    - output_path: Path to save the warp markers file
+
+    Returns path to the exported file with warp marker count.
+    """
+    try:
+        from MCP_Server.audio_analysis import generate_warp_markers, export_warp_markers_to_file
+
+        ableton = get_ableton_connection()
+
+        # Get session tempo
+        session = ableton.send_command("get_session_info")
+        bpm = session.get("result", {}).get("tempo", 120.0)
+
+        # Get source notes
+        source_result = ableton.send_command("get_arrangement_clip_notes", {
+            "track_index": source_track_index,
+            "clip_index": source_clip_index
+        })
+        source_notes = source_result.get("result", {}).get("notes", [])
+
+        # Get target notes
+        target_result = ableton.send_command("get_arrangement_clip_notes", {
+            "track_index": target_track_index,
+            "clip_index": target_clip_index
+        })
+        target_notes = target_result.get("result", {}).get("notes", [])
+
+        if not source_notes:
+            return "Error: No notes found in source clip"
+        if not target_notes:
+            return "Error: No notes found in target clip"
+
+        # Parse pitch filter
+        pitch_list = None
+        if pitch_filter:
+            pitch_list = [int(p.strip()) for p in pitch_filter.split(",")]
+
+        # Generate warp markers
+        warp_markers = generate_warp_markers(
+            source_notes,
+            target_notes,
+            source_offset,
+            bpm,
+            min_offset_ms,
+            match_by_pitch=True,
+            min_spacing_beats=min_spacing_beats,
+            pitch_filter=pitch_list,
+            max_markers=max_markers,
+            quantize_targets_to=quantize_targets_to
+        )
+
+        # Export to file
+        file_format = "csv" if output_path.endswith(".csv") else "json"
+        export_warp_markers_to_file(warp_markers, output_path, file_format)
+
+        return f"Exported {len(warp_markers)} warp markers to {output_path} (offset >= {min_offset_ms}ms, spacing >= {min_spacing_beats} beats)"
+
+    except Exception as e:
+        logger.error(f"Error exporting warp markers: {str(e)}")
+        return f"Error exporting warp markers: {str(e)}"
 
 
 # Main execution

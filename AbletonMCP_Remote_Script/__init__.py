@@ -242,6 +242,10 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 clip_index = params.get("clip_index", 0)
                 response["result"] = self._get_clip_notes(track_index, clip_index)
+            elif command_type == "get_arrangement_clip_notes":
+                track_index = params.get("track_index", 0)
+                clip_index = params.get("clip_index", 0)
+                response["result"] = self._get_arrangement_clip_notes(track_index, clip_index)
             elif command_type == "get_cue_points":
                 response["result"] = self._get_cue_points()
             elif command_type == "get_playhead_position":
@@ -1333,6 +1337,63 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error getting clip notes: " + str(e))
+            raise
+
+    def _get_arrangement_clip_notes(self, track_index, clip_index):
+        """Get all MIDI notes from an arrangement clip"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if not hasattr(track, 'arrangement_clips'):
+                raise RuntimeError("arrangement_clips not available (requires Live 11+)")
+
+            if clip_index < 0 or clip_index >= len(track.arrangement_clips):
+                raise IndexError("Clip index out of range")
+
+            clip = track.arrangement_clips[clip_index]
+
+            if not clip.is_midi_clip:
+                raise ValueError("Clip is not a MIDI clip")
+
+            # Get notes using get_notes_extended if available, otherwise get_notes
+            notes = []
+            if hasattr(clip, 'get_notes_extended'):
+                # get_notes_extended(from_pitch, pitch_span, from_time, time_span)
+                raw_notes = clip.get_notes_extended(0, 128, 0.0, clip.length)
+                for note in raw_notes:
+                    notes.append({
+                        "pitch": note.pitch,
+                        "start_time": note.start_time,
+                        "duration": note.duration,
+                        "velocity": note.velocity,
+                        "mute": note.mute
+                    })
+            else:
+                # Fallback for older versions
+                raw_notes = clip.get_notes(0.0, 0, clip.length, 128)
+                for note in raw_notes:
+                    notes.append({
+                        "pitch": note[0],
+                        "start_time": note[1],
+                        "duration": note[2],
+                        "velocity": note[3],
+                        "mute": note[4] if len(note) > 4 else False
+                    })
+
+            return {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "clip_name": clip.name,
+                "start_time": clip.start_time,
+                "length": clip.length,
+                "note_count": len(notes),
+                "notes": notes
+            }
+        except Exception as e:
+            self.log_message("Error getting arrangement clip notes: " + str(e))
             raise
 
     def _duplicate_clip(self, track_index, source_slot, dest_slot):
