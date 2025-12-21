@@ -20,6 +20,7 @@ dependencies = [
     "librosa>=0.10.0",
     "mido>=1.3.0",
     "numpy>=1.24.0",
+    "replicate>=1.0.0",
 ]
 
 [project.scripts]

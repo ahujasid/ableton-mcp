@@ -1485,6 +1485,43 @@ def analyze_audio_describe(ctx: Context, file_path: str, prompt: str) -> str:
 
 
 @mcp.tool()
+def analyze_song_structure(ctx: Context, file_path: str, include_beats: bool = False) -> str:
+    """
+    Analyze song structure to identify sections (intro, verse, chorus, bridge, outro, etc.).
+
+    Uses Replicate's All-In-One Music Structure Analyzer which provides:
+    - BPM detection
+    - Beat and downbeat tracking
+    - Functional segment boundaries with labels
+
+    Parameters:
+    - file_path: Absolute path to the audio file (WAV, MP3, AIFF, AAC, OGG, FLAC, M4A)
+    - include_beats: Include full beat/downbeat arrays (default False to reduce output size)
+
+    Note: Requires REPLICATE_API_TOKEN environment variable. Costs ~$0.10 per track.
+
+    Returns JSON with:
+    - bpm: tempo in beats per minute
+    - segments: list of {start, end, label} where label is intro/verse/chorus/bridge/outro/etc
+    - beats: list of beat timestamps in seconds (if include_beats=True)
+    - downbeats: list of downbeat timestamps in seconds (if include_beats=True)
+    """
+    try:
+        from MCP_Server.audio_analysis import analyze_song_structure as do_analysis
+        result = do_analysis(file_path, include_beats)
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        logger.error(f"Song structure analysis configuration error: {str(e)}")
+        return f"Configuration error: {str(e)}"
+    except ImportError as e:
+        logger.error(f"Missing dependency: {str(e)}")
+        return f"Missing dependency: {str(e)}. Run: pip install replicate"
+    except Exception as e:
+        logger.error(f"Error analyzing song structure: {str(e)}")
+        return f"Error analyzing song structure: {str(e)}"
+
+
+@mcp.tool()
 def vocal_to_midi(ctx: Context, audio_path: str, output_midi_path: str, bpm: float = 120.0) -> str:
     """
     Convert vocal audio to MIDI based on phoneme categorization.

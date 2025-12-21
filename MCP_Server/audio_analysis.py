@@ -4,12 +4,14 @@ Audio analysis module for Ableton MCP.
 Provides integration with:
 - ChordMini API for technical music analysis (BPM, beats, chords)
 - Google Gemini for natural language audio understanding
+- Replicate API for song structure analysis (segments, beats, downbeats)
 """
 
 import os
 import json
 import logging
 import mimetypes
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -190,6 +192,129 @@ class GeminiAudioClient:
             ])
 
         return response.text
+
+
+class ReplicateMusicAnalyzer:
+    """Client for Replicate's All-In-One Music Structure Analyzer."""
+
+    # Model version from sakemin/all-in-one-music-structure-analyzer
+    MODEL_VERSION = "sakemin/all-in-one-music-structure-analyzer:001b4137be6ac67bdc28cb5cffacf128b874f530258d033de23121e785cb7290"
+
+    def __init__(self, api_token: Optional[str] = None):
+        self.api_token = api_token or os.environ.get('REPLICATE_API_TOKEN')
+        if not self.api_token:
+            raise ValueError(
+                "Replicate API token not found. Set REPLICATE_API_TOKEN environment variable "
+                "or pass api_token parameter."
+            )
+        self._client = None
+
+    def _get_client(self):
+        """Lazy initialization of Replicate client."""
+        if self._client is None:
+            try:
+                import replicate
+            except ImportError:
+                raise ImportError(
+                    "replicate package not installed. "
+                    "Run: pip install replicate"
+                )
+            self._client = replicate.Client(api_token=self.api_token)
+        return self._client
+
+    def analyze(self, file_path: str, include_beats: bool = True) -> dict:
+        """
+        Analyze song structure using Replicate's All-In-One model.
+
+        Args:
+            file_path: Path to the audio file
+            include_beats: Include beat/downbeat arrays in output
+
+        Returns:
+            Dict with:
+            - bpm: float
+            - segments: list of {start, end, label}
+            - beats: list of beat timestamps (if include_beats)
+            - downbeats: list of downbeat timestamps (if include_beats)
+        """
+        valid, error = validate_audio_file(file_path)
+        if not valid:
+            raise ValueError(error)
+
+        client = self._get_client()
+
+        # Run the model with file input
+        logger.info(f"Submitting {file_path} to Replicate for structure analysis...")
+
+        with open(file_path, 'rb') as f:
+            output = client.run(
+                self.MODEL_VERSION,
+                input={
+                    "music_input": f,
+                    "visualize": False,
+                    "sonify": False,
+                    "model": "harmonix-all"
+                }
+            )
+
+        # Output is a list of URLs to result files
+        # First one should be the JSON analysis
+        if not output:
+            raise Exception("No output received from Replicate")
+
+        # Find and fetch the JSON result
+        json_url = None
+        for url in output:
+            if isinstance(url, str) and url.endswith('.json'):
+                json_url = url
+                break
+
+        if not json_url:
+            # If no explicit JSON, the first output might be the JSON
+            json_url = output[0] if output else None
+
+        if not json_url:
+            raise Exception(f"No JSON result in output: {output}")
+
+        # Fetch the JSON result
+        logger.info(f"Fetching analysis result from {json_url}")
+        response = requests.get(json_url, timeout=60)
+        response.raise_for_status()
+        result = response.json()
+
+        # Format the output
+        formatted = {
+            "file": file_path,
+            "bpm": result.get("bpm"),
+            "segments": result.get("segments", []),
+        }
+
+        if include_beats:
+            formatted["beats"] = result.get("beats", [])
+            formatted["downbeats"] = result.get("downbeats", [])
+            formatted["beat_positions"] = result.get("beat_positions", [])
+
+        return formatted
+
+
+def analyze_song_structure(file_path: str, include_beats: bool = True) -> dict:
+    """
+    Analyze song structure to identify sections (intro, verse, chorus, etc.).
+
+    Uses Replicate's All-In-One Music Structure Analyzer which provides:
+    - BPM detection
+    - Beat and downbeat tracking
+    - Functional segment boundaries and labels
+
+    Args:
+        file_path: Path to the audio file
+        include_beats: Include beat/downbeat arrays (can be large)
+
+    Returns:
+        Dict with bpm, segments, beats, downbeats
+    """
+    client = ReplicateMusicAnalyzer()
+    return client.analyze(file_path, include_beats)
 
 
 def analyze_audio_technical(file_path: str) -> dict:
