@@ -1485,7 +1485,7 @@ def analyze_audio_describe(ctx: Context, file_path: str, prompt: str) -> str:
 
 
 @mcp.tool()
-def analyze_song_structure(ctx: Context, file_path: str, include_beats: bool = False) -> str:
+def analyze_song_structure(ctx: Context, file_path: str, include_beats: bool = False, target_bpm: float = None) -> str:
     """
     Analyze song structure to identify sections (intro, verse, chorus, bridge, outro, etc.).
 
@@ -1497,6 +1497,8 @@ def analyze_song_structure(ctx: Context, file_path: str, include_beats: bool = F
     Parameters:
     - file_path: Absolute path to the audio file (WAV, MP3, AIFF, AAC, OGG, FLAC, M4A)
     - include_beats: Include full beat/downbeat arrays (default False to reduce output size)
+    - target_bpm: Lock BPM detection to this value (±1 BPM). Use when tempo is misdetected
+                  (e.g., 140 BPM track detected as 81 BPM due to half-time feel).
 
     Note: Requires REPLICATE_API_TOKEN environment variable. Costs ~$0.10 per track.
 
@@ -1508,7 +1510,7 @@ def analyze_song_structure(ctx: Context, file_path: str, include_beats: bool = F
     """
     try:
         from MCP_Server.audio_analysis import analyze_song_structure as do_analysis
-        result = do_analysis(file_path, include_beats)
+        result = do_analysis(file_path, include_beats, target_bpm=target_bpm)
         return json.dumps(result, indent=2)
     except ValueError as e:
         logger.error(f"Song structure analysis configuration error: {str(e)}")

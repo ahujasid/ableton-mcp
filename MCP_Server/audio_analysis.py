@@ -197,8 +197,8 @@ class GeminiAudioClient:
 class ReplicateMusicAnalyzer:
     """Client for Replicate's All-In-One Music Structure Analyzer."""
 
-    # Model version from sakemin/all-in-one-music-structure-analyzer
-    MODEL_VERSION = "sakemin/all-in-one-music-structure-analyzer:001b4137be6ac67bdc28cb5cffacf128b874f530258d033de23121e785cb7290"
+    # Custom model with BPM constraint support (fork of all-in-one)
+    MODEL_NAME = "jhurliman/allinone-targetbpm"
 
     def __init__(self, api_token: Optional[str] = None):
         self.api_token = api_token or os.environ.get('REPLICATE_API_TOKEN')
@@ -222,13 +222,15 @@ class ReplicateMusicAnalyzer:
             self._client = replicate.Client(api_token=self.api_token)
         return self._client
 
-    def analyze(self, file_path: str, include_beats: bool = True) -> dict:
+    def analyze(self, file_path: str, include_beats: bool = True, target_bpm: Optional[float] = None) -> dict:
         """
         Analyze song structure using Replicate's All-In-One model.
 
         Args:
             file_path: Path to the audio file
             include_beats: Include beat/downbeat arrays in output
+            target_bpm: Lock BPM detection to this value (±1 BPM). Use when tempo is
+                       misdetected (e.g., 140 BPM track detected as 81 BPM).
 
         Returns:
             Dict with:
@@ -244,43 +246,48 @@ class ReplicateMusicAnalyzer:
         client = self._get_client()
 
         # Run the model with file input
-        logger.info(f"Submitting {file_path} to Replicate for structure analysis...")
+        if target_bpm:
+            logger.info(f"Submitting {file_path} to Replicate with target_bpm={target_bpm}...")
+        else:
+            logger.info(f"Submitting {file_path} to Replicate for structure analysis...")
 
         with open(file_path, 'rb') as f:
+            input_params = {"audio": f}
+            if target_bpm is not None:
+                input_params["target_bpm"] = target_bpm
+
             output = client.run(
-                self.MODEL_VERSION,
-                input={
-                    "music_input": f,
-                    "visualize": False,
-                    "sonify": False,
-                    "model": "harmonix-all"
-                }
+                self.MODEL_NAME,
+                input=input_params
             )
 
-        # Output is a list of URLs to result files
-        # First one should be the JSON analysis
+        # Output format depends on model version:
+        # - New model (jhurliman/allinone-targetbpm): Returns JSON string directly
+        # - Old model: Returns list of URLs to result files
         if not output:
             raise Exception("No output received from Replicate")
 
-        # Find and fetch the JSON result
-        json_url = None
-        for url in output:
-            if isinstance(url, str) and url.endswith('.json'):
-                json_url = url
-                break
-
-        if not json_url:
-            # If no explicit JSON, the first output might be the JSON
-            json_url = output[0] if output else None
-
-        if not json_url:
-            raise Exception(f"No JSON result in output: {output}")
-
-        # Fetch the JSON result
-        logger.info(f"Fetching analysis result from {json_url}")
-        response = requests.get(json_url, timeout=60)
-        response.raise_for_status()
-        result = response.json()
+        # Handle direct JSON string output (new model)
+        if isinstance(output, str):
+            import json as json_module
+            result = json_module.loads(output)
+        # Handle URL-based output (old model compatibility)
+        elif isinstance(output, list):
+            json_url = None
+            for url in output:
+                if isinstance(url, str) and url.endswith('.json'):
+                    json_url = url
+                    break
+            if not json_url:
+                json_url = output[0] if output else None
+            if not json_url:
+                raise Exception(f"No JSON result in output: {output}")
+            logger.info(f"Fetching analysis result from {json_url}")
+            response = requests.get(json_url, timeout=60)
+            response.raise_for_status()
+            result = response.json()
+        else:
+            raise Exception(f"Unexpected output format: {type(output)}")
 
         # Format the output
         formatted = {
@@ -297,7 +304,7 @@ class ReplicateMusicAnalyzer:
         return formatted
 
 
-def analyze_song_structure(file_path: str, include_beats: bool = True) -> dict:
+def analyze_song_structure(file_path: str, include_beats: bool = True, target_bpm: Optional[float] = None) -> dict:
     """
     Analyze song structure to identify sections (intro, verse, chorus, etc.).
 
@@ -309,12 +316,14 @@ def analyze_song_structure(file_path: str, include_beats: bool = True) -> dict:
     Args:
         file_path: Path to the audio file
         include_beats: Include beat/downbeat arrays (can be large)
+        target_bpm: Lock BPM detection to this value (±1 BPM). Use when tempo is
+                   misdetected (e.g., 140 BPM track detected as 81 BPM).
 
     Returns:
         Dict with bpm, segments, beats, downbeats
     """
     client = ReplicateMusicAnalyzer()
-    return client.analyze(file_path, include_beats)
+    return client.analyze(file_path, include_beats, target_bpm=target_bpm)
 
 
 def analyze_audio_technical(file_path: str) -> dict:
