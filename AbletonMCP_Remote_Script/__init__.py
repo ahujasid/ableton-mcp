@@ -267,7 +267,8 @@ class AbletonMCP(ControlSurface):
                                  "create_cue_point", "delete_cue_point",
                                  "set_playhead_position",
                                  "split_arrangement_clip", "move_arrangement_clip",
-                                 "set_arrangement_clip_file_position", "duplicate_arrangement_clip_to_time"]:
+                                 "set_arrangement_clip_file_position", "duplicate_arrangement_clip_to_time",
+                                 "set_arrangement_clip_name", "clear_arrangement_clip_notes"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -340,6 +341,11 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             result = self._delete_arrangement_clip(track_index, clip_index)
+                        elif command_type == "set_arrangement_clip_name":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            name = params.get("name", "")
+                            result = self._set_arrangement_clip_name(track_index, clip_index, name)
                         # Device parameter operations
                         elif command_type == "set_device_parameter":
                             track_index = params.get("track_index", 0)
@@ -406,6 +412,10 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             result = self._clear_clip_notes(track_index, clip_index)
+                        elif command_type == "clear_arrangement_clip_notes":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            result = self._clear_arrangement_clip_notes(track_index, clip_index)
                         elif command_type == "create_audio_track":
                             index = params.get("index", -1)
                             result = self._create_audio_track(index)
@@ -989,6 +999,66 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error adding notes to arrangement clip: " + str(e))
+            raise
+
+    def _set_arrangement_clip_name(self, track_index, clip_index, name):
+        """Set the name of an arrangement clip"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if not hasattr(track, 'arrangement_clips'):
+                raise RuntimeError("arrangement_clips not available (requires Live 11+)")
+
+            if clip_index < 0 or clip_index >= len(track.arrangement_clips):
+                raise IndexError("Clip index out of range")
+
+            clip = track.arrangement_clips[clip_index]
+            clip.name = name
+
+            return {
+                "name": clip.name,
+                "clip_index": clip_index
+            }
+        except Exception as e:
+            self.log_message("Error setting arrangement clip name: " + str(e))
+            raise
+
+    def _clear_arrangement_clip_notes(self, track_index, clip_index):
+        """Clear all notes from an arrangement clip"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if not hasattr(track, 'arrangement_clips'):
+                raise RuntimeError("arrangement_clips not available (requires Live 11+)")
+
+            if clip_index < 0 or clip_index >= len(track.arrangement_clips):
+                raise IndexError("Clip index out of range")
+
+            clip = track.arrangement_clips[clip_index]
+
+            if not clip.is_midi_clip:
+                raise ValueError("Clip is not a MIDI clip")
+
+            # Remove all notes using remove_notes_extended if available
+            if hasattr(clip, 'remove_notes_extended'):
+                clip.remove_notes_extended(0, 128, 0.0, clip.length)
+            else:
+                # Fallback: use remove_notes
+                clip.remove_notes(0.0, 0, clip.length, 128)
+
+            return {
+                "clip_name": clip.name,
+                "clip_index": clip_index,
+                "cleared": True
+            }
+        except Exception as e:
+            self.log_message("Error clearing arrangement clip notes: " + str(e))
             raise
 
     def _duplicate_clip_to_arrangement(self, track_index, clip_slot_index, destination_time):

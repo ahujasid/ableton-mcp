@@ -1327,6 +1327,27 @@ def clear_clip_notes(ctx: Context, track_index: int, clip_index: int) -> str:
         return f"Error clearing clip notes: {str(e)}"
 
 
+@mcp.tool()
+def clear_arrangement_clip_notes(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Clear all MIDI notes from an arrangement clip.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the arrangement clip
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("clear_arrangement_clip_notes", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        return f"Cleared all notes from arrangement clip '{result.get('clip_name', 'clip')}'"
+    except Exception as e:
+        logger.error(f"Error clearing arrangement clip notes: {str(e)}")
+        return f"Error clearing arrangement clip notes: {str(e)}"
+
+
 # ============================================
 # AUDIO TRACK SUPPORT
 # ============================================
@@ -1524,6 +1545,252 @@ def analyze_song_structure(ctx: Context, file_path: str, include_beats: bool = F
 
 
 @mcp.tool()
+def analyze_energy(ctx: Context, file_path: str, bpm: float = None, target_bpm: float = None) -> str:
+    """
+    Analyze energy features of an audio file per sixteenth note.
+
+    Returns 8 energy metrics per time slice:
+    - rms: Overall loudness (0-1)
+    - centroid: Spectral brightness (0-1)
+    - flux: Rate of spectral change (0-1)
+    - bands[0-4]: Energy in frequency bands (Sub/Bass/LowMid/HighMid/High)
+
+    Band frequency ranges:
+    - bands[0]: Sub 20-60 Hz
+    - bands[1]: Bass 60-250 Hz
+    - bands[2]: LowMid 250-500 Hz
+    - bands[3]: HighMid 500-2000 Hz
+    - bands[4]: High 2000-20000 Hz
+
+    Parameters:
+    - file_path: Absolute path to the audio file
+    - bpm: Tempo in BPM (if not provided, detects via song structure analysis)
+    - target_bpm: Lock BPM detection to this value (±1 BPM) when auto-detecting
+
+    Returns JSON with struct-of-arrays format for compact output:
+    - times: array of timestamps (seconds)
+    - rms, centroid, flux: arrays of values
+    - bands: 5 arrays of band energy values
+    - global_stats: median and std for classification
+    """
+    try:
+        from MCP_Server.audio_analysis import extract_energy_features
+
+        # If BPM not provided, detect it
+        effective_bpm = bpm
+        if effective_bpm is None:
+            from MCP_Server.audio_analysis import analyze_song_structure as do_structure
+            structure = do_structure(file_path, include_beats=False, target_bpm=target_bpm)
+            effective_bpm = structure.get('bpm', 120.0)
+            logger.info(f"Auto-detected BPM: {effective_bpm}")
+
+        result = extract_energy_features(file_path, effective_bpm)
+        return json.dumps(result)  # No indent to save space for large arrays
+    except ValueError as e:
+        logger.error(f"Energy analysis error: {str(e)}")
+        return f"Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Error analyzing energy: {str(e)}")
+        return f"Error analyzing energy: {str(e)}"
+
+
+@mcp.tool()
+def annotate_arrangement(
+    ctx: Context,
+    file_path: str,
+    annotation_track_name: str = "Structure",
+    create_cue_points: bool = True,
+    target_bpm: float = None
+) -> str:
+    """
+    Analyze audio and create annotation track in Ableton's arrangement view.
+
+    Creates a "ghost MIDI" track with clips for each song section, using:
+    - Clip names to encode metadata: "[CHORUS] Hi (up) | bars 33-64"
+    - MIDI note pitches for section type (intro=C1, verse=D1, chorus=F1, etc.)
+    - MIDI note velocity for energy level (hi=127, lo=50)
+    - MIDI note duration for energy direction (up=full, down=half, same=quarter)
+
+    Energy classification:
+    - Level: "hi" if segment energy > track median, "lo" otherwise
+    - Direction: "up"/"down"/"same" relative to previous segment
+
+    Parameters:
+    - file_path: Absolute path to the audio file to analyze
+    - annotation_track_name: Name for the annotation track (default: "Structure")
+    - create_cue_points: Create locators at section boundaries (default: True)
+    - target_bpm: Lock BPM detection to this value (±1 BPM)
+
+    Returns JSON summary with created track, segments, and energy classifications.
+    """
+    try:
+        from MCP_Server.audio_analysis import (
+            analyze_song_structure as do_structure,
+            extract_energy_features,
+            classify_segment_energy
+        )
+
+        ableton = get_ableton_connection()
+
+        # Step 1: Analyze song structure
+        logger.info(f"Analyzing song structure for {file_path}...")
+        structure = do_structure(file_path, include_beats=True, target_bpm=target_bpm)
+        bpm = structure.get('bpm', 120.0)
+        segments = structure.get('segments', [])
+
+        if not segments:
+            return json.dumps({"error": "No segments detected in audio"})
+
+        # Step 2: Extract energy features
+        logger.info(f"Extracting energy features at {bpm} BPM...")
+        energy_data = extract_energy_features(file_path, bpm)
+
+        # Step 3: Classify segment energy
+        annotated_segments = classify_segment_energy(segments, energy_data, bpm)
+
+        # Step 4: Create annotation MIDI track
+        logger.info(f"Creating annotation track '{annotation_track_name}'...")
+        track_result = ableton.send_command("create_midi_track", {"index": -1})
+        track_index = track_result.get("index")
+
+        ableton.send_command("set_track_name", {
+            "track_index": track_index,
+            "name": annotation_track_name
+        })
+
+        # Section type to MIDI pitch mapping
+        section_pitches = {
+            "intro": 24,    # C1
+            "verse": 26,    # D1
+            "pre-chorus": 27,  # D#1
+            "chorus": 29,   # F1
+            "bridge": 31,   # G1
+            "outro": 33,    # A1
+            "instrumental": 35,  # B1
+            "solo": 28,     # E1
+            "breakdown": 30,  # F#1
+            "buildup": 32,  # G#1
+        }
+        default_pitch = 24  # C1 for unknown sections
+
+        # Energy level to velocity
+        energy_velocities = {"hi": 127, "lo": 50}
+
+        # Create clips for each segment
+        created_clips = []
+        for i, seg in enumerate(annotated_segments):
+            start_beat = seg.get('start_beat', 0)
+            end_beat = seg.get('end_beat', start_beat + 16)
+            label = seg.get('label', 'unknown').lower()
+            energy_level = seg.get('energy_level', 'lo')
+            energy_direction = seg.get('energy_direction', 'same')
+
+            clip_length = end_beat - start_beat
+            if clip_length <= 0:
+                continue
+
+            # Create clip
+            clip_result = ableton.send_command("create_clip_in_arrangement", {
+                "track_index": track_index,
+                "start_time": start_beat,
+                "length": clip_length
+            })
+            clip_index = clip_result.get("clip_index", i)
+
+            # Determine note properties
+            pitch = section_pitches.get(label, default_pitch)
+            velocity = energy_velocities.get(energy_level, 50)
+
+            # Duration based on direction
+            if energy_direction == "up":
+                note_duration = clip_length
+            elif energy_direction == "down":
+                note_duration = clip_length / 2
+            else:
+                note_duration = clip_length / 4
+
+            # Add MIDI note
+            ableton.send_command("add_notes_to_arrangement_clip", {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "notes": [{
+                    "pitch": pitch,
+                    "start_time": 0,
+                    "duration": note_duration,
+                    "velocity": velocity,
+                    "mute": False
+                }]
+            })
+
+            # Set clip name with metadata
+            start_bar = int(start_beat / 4) + 1
+            end_bar = int(end_beat / 4)
+            clip_name = f"[{label.upper()}] {energy_level.capitalize()} ({energy_direction}) | bars {start_bar}-{end_bar}"
+
+            ableton.send_command("set_arrangement_clip_name", {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "name": clip_name
+            })
+
+            created_clips.append({
+                "label": label,
+                "start_beat": start_beat,
+                "end_beat": end_beat,
+                "energy_level": energy_level,
+                "energy_direction": energy_direction,
+                "clip_name": clip_name
+            })
+
+        # Step 5: Create cue points at segment boundaries
+        cue_points_created = 0
+        if create_cue_points:
+            for seg in annotated_segments:
+                start_beat = seg.get('start_beat', 0)
+                try:
+                    ableton.send_command("create_cue_point", {"time": start_beat})
+                    cue_points_created += 1
+                except Exception as e:
+                    logger.warning(f"Failed to create cue point at {start_beat}: {e}")
+
+        return json.dumps({
+            "success": True,
+            "bpm": bpm,
+            "annotation_track_index": track_index,
+            "segments": created_clips,
+            "cue_points_created": cue_points_created,
+            "energy_data_available": True  # Can call analyze_energy for raw data
+        }, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error annotating arrangement: {str(e)}")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def set_arrangement_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) -> str:
+    """
+    Set the name of an arrangement clip.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the arrangement clip
+    - name: The new name for the clip
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_arrangement_clip_name", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "name": name
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting arrangement clip name: {str(e)}")
+        return f"Error setting arrangement clip name: {str(e)}"
+
+
+@mcp.tool()
 def vocal_to_midi(ctx: Context, audio_path: str, output_midi_path: str, bpm: float = 120.0) -> str:
     """
     Convert vocal audio to MIDI based on phoneme categorization.
@@ -1670,6 +1937,232 @@ def audio_capture(ctx: Context, start_time: float, duration: float) -> str:
 # ============================================
 # GROOVE ALIGNMENT TOOLS
 # ============================================
+
+@mcp.tool()
+def create_structure_track(
+    ctx: Context,
+    file_path: str,
+    track_name: str = "Structure",
+    target_bpm: float = None,
+    create_cue_points: bool = True
+) -> str:
+    """
+    Create a structure MIDI track with energy visualization for mashup alignment.
+
+    Analyzes the audio file and creates a MIDI track with arrangement clips where:
+    - Each clip represents a song section (intro, verse, chorus, etc.)
+    - Energy meter notes visualize RMS and flux per 16th note:
+      - Pitch 36-59: RMS energy level (36=low, 59=high)
+      - Velocity 1-80: Spectral flux (1=static, 80=dynamic)
+    - Downbeat markers at pitch 72 (C5) every 4 beats for alignment
+
+    This is the streamlined tool for creating structure tracks - call it once with
+    an audio file path and it handles all analysis and MIDI creation automatically.
+
+    Parameters:
+    - file_path: Absolute path to the audio file (WAV, MP3, AIFF, etc.)
+    - track_name: Name for the MIDI track (default: "Structure")
+    - target_bpm: Lock BPM detection to this value (±1 BPM). Use when tempo is
+                  misdetected (e.g., 140 BPM detected as 81 BPM).
+    - create_cue_points: Create locators at section boundaries (default: True)
+
+    Returns JSON with track_index, clips created, and analysis summary.
+    """
+    import time as time_module
+
+    try:
+        from MCP_Server.audio_analysis import (
+            analyze_song_structure as do_structure,
+            extract_energy_features,
+        )
+
+        ableton = get_ableton_connection()
+
+        # Step 1: Analyze song structure
+        logger.info(f"Analyzing song structure for {file_path}...")
+        structure = do_structure(file_path, include_beats=True, target_bpm=target_bpm)
+        bpm = structure.get('bpm', 120.0)
+        segments = structure.get('segments', [])
+
+        if not segments:
+            return json.dumps({"error": "No segments detected in audio"})
+
+        logger.info(f"Detected BPM: {bpm}, Segments: {len(segments)}")
+
+        # Step 2: Extract energy features
+        logger.info(f"Extracting energy features at {bpm} BPM...")
+        energy_data = extract_energy_features(file_path, bpm)
+
+        # Step 3: Create MIDI track
+        logger.info(f"Creating MIDI track '{track_name}'...")
+        track_result = ableton.send_command("create_midi_track", {"index": -1})
+        track_index = track_result.get("index")
+
+        ableton.send_command("set_track_name", {
+            "track_index": track_index,
+            "name": track_name
+        })
+
+        # Step 4: Convert segments to beat positions and ensure continuous boundaries
+        # Segments have 'start' and 'end' in seconds
+        clips_data = []
+        for i, seg in enumerate(segments):
+            start_sec = seg.get('start', 0)
+            end_sec = seg.get('end', start_sec + 4)
+            label = seg.get('label', 'unknown').upper()
+
+            # Convert seconds to beats
+            start_beat = start_sec * bpm / 60.0
+            end_beat = end_sec * bpm / 60.0
+
+            # Round to nearest quarter note for clean boundaries
+            start_beat = round(start_beat * 4) / 4
+            end_beat = round(end_beat * 4) / 4
+
+            clips_data.append({
+                'label': label,
+                'start_beat': start_beat,
+                'end_beat': end_beat,
+            })
+
+        # Ensure continuous boundaries (no gaps between clips)
+        for i in range(1, len(clips_data)):
+            if clips_data[i]['start_beat'] != clips_data[i-1]['end_beat']:
+                clips_data[i]['start_beat'] = clips_data[i-1]['end_beat']
+
+        # Step 5: Create clips and add notes
+        created_clips = []
+        energy_times = energy_data['times']
+        energy_rms = energy_data['rms']
+        energy_flux = energy_data['flux']
+
+        for i, clip_data in enumerate(clips_data):
+            start_beat = clip_data['start_beat']
+            end_beat = clip_data['end_beat']
+            label = clip_data['label']
+            length = end_beat - start_beat
+
+            if length <= 0:
+                continue
+
+            # Create the clip
+            logger.info(f"Creating clip {i}: {label} at beat {start_beat}, length {length}")
+            clip_result = ableton.send_command("create_clip_in_arrangement", {
+                "track_index": track_index,
+                "start_time": start_beat,
+                "length": length
+            })
+            clip_index = clip_result.get("clip_index", i)
+
+            # Small delay to ensure clip is created
+            time_module.sleep(0.1)
+
+            # Generate energy meter notes
+            notes = []
+
+            # Downbeat markers at pitch 72 every 4 beats
+            beat = 0
+            while beat < length:
+                notes.append({
+                    "pitch": 72,  # C5
+                    "start_time": beat,
+                    "duration": 0.25,
+                    "velocity": 100,
+                    "mute": False
+                })
+                beat += 4
+
+            # Energy meter notes per 16th note
+            # Convert clip beat range to seconds for lookup
+            clip_start_sec = start_beat * 60.0 / bpm
+            clip_end_sec = end_beat * 60.0 / bpm
+
+            for j, t in enumerate(energy_times):
+                if t < clip_start_sec or t >= clip_end_sec:
+                    continue
+
+                # Convert time back to beat position within clip
+                beat_pos = (t - clip_start_sec) * bpm / 60.0
+
+                # Get energy values
+                rms_val = energy_rms[j] if j < len(energy_rms) else 0
+                flux_val = energy_flux[j] if j < len(energy_flux) else 0
+
+                # Map RMS to pitch 36-59 (24 semitones range)
+                pitch = 36 + int(rms_val * 23)
+                pitch = max(36, min(59, pitch))
+
+                # Map flux to velocity 1-80
+                velocity = 1 + int(flux_val * 79)
+                velocity = max(1, min(80, velocity))
+
+                notes.append({
+                    "pitch": pitch,
+                    "start_time": round(beat_pos, 4),
+                    "duration": 0.25,
+                    "velocity": velocity,
+                    "mute": False
+                })
+
+            # Add notes to clip in batches
+            if notes:
+                batch_size = 100
+                for batch_start in range(0, len(notes), batch_size):
+                    batch = notes[batch_start:batch_start + batch_size]
+                    ableton.send_command("add_notes_to_arrangement_clip", {
+                        "track_index": track_index,
+                        "clip_index": clip_index,
+                        "notes": batch
+                    })
+                    time_module.sleep(0.05)
+
+            # Set clip name
+            start_bar = int(start_beat / 4) + 1
+            end_bar = int(end_beat / 4)
+            clip_name = f"{label} | bars {start_bar}-{end_bar}"
+
+            ableton.send_command("set_arrangement_clip_name", {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "name": clip_name
+            })
+
+            created_clips.append({
+                "clip_index": clip_index,
+                "label": label,
+                "start_beat": start_beat,
+                "end_beat": end_beat,
+                "clip_name": clip_name,
+                "note_count": len(notes)
+            })
+
+        # Step 6: Create cue points at section boundaries
+        cue_points_created = 0
+        if create_cue_points:
+            for clip_data in clips_data:
+                start_beat = clip_data['start_beat']
+                try:
+                    ableton.send_command("create_cue_point", {"time": start_beat})
+                    cue_points_created += 1
+                except Exception as e:
+                    logger.warning(f"Failed to create cue point at {start_beat}: {e}")
+
+        return json.dumps({
+            "success": True,
+            "bpm": bpm,
+            "track_index": track_index,
+            "track_name": track_name,
+            "clips": created_clips,
+            "total_clips": len(created_clips),
+            "cue_points_created": cue_points_created,
+        }, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error creating structure track: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return json.dumps({"error": str(e)})
+
 
 @mcp.tool()
 def groove_analyze(

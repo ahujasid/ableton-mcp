@@ -198,7 +198,8 @@ class ReplicateMusicAnalyzer:
     """Client for Replicate's All-In-One Music Structure Analyzer."""
 
     # Custom model with BPM constraint support (fork of all-in-one)
-    MODEL_NAME = "jhurliman/allinone-targetbpm"
+    # Using explicit version to avoid 404 errors from version lookup API
+    MODEL_NAME = "jhurliman/allinone-targetbpm:f8657cff598c47c2c2dc2f5cdabfc26e25d099d62e9458119c16c716b0cfe259"
 
     def __init__(self, api_token: Optional[str] = None):
         self.api_token = api_token or os.environ.get('REPLICATE_API_TOKEN')
@@ -774,3 +775,231 @@ def export_warp_markers_to_file(warp_markers: list, output_path: str, format: st
 
     logger.info(f"Exported {len(warp_markers)} warp markers to {output_path}")
     return output_path
+
+
+# ============================================
+# ENERGY ANALYSIS TOOLS
+# ============================================
+
+# Frequency band definitions for energy analysis
+ENERGY_BANDS = [
+    (20, 60),      # Sub-bass
+    (60, 250),     # Bass
+    (250, 500),    # Low-mid
+    (500, 2000),   # High-mid
+    (2000, 20000), # High
+]
+
+ENERGY_BAND_NAMES = ['sub', 'bass', 'low_mid', 'high_mid', 'high']
+
+
+def extract_energy_features(file_path: str, bpm: float) -> dict:
+    """
+    Extract 8 energy features per sixteenth note.
+
+    Features (all normalized 0.0-1.0):
+    - rms: RMS Energy (overall loudness)
+    - centroid: Spectral Centroid (brightness, normalized to 0-1)
+    - flux: Spectral Flux (rate of spectral change)
+    - bands[0-4]: Sub/Bass/LowMid/HighMid/High energy
+
+    Band frequency ranges:
+    - bands[0] sub: 20-60 Hz
+    - bands[1] bass: 60-250 Hz
+    - bands[2] low_mid: 250-500 Hz
+    - bands[3] high_mid: 500-2000 Hz
+    - bands[4] high: 2000-20000 Hz
+
+    Args:
+        file_path: Path to audio file
+        bpm: Tempo in BPM (used to calculate hop length for 16th notes)
+
+    Returns:
+        Struct-of-arrays format:
+        {
+            "bpm": float,
+            "count": int,
+            "times": [float, ...],      # seconds per 16th note
+            "rms": [float, ...],
+            "centroid": [float, ...],
+            "flux": [float, ...],
+            "bands": [[float, ...], ...],  # 5 arrays
+            "global_stats": {median_rms, std_rms}
+        }
+    """
+    import librosa
+    import numpy as np
+
+    valid, error = validate_audio_file(file_path)
+    if not valid:
+        raise ValueError(error)
+
+    # Load audio at standard sample rate
+    sr = 22050
+    y, _ = librosa.load(file_path, sr=sr)
+
+    # Calculate hop length for sixteenth notes
+    # At BPM, one beat = 60/BPM seconds, one 16th = beat/4
+    sixteenth_duration = 60.0 / bpm / 4.0
+    hop_length = int(sixteenth_duration * sr)
+
+    # Ensure hop_length is at least 512 for stable analysis
+    hop_length = max(hop_length, 512)
+
+    # Frame length should be 2x hop for good overlap
+    frame_length = hop_length * 2
+
+    # RMS Energy
+    rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
+
+    # Spectral Centroid (brightness) - normalize to 0-1 range
+    centroid = librosa.feature.spectral_centroid(y=y, sr=sr, hop_length=hop_length)[0]
+    # Typical range is 0 to sr/2, normalize
+    centroid_normalized = centroid / (sr / 2)
+
+    # Spectral Flux (onset strength as proxy for spectral change)
+    flux = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
+
+    # Band-limited energy using STFT
+    n_fft = 2048
+    S = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=hop_length))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
+
+    band_energies = []
+    for low, high in ENERGY_BANDS:
+        mask = (freqs >= low) & (freqs < high)
+        if mask.sum() > 0:
+            band_energy = np.mean(S[mask, :] ** 2, axis=0)
+        else:
+            band_energy = np.zeros(S.shape[1])
+        band_energies.append(band_energy)
+
+    band_energies = np.array(band_energies)
+
+    # Normalize all features to 0-1
+    def normalize(arr):
+        arr = np.array(arr)
+        if arr.max() > 0:
+            return arr / arr.max()
+        return arr
+
+    rms_norm = normalize(rms)
+    centroid_norm = np.clip(centroid_normalized, 0, 1)
+    flux_norm = normalize(flux)
+    bands_norm = [normalize(b) for b in band_energies]
+
+    # Align all arrays to same length (minimum)
+    min_len = min(len(rms_norm), len(centroid_norm), len(flux_norm), min(len(b) for b in bands_norm))
+    rms_norm = rms_norm[:min_len]
+    centroid_norm = centroid_norm[:min_len]
+    flux_norm = flux_norm[:min_len]
+    bands_norm = [b[:min_len] for b in bands_norm]
+
+    # Generate time array
+    times = librosa.frames_to_time(np.arange(min_len), sr=sr, hop_length=hop_length)
+
+    # Calculate global stats for classification
+    global_stats = {
+        "median_rms": float(np.median(rms_norm)),
+        "std_rms": float(np.std(rms_norm)),
+        "median_centroid": float(np.median(centroid_norm)),
+        "median_flux": float(np.median(flux_norm)),
+    }
+
+    return {
+        "bpm": bpm,
+        "hop_length_samples": hop_length,
+        "count": min_len,
+        "times": [round(float(t), 4) for t in times],
+        "rms": [round(float(v), 4) for v in rms_norm],
+        "centroid": [round(float(v), 4) for v in centroid_norm],
+        "flux": [round(float(v), 4) for v in flux_norm],
+        "bands": [[round(float(v), 4) for v in b] for b in bands_norm],
+        "global_stats": global_stats,
+    }
+
+
+def classify_segment_energy(
+    segments: list,
+    energy_data: dict,
+    bpm: float
+) -> list:
+    """
+    Classify each segment with energy level and direction.
+
+    Energy level (relative to track baseline):
+    - hi: segment mean RMS > global median RMS
+    - lo: segment mean RMS <= global median RMS
+
+    Energy direction (relative to previous segment):
+    - up: this segment's mean > previous segment's mean
+    - down: this segment's mean < previous segment's mean
+    - same: first segment or negligible change (<5% difference)
+
+    Args:
+        segments: List of segment dicts with start_beat, end_beat, label
+        energy_data: Output from extract_energy_features()
+        bpm: Tempo in BPM
+
+    Returns:
+        List of segments with added energy_level and energy_direction fields
+    """
+    import numpy as np
+
+    times = np.array(energy_data['times'])
+    rms = np.array(energy_data['rms'])
+    global_median = energy_data['global_stats']['median_rms']
+
+    annotated = []
+    prev_mean = None
+
+    for seg in segments:
+        # Convert beat positions to time
+        start_time = seg['start_beat'] * 60.0 / bpm / 4.0  # start_beat is in quarter notes
+        end_time = seg['end_beat'] * 60.0 / bpm / 4.0
+
+        # Actually, start_beat from analyze_song_structure is already in beats
+        # Let me check the segment format - it should have start (seconds) and start_beat
+        if 'start' in seg:
+            start_time = seg['start']
+            end_time = seg['end']
+        else:
+            # Convert beats to seconds (assuming quarter note beats)
+            start_time = seg['start_beat'] * 60.0 / bpm
+            end_time = seg['end_beat'] * 60.0 / bpm
+
+        # Find frames within this segment
+        mask = (times >= start_time) & (times < end_time)
+        segment_rms = rms[mask]
+
+        if len(segment_rms) > 0:
+            seg_mean = float(np.mean(segment_rms))
+        else:
+            seg_mean = global_median
+
+        # Classify level
+        energy_level = "hi" if seg_mean > global_median else "lo"
+
+        # Classify direction
+        if prev_mean is None:
+            energy_direction = "same"
+        else:
+            diff_pct = (seg_mean - prev_mean) / max(prev_mean, 0.001)
+            if diff_pct > 0.05:
+                energy_direction = "up"
+            elif diff_pct < -0.05:
+                energy_direction = "down"
+            else:
+                energy_direction = "same"
+
+        prev_mean = seg_mean
+
+        # Create annotated segment
+        annotated_seg = dict(seg)
+        annotated_seg['energy_level'] = energy_level
+        annotated_seg['energy_direction'] = energy_direction
+        annotated_seg['mean_rms'] = round(seg_mean, 4)
+
+        annotated.append(annotated_seg)
+
+    return annotated
