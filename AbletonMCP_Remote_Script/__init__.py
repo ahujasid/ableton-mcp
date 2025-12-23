@@ -266,7 +266,7 @@ class AbletonMCP(ControlSurface):
                                  "set_clip_start_end", "clear_clip_notes",
                                  "create_cue_point", "delete_cue_point",
                                  "set_playhead_position",
-                                 "split_arrangement_clip", "move_arrangement_clip",
+                                 "split_arrangement_clip", "split_arrangement_clip_multi", "move_arrangement_clip",
                                  "set_arrangement_clip_file_position", "duplicate_arrangement_clip_to_time",
                                  "set_arrangement_clip_name", "clear_arrangement_clip_notes"]:
                 # Use a thread-safe approach with a response queue
@@ -439,6 +439,11 @@ class AbletonMCP(ControlSurface):
                             clip_index = params.get("clip_index", 0)
                             split_time = params.get("split_time", 0.0)
                             result = self._split_arrangement_clip(track_index, clip_index, split_time)
+                        elif command_type == "split_arrangement_clip_multi":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            split_times = params.get("split_times", [])
+                            result = self._split_arrangement_clip_multi(track_index, clip_index, split_times)
                         elif command_type == "move_arrangement_clip":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
@@ -630,7 +635,7 @@ class AbletonMCP(ControlSurface):
                     "is_midi_track": track.has_midi_input,
                     "mute": track.mute,
                     "solo": track.solo,
-                    "arm": track.arm,
+                    "arm": track.arm if track.can_be_armed else False,
                     "volume": track.mixer_device.volume.value,
                     "panning": track.mixer_device.panning.value,
                     "clip_slots": clip_slots,
@@ -1160,6 +1165,36 @@ class AbletonMCP(ControlSurface):
             if split_time <= original_start or split_time >= original_end:
                 raise ValueError("split_time must be within clip bounds ({0} to {1})".format(original_start, original_end))
 
+            # Safety check: look for clips to the right that could be corrupted
+            # When we duplicate, the new clip will extend from split_time to split_time + clip_length
+            # which could overwrite existing clips
+            clip_length = original_end - original_start
+            duplicate_end = split_time + clip_length  # Where the duplicate will extend to
+
+            clips_at_risk = []
+            for i, c in enumerate(track.arrangement_clips):
+                if i == clip_index:
+                    continue
+                # Check if this clip overlaps with where the duplicate will land
+                # A clip is at risk if it starts after split_time and before duplicate_end
+                if c.start_time >= split_time and c.start_time < duplicate_end:
+                    clips_at_risk.append({
+                        "index": i,
+                        "name": c.name,
+                        "start": c.start_time,
+                        "end": c.end_time
+                    })
+
+            if clips_at_risk:
+                raise ValueError(
+                    "Cannot split: {} clip(s) to the right would be corrupted by the duplicate operation. "
+                    "Use split_arrangement_clip_multi for multiple splits, or ensure no clips exist between "
+                    "beat {} and {}. At-risk clips: {}".format(
+                        len(clips_at_risk), split_time, duplicate_end,
+                        ", ".join(["{} ({}-{})".format(c["name"], c["start"], c["end"]) for c in clips_at_risk])
+                    )
+                )
+
             # For audio clips, we need to calculate the file position offset
             is_audio = not clip.is_midi_clip
 
@@ -1189,12 +1224,32 @@ class AbletonMCP(ControlSurface):
             if not new_clip:
                 raise RuntimeError("Could not find duplicated clip")
 
-            # For audio clips, adjust the loop_start of the new clip
+            # For audio clips, adjust the loop_start of the new clip so it plays
+            # from the correct position in the audio file
             if is_audio and hasattr(new_clip, 'loop_start'):
                 new_clip.loop_start = split_file_position
 
-            # Note: We can't easily trim the original clip's end in arrangement view
-            # The user may need to manually adjust or we need to delete and recreate
+            # Trim the NEW clip to end at original_end (not extend beyond)
+            # The new clip's length should be: original_end - split_time
+            new_clip_length = original_end - split_time
+            if hasattr(new_clip, 'loop_end'):
+                new_clip.loop_end = split_file_position + new_clip_length
+            if hasattr(new_clip, 'end_marker'):
+                # end_marker is relative to clip content start
+                new_clip.end_marker = (new_clip.start_marker if hasattr(new_clip, 'start_marker') else 0) + new_clip_length
+
+            # Trim the original clip to end at split_time
+            # For arrangement clips, we need to set both end_marker and loop_end
+            # The end position in arrangement = start_time + (end_marker - start_marker)
+            split_marker_position = split_time - original_start + (clip.start_marker if hasattr(clip, 'start_marker') else 0)
+
+            if hasattr(clip, 'end_marker'):
+                clip.end_marker = split_marker_position
+            if hasattr(clip, 'loop_end'):
+                clip.loop_end = split_marker_position
+
+            # Re-fetch clip info after modifications
+            updated_original_end = clip.end_time if hasattr(clip, 'end_time') else original_end
 
             return {
                 "success": True,
@@ -1202,7 +1257,7 @@ class AbletonMCP(ControlSurface):
                     "index": clip_index,
                     "name": clip_name,
                     "start": original_start,
-                    "end": original_end
+                    "end": updated_original_end
                 },
                 "new_clip": {
                     "index": new_clip_index,
@@ -1210,11 +1265,157 @@ class AbletonMCP(ControlSurface):
                     "start": new_clip.start_time,
                     "end": new_clip.end_time
                 },
-                "split_time": split_time,
-                "note": "Original clip end may need manual adjustment"
+                "split_time": split_time
             }
         except Exception as e:
             self.log_message("Error splitting arrangement clip: " + str(e))
+            raise
+
+    def _split_arrangement_clip_multi(self, track_index, clip_index, split_times):
+        """
+        Split an arrangement clip at multiple times in a single operation.
+
+        This is more reliable than calling split multiple times because it
+        processes all splits in the correct order (left to right) and ensures
+        each new clip is properly trimmed before the next split.
+
+        Args:
+            track_index: Index of the track containing the clip
+            clip_index: Index of the clip to split
+            split_times: List of beat positions to split at
+
+        Returns:
+            Dict with list of resulting clips
+        """
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if not hasattr(track, 'arrangement_clips'):
+                raise RuntimeError("arrangement_clips not available (requires Live 11+)")
+
+            if clip_index < 0 or clip_index >= len(track.arrangement_clips):
+                raise IndexError("Clip index out of range")
+
+            # Get original clip info
+            original_clip = track.arrangement_clips[clip_index]
+            original_start = original_clip.start_time
+            original_end = original_clip.end_time
+            original_name = original_clip.name
+            is_audio = not original_clip.is_midi_clip
+
+            # Get audio-specific info
+            original_loop_start = 0
+            if is_audio and hasattr(original_clip, 'loop_start'):
+                original_loop_start = original_clip.loop_start
+
+            # Sort and validate split times
+            split_times = sorted([t for t in split_times if original_start < t < original_end])
+
+            if not split_times:
+                return {"success": True, "clips": [], "message": "No valid split points"}
+
+            self.log_message("Splitting clip at {} points: {}".format(len(split_times), split_times))
+
+            # Process splits from LEFT to RIGHT
+            # This ensures new clips extend into empty space (to the right)
+            # where there's nothing to corrupt
+
+            created_clips = []
+            final_end = original_end  # Track the rightmost boundary
+
+            for split_time in split_times:
+                # Find the clip that contains this split point
+                # It will be the rightmost clip (extends to final_end)
+                target_clip = None
+                target_clip_index = None
+
+                for i, c in enumerate(track.arrangement_clips):
+                    if c.start_time <= split_time < c.end_time:
+                        target_clip = c
+                        target_clip_index = i
+                        break
+
+                if not target_clip:
+                    self.log_message("Warning: No clip found containing split time {}".format(split_time))
+                    continue
+
+                clip_start = target_clip.start_time
+                clip_end = target_clip.end_time
+
+                # Calculate file position for audio clips
+                if is_audio:
+                    clip_loop_start = target_clip.loop_start if hasattr(target_clip, 'loop_start') else 0
+                    split_file_position = clip_loop_start + (split_time - clip_start)
+
+                # Duplicate the clip to the split position
+                track.duplicate_clip_to_arrangement(target_clip, split_time)
+
+                # Find the new clip
+                new_clip = None
+                new_clip_index = None
+                for i, c in enumerate(track.arrangement_clips):
+                    if abs(c.start_time - split_time) < 0.001 and i != target_clip_index:
+                        new_clip = c
+                        new_clip_index = i
+                        break
+
+                if not new_clip:
+                    self.log_message("Warning: Could not find duplicated clip at {}".format(split_time))
+                    continue
+
+                # CRITICAL: Trim the NEW clip to end at the correct position
+                # The new clip should extend from split_time to clip_end (not beyond)
+                new_clip_length = clip_end - split_time
+
+                if is_audio and hasattr(new_clip, 'loop_start'):
+                    new_clip.loop_start = split_file_position
+
+                if hasattr(new_clip, 'loop_end'):
+                    new_clip.loop_end = split_file_position + new_clip_length
+                if hasattr(new_clip, 'end_marker'):
+                    new_start_marker = new_clip.start_marker if hasattr(new_clip, 'start_marker') else 0
+                    new_clip.end_marker = new_start_marker + new_clip_length
+
+                # Trim the original/target clip to end at split_time
+                target_clip_length = split_time - clip_start
+                target_loop_start = target_clip.loop_start if (is_audio and hasattr(target_clip, 'loop_start')) else 0
+
+                if hasattr(target_clip, 'loop_end'):
+                    target_clip.loop_end = target_loop_start + target_clip_length
+                if hasattr(target_clip, 'end_marker'):
+                    target_start_marker = target_clip.start_marker if hasattr(target_clip, 'start_marker') else 0
+                    target_clip.end_marker = target_start_marker + target_clip_length
+
+                self.log_message("Split at {}: [{}-{}] and [{}-{}]".format(
+                    split_time, clip_start, split_time, split_time, clip_end))
+
+            # Gather final clip info
+            result_clips = []
+            for i, c in enumerate(track.arrangement_clips):
+                if c.start_time >= original_start and c.end_time <= original_end + 1:
+                    result_clips.append({
+                        "index": i,
+                        "name": c.name,
+                        "start": c.start_time,
+                        "end": c.end_time,
+                        "length": c.end_time - c.start_time
+                    })
+
+            result_clips.sort(key=lambda x: x["start"])
+
+            return {
+                "success": True,
+                "original_start": original_start,
+                "original_end": original_end,
+                "split_count": len(split_times),
+                "clips": result_clips
+            }
+
+        except Exception as e:
+            self.log_message("Error in multi-split: " + str(e))
             raise
 
     def _move_arrangement_clip(self, track_index, clip_index, new_start_time):

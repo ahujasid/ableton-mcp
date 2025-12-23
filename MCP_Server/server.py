@@ -819,6 +819,35 @@ def split_arrangement_clip(ctx: Context, track_index: int, clip_index: int, spli
 
 
 @mcp.tool()
+def split_arrangement_clip_multi(ctx: Context, track_index: int, clip_index: int, split_times: list) -> str:
+    """
+    Split an arrangement clip at multiple times in a single operation.
+
+    More reliable than calling split multiple times - handles all splits in the
+    correct order (left to right) to prevent clip corruption from overlapping
+    duplicates.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the arrangement clip to split
+    - split_times: List of beat positions to split at (will be sorted automatically)
+
+    Returns JSON with list of resulting clips after all splits.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("split_arrangement_clip_multi", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "split_times": split_times
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error in multi-split: {str(e)}")
+        return f"Error in multi-split: {str(e)}"
+
+
+@mcp.tool()
 def move_arrangement_clip(ctx: Context, track_index: int, clip_index: int, new_start_time: float) -> str:
     """
     Move an arrangement clip to a new start time.
