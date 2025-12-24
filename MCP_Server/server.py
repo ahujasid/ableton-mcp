@@ -1074,6 +1074,143 @@ def set_device_parameter(ctx: Context, track_index: int, device_index: int, para
 
 
 @mcp.tool()
+def set_eq_bands(ctx: Context, track_index: int, device_index: int, bands: list, mode: str = "A") -> str:
+    """
+    Set multiple EQ Eight bands in a single call.
+
+    Parameters:
+    - track_index: Track containing the EQ Eight
+    - device_index: Index of the EQ Eight device
+    - bands: List of band settings, each with:
+        - band: Band number 1-8 (required)
+        - freq: Frequency in Hz (optional, 20-20000)
+        - gain: Gain in dB (optional, -15 to +15)
+        - q: Q/resonance (optional, 0.1 to 18)
+        - type: Filter type (optional, 0-7: LowCut, LowShelf, Bell, Notch, HighShelf, HighCut, etc.)
+        - enabled: Band on/off (optional, boolean)
+    - mode: "A" or "B" for EQ Eight's dual mode (default "A")
+
+    Example:
+        set_eq_bands(0, 1, [
+            {"band": 3, "freq": 2500, "gain": -3.0, "q": 1.0},
+            {"band": 4, "freq": 5000, "gain": -2.0, "q": 0.7}
+        ])
+
+    Frequency bands reference:
+    - Sub: 20-60 Hz
+    - Bass: 60-250 Hz
+    - Low Mid: 250-500 Hz
+    - Mid: 500-2000 Hz
+    - Upper Mid: 2000-4000 Hz
+    - Presence: 4000-6000 Hz
+    - Brilliance: 6000-12000 Hz
+    - Air: 12000-20000 Hz
+    """
+    import math
+
+    def hz_to_normalized(hz: float) -> float:
+        """Convert Hz to EQ Eight's 0-1 normalized frequency."""
+        # EQ Eight uses log scale from ~10 Hz to ~22050 Hz
+        min_freq = 10.0
+        max_freq = 22050.0
+        hz = max(min_freq, min(max_freq, hz))
+        return math.log(hz / min_freq) / math.log(max_freq / min_freq)
+
+    def q_to_normalized(q: float) -> float:
+        """Convert Q value to EQ Eight's 0-1 normalized resonance."""
+        # EQ Eight Q range is roughly 0.1 to 18, displayed as resonance 0-1
+        # This is approximate - EQ Eight's exact mapping is proprietary
+        q = max(0.1, min(18.0, q))
+        return math.log(q / 0.1) / math.log(18.0 / 0.1)
+
+    try:
+        ableton = get_ableton_connection()
+
+        # Validate mode
+        mode_offset = 0 if mode.upper() == "A" else 5
+
+        results = []
+        errors = []
+
+        for band_setting in bands:
+            band_num = band_setting.get("band")
+            if band_num is None or band_num < 1 or band_num > 8:
+                errors.append(f"Invalid band number: {band_num}")
+                continue
+
+            # Calculate base parameter index for this band
+            # Band 1 A starts at index 4, each band has 10 params (5 for A, 5 for B)
+            base_idx = 4 + (band_num - 1) * 10 + mode_offset
+
+            band_results = []
+
+            # Set enabled (Filter On)
+            if "enabled" in band_setting:
+                value = 1.0 if band_setting["enabled"] else 0.0
+                ableton.send_command("set_device_parameter", {
+                    "track_index": track_index,
+                    "device_index": device_index,
+                    "parameter_index": base_idx + 0,
+                    "value": value
+                })
+                band_results.append(f"enabled={band_setting['enabled']}")
+
+            # Set filter type
+            if "type" in band_setting:
+                ableton.send_command("set_device_parameter", {
+                    "track_index": track_index,
+                    "device_index": device_index,
+                    "parameter_index": base_idx + 1,
+                    "value": float(band_setting["type"])
+                })
+                band_results.append(f"type={band_setting['type']}")
+
+            # Set frequency
+            if "freq" in band_setting:
+                norm_freq = hz_to_normalized(band_setting["freq"])
+                ableton.send_command("set_device_parameter", {
+                    "track_index": track_index,
+                    "device_index": device_index,
+                    "parameter_index": base_idx + 2,
+                    "value": norm_freq
+                })
+                band_results.append(f"freq={band_setting['freq']}Hz")
+
+            # Set gain
+            if "gain" in band_setting:
+                ableton.send_command("set_device_parameter", {
+                    "track_index": track_index,
+                    "device_index": device_index,
+                    "parameter_index": base_idx + 3,
+                    "value": float(band_setting["gain"])
+                })
+                band_results.append(f"gain={band_setting['gain']}dB")
+
+            # Set Q/resonance
+            if "q" in band_setting:
+                norm_q = q_to_normalized(band_setting["q"])
+                ableton.send_command("set_device_parameter", {
+                    "track_index": track_index,
+                    "device_index": device_index,
+                    "parameter_index": base_idx + 4,
+                    "value": norm_q
+                })
+                band_results.append(f"Q={band_setting['q']}")
+
+            if band_results:
+                results.append(f"Band {band_num}: {', '.join(band_results)}")
+
+        output = f"Updated EQ Eight on track {track_index}:\n" + "\n".join(results)
+        if errors:
+            output += f"\nErrors: {', '.join(errors)}"
+        return output
+
+    except Exception as e:
+        logger.error(f"Error setting EQ bands: {str(e)}")
+        return f"Error setting EQ bands: {str(e)}"
+
+
+@mcp.tool()
 def get_compressor_sidechain_routing(ctx: Context, track_index: int, device_index: int) -> str:
     """
     Get sidechain routing info for a Compressor device.
