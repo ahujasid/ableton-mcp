@@ -901,6 +901,40 @@ def align_clips_to_groove(ctx: Context, track_index: int, shift_beats: float) ->
 
 
 @mcp.tool()
+def batch_move_clips(ctx: Context, moves: list) -> str:
+    """
+    Move multiple arrangement clips in a single operation.
+
+    More efficient than calling move_arrangement_clip multiple times,
+    and ensures atomic updates when moving related clips.
+
+    Parameters:
+    - moves: List of move operations, each with:
+        - track_index: Track containing the clip
+        - clip_index: Index of clip in arrangement
+        - new_start: New start time in beats
+
+    Example:
+        batch_move_clips([
+            {"track_index": 0, "clip_index": 0, "new_start": 8.0},
+            {"track_index": 0, "clip_index": 1, "new_start": 16.0},
+            {"track_index": 1, "clip_index": 0, "new_start": 8.0}
+        ])
+
+    Returns summary with successful moves and any errors.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("batch_move_clips", {
+            "moves": moves
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error in batch move clips: {str(e)}")
+        return f"Error in batch move clips: {str(e)}"
+
+
+@mcp.tool()
 def set_arrangement_clip_file_position(
     ctx: Context,
     track_index: int,
@@ -1862,6 +1896,51 @@ def analyze_audio_describe(ctx: Context, file_path: str, prompt: str) -> str:
     except Exception as e:
         logger.error(f"Error analyzing audio: {str(e)}")
         return f"Error analyzing audio: {str(e)}"
+
+
+@mcp.tool()
+def analyze_frequency_clash(
+    ctx: Context,
+    file_a: str,
+    file_b: str,
+    start_time: float = None,
+    end_time: float = None
+) -> str:
+    """
+    Analyze frequency clashes between two audio files.
+
+    Identifies frequency bands where both tracks have significant energy,
+    which causes masking and muddy mixes. Returns recommendations for EQ cuts.
+
+    Parameters:
+    - file_a: Path to first audio file (e.g., instrumental)
+    - file_b: Path to second audio file (e.g., vocals)
+    - start_time: Optional start time in seconds for analysis window
+    - end_time: Optional end time in seconds for analysis window
+
+    Returns JSON with:
+    - bands: Energy analysis for each frequency band (Sub through Air)
+    - clash_bands: Bands where both tracks compete significantly
+    - recommendations: Suggested EQ cuts with dB amounts
+
+    Example output recommendation:
+    "Cut 2.1dB on track B in Presence range (2500-6000 Hz)"
+    """
+    try:
+        from MCP_Server.audio_analysis import analyze_frequency_clash as do_analysis
+
+        time_range = None
+        if start_time is not None and end_time is not None:
+            time_range = (start_time, end_time)
+
+        result = do_analysis(file_a, file_b, time_range=time_range)
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        logger.error(f"Frequency clash analysis error: {str(e)}")
+        return f"Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Error analyzing frequency clash: {str(e)}")
+        return f"Error analyzing frequency clash: {str(e)}"
 
 
 @mcp.tool()

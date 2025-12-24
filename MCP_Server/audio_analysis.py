@@ -1122,3 +1122,157 @@ def classify_segment_energy(
         annotated.append(annotated_seg)
 
     return annotated
+
+
+# ============================================
+# FREQUENCY CLASH ANALYSIS
+# ============================================
+
+def analyze_frequency_clash(
+    file_a: str,
+    file_b: str,
+    time_range: tuple = None,
+    n_bands: int = 8
+) -> dict:
+    """
+    Analyze frequency clashes between two audio files.
+
+    Identifies frequency bands where both tracks have significant energy,
+    which can cause masking and muddy mixes.
+
+    Args:
+        file_a: Path to first audio file (e.g., instrumental)
+        file_b: Path to second audio file (e.g., vocals)
+        time_range: Optional (start_sec, end_sec) to analyze a specific section
+        n_bands: Number of frequency bands to analyze (default 8)
+
+    Returns:
+        dict with:
+        - bands: List of frequency band analyses
+        - clash_bands: Bands with significant overlap (clash score > 0.5)
+        - recommendations: Suggested EQ adjustments
+    """
+    import librosa
+    import numpy as np
+
+    # Validate files
+    valid_a, error_a = validate_audio_file(file_a)
+    if not valid_a:
+        raise ValueError(f"File A: {error_a}")
+
+    valid_b, error_b = validate_audio_file(file_b)
+    if not valid_b:
+        raise ValueError(f"File B: {error_b}")
+
+    # Load audio files
+    y_a, sr = librosa.load(file_a, sr=22050)
+    y_b, _ = librosa.load(file_b, sr=22050)
+
+    # Trim to time range if specified
+    if time_range:
+        start_sample = int(time_range[0] * sr)
+        end_sample = int(time_range[1] * sr)
+        y_a = y_a[start_sample:end_sample]
+        y_b = y_b[start_sample:end_sample]
+
+    # Make same length (pad shorter one)
+    max_len = max(len(y_a), len(y_b))
+    if len(y_a) < max_len:
+        y_a = np.pad(y_a, (0, max_len - len(y_a)))
+    if len(y_b) < max_len:
+        y_b = np.pad(y_b, (0, max_len - len(y_b)))
+
+    # Compute mel spectrograms
+    n_mels = n_bands * 4  # More resolution for better band splitting
+    S_a = librosa.feature.melspectrogram(y=y_a, sr=sr, n_mels=n_mels)
+    S_b = librosa.feature.melspectrogram(y=y_b, sr=sr, n_mels=n_mels)
+
+    # Convert to dB
+    S_a_db = librosa.power_to_db(S_a, ref=np.max)
+    S_b_db = librosa.power_to_db(S_b, ref=np.max)
+
+    # Define frequency band edges (in Hz)
+    # Using perceptually meaningful bands
+    band_edges = [20, 60, 150, 400, 1000, 2500, 6000, 12000, 20000]
+    band_names = ["Sub", "Bass", "Low Mid", "Mid", "Upper Mid", "Presence", "Brilliance", "Air"]
+
+    # Get mel frequencies
+    mel_freqs = librosa.mel_frequencies(n_mels=n_mels, fmin=0, fmax=sr/2)
+
+    bands = []
+    clash_bands = []
+
+    for i in range(min(n_bands, len(band_names))):
+        low_freq = band_edges[i]
+        high_freq = band_edges[i + 1]
+        band_name = band_names[i]
+
+        # Find mel bins for this frequency range
+        low_bin = np.searchsorted(mel_freqs, low_freq)
+        high_bin = np.searchsorted(mel_freqs, high_freq)
+
+        if low_bin >= high_bin:
+            continue
+
+        # Average energy in this band for each track
+        energy_a = np.mean(S_a_db[low_bin:high_bin, :])
+        energy_b = np.mean(S_b_db[low_bin:high_bin, :])
+
+        # Normalize to 0-1 scale (assuming -80 to 0 dB range)
+        norm_a = (energy_a + 80) / 80
+        norm_b = (energy_b + 80) / 80
+        norm_a = max(0, min(1, norm_a))
+        norm_b = max(0, min(1, norm_b))
+
+        # Clash score: geometric mean of both energies
+        # High when both tracks have significant energy in this band
+        clash_score = np.sqrt(norm_a * norm_b)
+
+        # Correlation in this band over time
+        band_a = S_a_db[low_bin:high_bin, :].mean(axis=0)
+        band_b = S_b_db[low_bin:high_bin, :].mean(axis=0)
+        if np.std(band_a) > 0 and np.std(band_b) > 0:
+            correlation = np.corrcoef(band_a, band_b)[0, 1]
+        else:
+            correlation = 0
+
+        band_info = {
+            "name": band_name,
+            "freq_range": f"{low_freq}-{high_freq} Hz",
+            "energy_a": round(float(norm_a), 3),
+            "energy_b": round(float(norm_b), 3),
+            "clash_score": round(float(clash_score), 3),
+            "correlation": round(float(correlation), 3)
+        }
+
+        bands.append(band_info)
+
+        if clash_score > 0.5:
+            clash_bands.append(band_info)
+
+    # Generate recommendations
+    recommendations = []
+    for band in clash_bands:
+        # Recommend cutting the track with less energy in this band
+        if band["energy_a"] > band["energy_b"]:
+            cut_track = "B"
+            cut_amount = round((band["clash_score"] - 0.5) * 6, 1)  # 0-3 dB
+        else:
+            cut_track = "A"
+            cut_amount = round((band["clash_score"] - 0.5) * 6, 1)
+
+        recommendations.append({
+            "band": band["name"],
+            "freq_range": band["freq_range"],
+            "action": f"Cut {cut_amount}dB on track {cut_track}",
+            "reason": f"Both tracks compete in {band['name']} range (clash score: {band['clash_score']})"
+        })
+
+    return {
+        "file_a": file_a,
+        "file_b": file_b,
+        "bands": bands,
+        "clash_bands": clash_bands,
+        "clash_count": len(clash_bands),
+        "recommendations": recommendations
+    }

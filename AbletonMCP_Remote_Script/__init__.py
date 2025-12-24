@@ -281,7 +281,9 @@ class AbletonMCP(ControlSurface):
                                  "insert_chain", "delete_chain", "set_chain_name", "set_chain_volume",
                                  "set_chain_mute", "insert_device_to_chain",
                                  # Sidechain routing
-                                 "set_compressor_sidechain_routing"]:
+                                 "set_compressor_sidechain_routing",
+                                 # Batch operations
+                                 "batch_move_clips"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -372,6 +374,9 @@ class AbletonMCP(ControlSurface):
                             routing_type = params.get("routing_type", None)
                             routing_channel = params.get("routing_channel", None)
                             result = self._set_compressor_sidechain_routing(track_index, device_index, routing_type, routing_channel)
+                        elif command_type == "batch_move_clips":
+                            moves = params.get("moves", [])
+                            result = self._batch_move_clips(moves)
                         # Scene operations
                         elif command_type == "create_scene":
                             index = params.get("index", -1)
@@ -1592,6 +1597,89 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error aligning clips to groove: " + str(e))
+            raise
+
+    def _batch_move_clips(self, moves):
+        """
+        Move multiple arrangement clips in a single operation.
+
+        Args:
+            moves: List of dicts, each with:
+                - track_index: Track containing the clip
+                - clip_index: Index of clip in arrangement
+                - new_start: New start time in beats
+
+        Returns dict with list of successful moves and any errors.
+        """
+        try:
+            results = []
+            errors = []
+
+            for i, move in enumerate(moves):
+                try:
+                    track_index = move.get("track_index")
+                    clip_index = move.get("clip_index")
+                    new_start = move.get("new_start")
+
+                    if track_index is None or clip_index is None or new_start is None:
+                        errors.append({
+                            "move_index": i,
+                            "error": "Missing required field (track_index, clip_index, or new_start)"
+                        })
+                        continue
+
+                    if track_index < 0 or track_index >= len(self._song.tracks):
+                        errors.append({
+                            "move_index": i,
+                            "error": "Track index out of range"
+                        })
+                        continue
+
+                    track = self._song.tracks[track_index]
+
+                    if not hasattr(track, 'arrangement_clips'):
+                        errors.append({
+                            "move_index": i,
+                            "error": "arrangement_clips not available"
+                        })
+                        continue
+
+                    if clip_index < 0 or clip_index >= len(track.arrangement_clips):
+                        errors.append({
+                            "move_index": i,
+                            "error": "Clip index out of range"
+                        })
+                        continue
+
+                    clip = track.arrangement_clips[clip_index]
+                    old_start = clip.start_time
+                    clip.start_time = new_start
+
+                    results.append({
+                        "move_index": i,
+                        "track_index": track_index,
+                        "track_name": track.name,
+                        "clip_index": clip_index,
+                        "clip_name": clip.name,
+                        "old_start": old_start,
+                        "new_start": new_start
+                    })
+
+                except Exception as e:
+                    errors.append({
+                        "move_index": i,
+                        "error": str(e)
+                    })
+
+            return {
+                "success": len(errors) == 0,
+                "moves_requested": len(moves),
+                "moves_completed": len(results),
+                "results": results,
+                "errors": errors if errors else None
+            }
+        except Exception as e:
+            self.log_message("Error in batch move clips: " + str(e))
             raise
 
     def _set_arrangement_clip_file_position(self, track_index, clip_index, start_marker=None, end_marker=None, loop_start=None, loop_end=None):
