@@ -1039,6 +1039,121 @@ def set_device_parameter(ctx: Context, track_index: int, device_index: int, para
         return f"Error setting device parameter: {str(e)}"
 
 
+@mcp.tool()
+def get_compressor_sidechain_routing(ctx: Context, track_index: int, device_index: int) -> str:
+    """
+    Get sidechain routing info for a Compressor device.
+
+    Parameters:
+    - track_index: The index of the track containing the Compressor
+    - device_index: The index of the Compressor device on the track
+
+    Returns available routing types/channels and current routing selection.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_compressor_sidechain_routing", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting compressor sidechain routing: {str(e)}")
+        return f"Error getting compressor sidechain routing: {str(e)}"
+
+
+@mcp.tool()
+def set_compressor_sidechain_routing(ctx: Context, track_index: int, device_index: int, routing_type: str = None, routing_channel: str = None) -> str:
+    """
+    Set sidechain routing for a Compressor device.
+
+    Parameters:
+    - track_index: The index of the track containing the Compressor
+    - device_index: The index of the Compressor device on the track
+    - routing_type: The display name of the routing type (e.g., track name like "3-VOCALS")
+    - routing_channel: The display name of the routing channel (e.g., "Post FX")
+
+    Use get_compressor_sidechain_routing first to see available options.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_compressor_sidechain_routing", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "routing_type": routing_type,
+            "routing_channel": routing_channel
+        })
+        output = f"Updated sidechain routing on {result.get('device_name', 'Compressor')}"
+        if "new_routing_type" in result:
+            output += f"\n  Type: {result['new_routing_type']}"
+        if "new_routing_channel" in result:
+            output += f"\n  Channel: {result['new_routing_channel']}"
+        return output
+    except Exception as e:
+        logger.error(f"Error setting compressor sidechain routing: {str(e)}")
+        return f"Error setting compressor sidechain routing: {str(e)}"
+
+
+@mcp.tool()
+def setup_sidechain(ctx: Context, target_track: int, target_device: int, source_track: int, source_channel: str = "Post FX") -> str:
+    """
+    Configure sidechain routing on a Compressor to use audio from another track.
+
+    This is a convenience tool that:
+    1. Gets the source track name
+    2. Sets the Compressor's sidechain input to that track
+    3. Enables sidechain (S/C On parameter)
+
+    Parameters:
+    - target_track: Track index containing the Compressor to configure
+    - target_device: Device index of the Compressor on target_track
+    - source_track: Track index to use as sidechain source (e.g., vocals)
+    - source_channel: Channel type - "Post FX" (default) or "Pre FX"
+
+    Example: setup_sidechain(0, 0, 2) - sets track 0's first Compressor to sidechain from track 2
+    """
+    try:
+        ableton = get_ableton_connection()
+
+        # Get source track name
+        track_info = ableton.send_command("get_track_info", {"track_index": source_track})
+        source_track_name = track_info.get("name", f"{source_track + 1}-Audio")
+
+        # Set sidechain routing
+        result = ableton.send_command("set_compressor_sidechain_routing", {
+            "track_index": target_track,
+            "device_index": target_device,
+            "routing_type": source_track_name,
+            "routing_channel": source_channel
+        })
+
+        # Enable sidechain (S/C On is typically parameter index 20)
+        # First get device parameters to find S/C On
+        params = ableton.send_command("get_device_parameters", {
+            "track_index": target_track,
+            "device_index": target_device
+        })
+
+        sc_on_index = None
+        for p in params.get("parameters", []):
+            if p.get("name") == "S/C On":
+                sc_on_index = p.get("index")
+                break
+
+        if sc_on_index is not None:
+            ableton.send_command("set_device_parameter", {
+                "track_index": target_track,
+                "device_index": target_device,
+                "parameter_index": sc_on_index,
+                "value": 1.0
+            })
+
+        return f"Configured sidechain on {result.get('device_name', 'Compressor')}:\n  Source: {source_track_name} ({source_channel})\n  Sidechain: Enabled"
+    except Exception as e:
+        logger.error(f"Error setting up sidechain: {str(e)}")
+        return f"Error setting up sidechain: {str(e)}"
+
+
 # ============================================
 # RACK/CHAIN OPERATIONS
 # ============================================

@@ -256,6 +256,10 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 device_index = params.get("device_index", 0)
                 response["result"] = self._get_rack_chains(track_index, device_index)
+            elif command_type == "get_compressor_sidechain_routing":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                response["result"] = self._get_compressor_sidechain_routing(track_index, device_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "delete_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
@@ -275,7 +279,9 @@ class AbletonMCP(ControlSurface):
                                  "set_arrangement_clip_name", "clear_arrangement_clip_notes",
                                  # Rack/Chain operations
                                  "insert_chain", "delete_chain", "set_chain_name", "set_chain_volume",
-                                 "set_chain_mute", "insert_device_to_chain"]:
+                                 "set_chain_mute", "insert_device_to_chain",
+                                 # Sidechain routing
+                                 "set_compressor_sidechain_routing"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -360,6 +366,12 @@ class AbletonMCP(ControlSurface):
                             parameter_index = params.get("parameter_index", 0)
                             value = params.get("value", 0.0)
                             result = self._set_device_parameter(track_index, device_index, parameter_index, value)
+                        elif command_type == "set_compressor_sidechain_routing":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            routing_type = params.get("routing_type", None)
+                            routing_channel = params.get("routing_channel", None)
+                            result = self._set_compressor_sidechain_routing(track_index, device_index, routing_type, routing_channel)
                         # Scene operations
                         elif command_type == "create_scene":
                             index = params.get("index", -1)
@@ -1793,6 +1805,126 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error setting device parameter: " + str(e))
+            raise
+
+    def _get_compressor_sidechain_routing(self, track_index, device_index):
+        """Get sidechain routing info for a Compressor device."""
+        try:
+            if track_index == -1:
+                track = self._song.master_track
+            elif track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            else:
+                track = self._song.tracks[track_index]
+
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+
+            device = track.devices[device_index]
+
+            # Check if this is a Compressor device (Compressor or Compressor2 in Live 12)
+            if device.class_name not in ("Compressor", "Compressor2"):
+                raise ValueError("Device '{0}' is not a Compressor (class_name={1})".format(
+                    device.name, device.class_name))
+
+            # Get available routing types
+            available_types = []
+            if hasattr(device, 'available_input_routing_types'):
+                for rt in device.available_input_routing_types:
+                    available_types.append({
+                        "display_name": rt.display_name,
+                        "identifier": str(rt)
+                    })
+
+            # Get available routing channels
+            available_channels = []
+            if hasattr(device, 'available_input_routing_channels'):
+                for rc in device.available_input_routing_channels:
+                    available_channels.append({
+                        "display_name": rc.display_name,
+                        "identifier": str(rc)
+                    })
+
+            # Get current routing type
+            current_type = None
+            if hasattr(device, 'input_routing_type'):
+                rt = device.input_routing_type
+                current_type = {
+                    "display_name": rt.display_name,
+                    "identifier": str(rt)
+                }
+
+            # Get current routing channel
+            current_channel = None
+            if hasattr(device, 'input_routing_channel'):
+                rc = device.input_routing_channel
+                current_channel = {
+                    "display_name": rc.display_name,
+                    "identifier": str(rc)
+                }
+
+            return {
+                "track_index": track_index,
+                "device_index": device_index,
+                "device_name": device.name,
+                "available_input_routing_types": available_types,
+                "available_input_routing_channels": available_channels,
+                "current_input_routing_type": current_type,
+                "current_input_routing_channel": current_channel
+            }
+        except Exception as e:
+            self.log_message("Error getting compressor sidechain routing: " + str(e))
+            raise
+
+    def _set_compressor_sidechain_routing(self, track_index, device_index, routing_type_display_name=None, routing_channel_display_name=None):
+        """Set sidechain routing for a Compressor device."""
+        try:
+            if track_index == -1:
+                track = self._song.master_track
+            elif track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            else:
+                track = self._song.tracks[track_index]
+
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+
+            device = track.devices[device_index]
+
+            # Check if this is a Compressor device (Compressor or Compressor2 in Live 12)
+            if device.class_name not in ("Compressor", "Compressor2"):
+                raise ValueError("Device '{0}' is not a Compressor (class_name={1})".format(
+                    device.name, device.class_name))
+
+            result = {
+                "track_index": track_index,
+                "device_index": device_index,
+                "device_name": device.name
+            }
+
+            # Set routing type if provided
+            if routing_type_display_name is not None and hasattr(device, 'input_routing_type') and hasattr(device, 'available_input_routing_types'):
+                for rt in device.available_input_routing_types:
+                    if rt.display_name == routing_type_display_name:
+                        device.input_routing_type = rt
+                        result["new_routing_type"] = rt.display_name
+                        break
+                else:
+                    raise ValueError("Routing type '{0}' not found in available types".format(routing_type_display_name))
+
+            # Set routing channel if provided
+            if routing_channel_display_name is not None and hasattr(device, 'input_routing_channel') and hasattr(device, 'available_input_routing_channels'):
+                for rc in device.available_input_routing_channels:
+                    if rc.display_name == routing_channel_display_name:
+                        device.input_routing_channel = rc
+                        result["new_routing_channel"] = rc.display_name
+                        break
+                else:
+                    raise ValueError("Routing channel '{0}' not found in available channels".format(routing_channel_display_name))
+
+            return result
+        except Exception as e:
+            self.log_message("Error setting compressor sidechain routing: " + str(e))
             raise
 
     # ============================================
