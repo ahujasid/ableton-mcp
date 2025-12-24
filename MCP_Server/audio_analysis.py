@@ -3,7 +3,7 @@ Audio analysis module for Ableton MCP.
 
 Provides integration with:
 - ChordMini API for technical music analysis (BPM, beats, chords)
-- Google Gemini for natural language audio understanding
+- Music Flamingo (via Replicate) for advanced music understanding
 - Replicate API for song structure analysis (segments, beats, downbeats)
 """
 
@@ -114,84 +114,84 @@ class ChordMiniClient:
         return response.json()
 
 
-class GeminiAudioClient:
-    """Client for Google Gemini API - natural language audio understanding."""
+class AudioFlamingoClient:
+    """Client for Music Flamingo on Replicate - advanced music understanding."""
 
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.environ.get('GOOGLE_API_KEY')
-        if not self.api_key:
+    # Using explicit version to avoid 404 errors from version lookup API
+    MODEL_NAME = "jhurliman/music-flamingo:0fa8fa07084102b5ebeeee377ea6311f32fc856f8f95fadbede43f69329acb47"
+
+    def __init__(self, api_token: Optional[str] = None):
+        self.api_token = api_token or os.environ.get('REPLICATE_API_TOKEN')
+        if not self.api_token:
             raise ValueError(
-                "Gemini API key not found. Set GOOGLE_API_KEY environment variable "
-                "or pass api_key parameter."
+                "Replicate API token not found. Set REPLICATE_API_TOKEN environment variable "
+                "or pass api_token parameter."
             )
         self._client = None
-        self._model = None
 
     def _get_client(self):
-        """Lazy initialization of Gemini client."""
+        """Lazy initialization of Replicate client."""
         if self._client is None:
             try:
-                import google.generativeai as genai
+                import replicate
             except ImportError:
                 raise ImportError(
-                    "google-generativeai package not installed. "
-                    "Run: pip install google-generativeai"
+                    "replicate package not installed. "
+                    "Run: pip install replicate"
                 )
+            self._client = replicate.Client(api_token=self.api_token)
+        return self._client
 
-            genai.configure(api_key=self.api_key)
-            self._client = genai
-            self._model = genai.GenerativeModel('gemini-2.0-flash')
-        return self._client, self._model
-
-    def analyze(self, file_path: str, prompt: str) -> str:
+    def analyze(self, file_path: str, prompt: str, max_new_tokens: int = 512) -> str:
         """
-        Ask a question about an audio file using Gemini.
+        Ask a question about an audio file using Music Flamingo.
+
+        Music Flamingo is a state-of-the-art Large Audio-Language Model for music
+        understanding, with theory-aware Q&A (harmony, structure, timbre, lyrics,
+        cultural context), chain-of-thought reasoning, and support for long-form
+        song reasoning (up to ~10 minutes).
 
         Args:
-            file_path: Path to the audio file
+            file_path: Path to the audio file (max ~10 minutes)
             prompt: Question or instruction about the audio
+            max_new_tokens: Maximum tokens in response (default: 512)
 
         Returns:
-            Text response from Gemini
+            Text response describing the audio
         """
         valid, error = validate_audio_file(file_path)
         if not valid:
             raise ValueError(error)
 
-        genai, model = self._get_client()
+        client = self._get_client()
 
-        # Check file size - use File API for files > 20MB
-        file_size = Path(file_path).stat().st_size
+        logger.info(f"Submitting {file_path} to Music Flamingo...")
 
-        if file_size > 20 * 1024 * 1024:  # 20MB
-            # Use File API for large files
-            logger.info(f"File size {file_size / 1024 / 1024:.1f}MB > 20MB, using File API")
-            uploaded_file = genai.upload_file(file_path)
+        with open(file_path, 'rb') as f:
+            input_params = {
+                "audio": f,
+                "prompt": prompt,
+                "max_new_tokens": max_new_tokens,
+                "temperature": 0.7,
+            }
 
-            # Wait for file to be processed
-            import time
-            while uploaded_file.state.name == "PROCESSING":
-                time.sleep(2)
-                uploaded_file = genai.get_file(uploaded_file.name)
+            output = client.run(
+                self.MODEL_NAME,
+                input=input_params
+            )
 
-            if uploaded_file.state.name == "FAILED":
-                raise Exception(f"File upload failed: {uploaded_file.state.name}")
+        if not output:
+            raise Exception("No output received from Music Flamingo")
 
-            response = model.generate_content([uploaded_file, prompt])
-        else:
-            # Inline audio for smaller files
-            with open(file_path, 'rb') as f:
-                audio_data = f.read()
+        # Output is a string with the model's analysis
+        if isinstance(output, str):
+            return output
 
-            response = model.generate_content([
-                {
-                    "mime_type": get_mime_type(file_path),
-                    "data": audio_data
-                },
-                prompt
-            ])
+        # Handle iterator output (some Replicate models stream)
+        if hasattr(output, '__iter__'):
+            return "".join(output)
 
-        return response.text
+        return str(output)
 
 
 class ReplicateMusicAnalyzer:
@@ -361,7 +361,10 @@ def analyze_audio_technical(file_path: str) -> dict:
 
 def analyze_audio_describe(file_path: str, prompt: str) -> str:
     """
-    Ask a question about an audio file using AI.
+    Ask a question about an audio file using AI (Music Flamingo via Replicate).
+
+    Music Flamingo is a state-of-the-art Large Audio-Language Model for music
+    understanding with deep music theory awareness.
 
     Args:
         file_path: Path to the audio file
@@ -370,7 +373,7 @@ def analyze_audio_describe(file_path: str, prompt: str) -> str:
     Returns:
         Text response describing the audio
     """
-    client = GeminiAudioClient()
+    client = AudioFlamingoClient()
     return client.analyze(file_path, prompt)
 
 
@@ -451,8 +454,15 @@ def vocal_to_midi(audio_path: str, output_midi_path: str, bpm: float = 120.0) ->
     ticks_per_second = 480 * (bpm / 60.0)
     last_tick = 0
 
-    # Track statistics
-    categories = {"snare": 0, "hihat": 0, "kick": 0}
+    # Track statistics - phoneme categories mapping to drum sounds
+    # Plosives (P/B/T/K) → Snare (D1/38) - percussive attacks
+    # Fricatives (S/Sh/F) → HiHat (F#1/42) - high frequency content
+    # Vowels/Nasals (A/E/M/N) → Kick (C1/36) - tonal body
+    categories = {"plosive": 0, "fricative": 0, "vowel": 0}
+
+    # Also collect notes in Ableton-compatible format (beats, not ticks)
+    ableton_notes = []
+    note_duration_beats = 0.1  # Short drum hit duration
 
     for i, t in enumerate(times):
         # Analyze a 50ms window after the onset
@@ -465,11 +475,21 @@ def vocal_to_midi(audio_path: str, output_midi_path: str, bpm: float = 120.0) ->
 
         # Track category
         if midi_note == DRUM_SNARE:
-            categories["snare"] += 1
+            categories["plosive"] += 1
         elif midi_note == DRUM_HIHAT:
-            categories["hihat"] += 1
+            categories["fricative"] += 1
         else:
-            categories["kick"] += 1
+            categories["vowel"] += 1
+
+        # Convert time to beats for Ableton
+        start_beat = t * bpm / 60.0
+        ableton_notes.append({
+            "pitch": midi_note,
+            "start_time": round(start_beat, 4),
+            "duration": note_duration_beats,
+            "velocity": 100,
+            "mute": False
+        })
 
         current_tick = int(t * ticks_per_second)
         delta = current_tick - last_tick
@@ -487,7 +507,106 @@ def vocal_to_midi(audio_path: str, output_midi_path: str, bpm: float = 120.0) ->
         "onset_count": len(times),
         "categories": categories,
         "bpm": bpm,
-        "duration": len(y) / sr
+        "duration": len(y) / sr,
+        "notes": ableton_notes  # Notes in Ableton-compatible format
+    }
+
+
+def analyze_vocal_onsets(file_path: str, bpm: float = None) -> dict:
+    """
+    Detect vocal onsets using librosa.
+
+    Args:
+        file_path: Path to vocal audio file
+        bpm: BPM for beat conversion (detects from audio if not provided)
+
+    Returns:
+        dict with file, bpm, onset_count, onset_times (seconds), onset_beats
+    """
+    import librosa
+
+    valid, error = validate_audio_file(file_path)
+    if not valid:
+        raise ValueError(error)
+
+    logger.info(f"Analyzing vocal onsets: {file_path}")
+    y, sr = librosa.load(file_path)
+
+    # Detect onsets
+    onset_frames = librosa.onset.onset_detect(y=y, sr=sr, units='frames')
+    onset_times = librosa.frames_to_time(onset_frames, sr=sr).tolist()
+
+    # Get BPM if not provided
+    if bpm is None:
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        bpm = float(tempo) if hasattr(tempo, '__float__') else float(tempo[0])
+
+    # Convert to beats
+    onset_beats = [t * bpm / 60 for t in onset_times]
+
+    logger.info(f"Detected {len(onset_times)} onsets at {bpm:.1f} BPM")
+
+    return {
+        "file": file_path,
+        "bpm": round(bpm, 2),
+        "onset_count": len(onset_times),
+        "onset_times": [round(t, 4) for t in onset_times],
+        "onset_beats": [round(b, 4) for b in onset_beats]
+    }
+
+
+def analyze_groove_timing(
+    vocal_onsets: list,
+    drum_hits: list,
+    bpm: float = 170.0
+) -> dict:
+    """
+    Compare timing feel between vocal onsets and drum groove.
+
+    Args:
+        vocal_onsets: List of onset beat positions (from analyze_vocal_onsets)
+        drum_hits: List of drum hit beat positions (kick/snare from MIDI)
+        bpm: Session tempo for ms calculations
+
+    Returns:
+        - vocal_grid_offset_ms: How far vocals are from grid
+        - drum_grid_offset_ms: How far drums are from grid
+        - recommended_shift_ms: How much to shift vocals to match drums
+        - recommended_shift_beats: Same in beats
+    """
+    import statistics
+
+    def grid_offset(beats):
+        """Calculate average offset from nearest quarter note for on-beat notes"""
+        offsets = []
+        for b in beats:
+            nearest = round(b)
+            offset = b - nearest
+            if abs(offset) < 0.25:  # Only consider "on-beat" notes
+                offsets.append(offset)
+        return offsets
+
+    vocal_offsets = grid_offset(vocal_onsets)
+    drum_offsets = grid_offset(drum_hits)
+
+    vocal_mean = statistics.mean(vocal_offsets) if vocal_offsets else 0
+    drum_mean = statistics.mean(drum_offsets) if drum_offsets else 0
+
+    ms_per_beat = 60000 / bpm
+
+    vocal_ms = vocal_mean * ms_per_beat
+    drum_ms = drum_mean * ms_per_beat
+    shift_ms = drum_ms - vocal_ms
+    shift_beats = shift_ms / ms_per_beat
+
+    return {
+        "vocal_grid_offset_ms": round(vocal_ms, 1),
+        "drum_grid_offset_ms": round(drum_ms, 1),
+        "recommended_shift_ms": round(shift_ms, 1),
+        "recommended_shift_beats": round(shift_beats, 4),
+        "vocal_onsets_analyzed": len(vocal_offsets),
+        "drum_hits_analyzed": len(drum_offsets),
+        "bpm": bpm
     }
 
 

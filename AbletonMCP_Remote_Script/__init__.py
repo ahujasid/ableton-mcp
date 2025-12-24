@@ -252,6 +252,10 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_cue_points()
             elif command_type == "get_playhead_position":
                 response["result"] = {"position": self._song.current_song_time}
+            elif command_type == "get_rack_chains":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                response["result"] = self._get_rack_chains(track_index, device_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "delete_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
@@ -268,7 +272,10 @@ class AbletonMCP(ControlSurface):
                                  "set_playhead_position",
                                  "split_arrangement_clip", "split_arrangement_clip_multi", "move_arrangement_clip",
                                  "set_arrangement_clip_file_position", "duplicate_arrangement_clip_to_time",
-                                 "set_arrangement_clip_name", "clear_arrangement_clip_notes"]:
+                                 "set_arrangement_clip_name", "clear_arrangement_clip_notes",
+                                 # Rack/Chain operations
+                                 "insert_chain", "delete_chain", "set_chain_name", "set_chain_volume",
+                                 "set_chain_mute", "insert_device_to_chain"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -449,6 +456,10 @@ class AbletonMCP(ControlSurface):
                             clip_index = params.get("clip_index", 0)
                             new_start_time = params.get("new_start_time", 0.0)
                             result = self._move_arrangement_clip(track_index, clip_index, new_start_time)
+                        elif command_type == "align_clips_to_groove":
+                            track_index = params.get("track_index", 0)
+                            shift_beats = params.get("shift_beats", 0.0)
+                            result = self._align_clips_to_groove(track_index, shift_beats)
                         elif command_type == "set_arrangement_clip_file_position":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
@@ -462,6 +473,42 @@ class AbletonMCP(ControlSurface):
                             clip_index = params.get("clip_index", 0)
                             destination_time = params.get("destination_time", 0.0)
                             result = self._duplicate_arrangement_clip_to_time(track_index, clip_index, destination_time)
+                        # Rack/Chain operations
+                        elif command_type == "insert_chain":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            chain_index = params.get("chain_index", None)
+                            result = self._insert_chain(track_index, device_index, chain_index)
+                        elif command_type == "delete_chain":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            chain_index = params.get("chain_index", 0)
+                            result = self._delete_chain(track_index, device_index, chain_index)
+                        elif command_type == "set_chain_name":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            chain_index = params.get("chain_index", 0)
+                            name = params.get("name", "")
+                            result = self._set_chain_name(track_index, device_index, chain_index, name)
+                        elif command_type == "set_chain_volume":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            chain_index = params.get("chain_index", 0)
+                            volume = params.get("volume", 0.85)
+                            result = self._set_chain_volume(track_index, device_index, chain_index, volume)
+                        elif command_type == "set_chain_mute":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            chain_index = params.get("chain_index", 0)
+                            muted = params.get("muted", False)
+                            result = self._set_chain_mute(track_index, device_index, chain_index, muted)
+                        elif command_type == "insert_device_to_chain":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            chain_index = params.get("chain_index", 0)
+                            device_name = params.get("device_name", "")
+                            position = params.get("position", None)
+                            result = self._insert_device_to_chain(track_index, device_index, chain_index, device_name, position)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -886,7 +933,7 @@ class AbletonMCP(ControlSurface):
             # Check if arrangement_clips is available (Live 11+)
             if hasattr(track, 'arrangement_clips'):
                 for i, clip in enumerate(track.arrangement_clips):
-                    clips.append({
+                    clip_info = {
                         "index": i,
                         "name": clip.name,
                         "start_time": clip.start_time,
@@ -894,7 +941,18 @@ class AbletonMCP(ControlSurface):
                         "length": clip.length,
                         "is_midi_clip": clip.is_midi_clip,
                         "color": clip.color
-                    })
+                    }
+                    # For audio clips, include source file position info
+                    if not clip.is_midi_clip:
+                        if hasattr(clip, 'loop_start'):
+                            clip_info["loop_start"] = clip.loop_start
+                        if hasattr(clip, 'loop_end'):
+                            clip_info["loop_end"] = clip.loop_end
+                        if hasattr(clip, 'start_marker'):
+                            clip_info["start_marker"] = clip.start_marker
+                        if hasattr(clip, 'end_marker'):
+                            clip_info["end_marker"] = clip.end_marker
+                    clips.append(clip_info)
 
             return {
                 "track_index": track_index,
@@ -1482,6 +1540,48 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error moving arrangement clip: " + str(e))
             raise
 
+    def _align_clips_to_groove(self, track_index, shift_beats):
+        """
+        Shift all arrangement clips on a track by specified beats.
+        Useful for aligning vocals to a target groove.
+
+        Args:
+            track_index: Index of track containing clips to shift
+            shift_beats: Amount to shift (positive = later, negative = earlier)
+        """
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if not hasattr(track, 'arrangement_clips'):
+                raise RuntimeError("arrangement_clips not available (requires Live 11+)")
+
+            moved = []
+            for i, clip in enumerate(track.arrangement_clips):
+                old_start = clip.start_time
+                new_start = old_start + shift_beats
+                clip.start_time = new_start
+                moved.append({
+                    "index": i,
+                    "name": clip.name,
+                    "old_start": old_start,
+                    "new_start": new_start
+                })
+
+            return {
+                "success": True,
+                "track_index": track_index,
+                "track_name": track.name,
+                "shift_beats": shift_beats,
+                "clips_moved": len(moved),
+                "clips": moved
+            }
+        except Exception as e:
+            self.log_message("Error aligning clips to groove: " + str(e))
+            raise
+
     def _set_arrangement_clip_file_position(self, track_index, clip_index, start_marker=None, end_marker=None, loop_start=None, loop_end=None):
         """
         Set the file position markers for an arrangement clip.
@@ -1636,13 +1736,19 @@ class AbletonMCP(ControlSurface):
             params = []
 
             for i, param in enumerate(device.parameters):
+                # Some parameter types don't have default_value available
+                try:
+                    default_val = param.default_value
+                except:
+                    default_val = None
+
                 params.append({
                     "index": i,
                     "name": param.name,
                     "value": param.value,
                     "min": param.min,
                     "max": param.max,
-                    "default_value": param.default_value,
+                    "default_value": default_val,
                     "is_quantized": param.is_quantized
                 })
 
@@ -1687,6 +1793,232 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error setting device parameter: " + str(e))
+            raise
+
+    # ============================================
+    # RACK/CHAIN OPERATIONS
+    # ============================================
+
+    def _get_rack_device(self, track_index, device_index):
+        """Helper to get a rack device and validate it can have chains."""
+        if track_index == -1:
+            track = self._song.master_track
+        elif track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        else:
+            track = self._song.tracks[track_index]
+
+        if device_index < 0 or device_index >= len(track.devices):
+            raise IndexError("Device index out of range")
+
+        device = track.devices[device_index]
+        if not device.can_have_chains:
+            raise ValueError("Device '{0}' is not a rack (cannot have chains)".format(device.name))
+
+        return track, device
+
+    def _get_rack_chains(self, track_index, device_index):
+        """Get all chains in a rack device."""
+        try:
+            track, device = self._get_rack_device(track_index, device_index)
+
+            chains = []
+            for i, chain in enumerate(device.chains):
+                chain_info = {
+                    "index": i,
+                    "name": chain.name,
+                    "mute": chain.mute,
+                    "solo": chain.solo,
+                    "color": chain.color if hasattr(chain, 'color') else None,
+                    "devices": []
+                }
+
+                # Get mixer info (volume, pan)
+                if hasattr(chain, 'mixer_device'):
+                    mixer = chain.mixer_device
+                    chain_info["volume"] = mixer.volume.value if hasattr(mixer, 'volume') else None
+                    chain_info["panning"] = mixer.panning.value if hasattr(mixer, 'panning') else None
+
+                # Get devices in chain
+                for j, dev in enumerate(chain.devices):
+                    chain_info["devices"].append({
+                        "index": j,
+                        "name": dev.name,
+                        "class_name": dev.class_name,
+                        "is_active": dev.is_active
+                    })
+
+                chains.append(chain_info)
+
+            return {
+                "track_index": track_index,
+                "device_index": device_index,
+                "device_name": device.name,
+                "chain_count": len(chains),
+                "chains": chains
+            }
+        except Exception as e:
+            self.log_message("Error getting rack chains: " + str(e))
+            raise
+
+    def _insert_chain(self, track_index, device_index, chain_index=None):
+        """Insert a new chain into a rack device. Requires Live 12+."""
+        try:
+            track, device = self._get_rack_device(track_index, device_index)
+
+            # Live 12 API: RackDevice.insert_chain(index)
+            if not hasattr(device, 'insert_chain'):
+                raise RuntimeError("insert_chain requires Live 12 or later")
+
+            if chain_index is not None:
+                device.insert_chain(chain_index)
+            else:
+                device.insert_chain()
+
+            # Get the new chain count
+            new_chain_count = len(device.chains)
+            new_chain_index = new_chain_count - 1 if chain_index is None else chain_index
+
+            return {
+                "success": True,
+                "chain_index": new_chain_index,
+                "chain_count": new_chain_count,
+                "device_name": device.name
+            }
+        except Exception as e:
+            self.log_message("Error inserting chain: " + str(e))
+            raise
+
+    def _delete_chain(self, track_index, device_index, chain_index):
+        """Delete a chain from a rack device."""
+        try:
+            track, device = self._get_rack_device(track_index, device_index)
+
+            if chain_index < 0 or chain_index >= len(device.chains):
+                raise IndexError("Chain index out of range")
+
+            chain = device.chains[chain_index]
+            chain_name = chain.name
+
+            # Live API: use delete_chain if available, otherwise try to delete via the chain
+            if hasattr(device, 'delete_chain'):
+                device.delete_chain(chain_index)
+            else:
+                raise RuntimeError("delete_chain requires Live 12 or later")
+
+            return {
+                "success": True,
+                "deleted_chain_name": chain_name,
+                "chain_count": len(device.chains),
+                "device_name": device.name
+            }
+        except Exception as e:
+            self.log_message("Error deleting chain: " + str(e))
+            raise
+
+    def _set_chain_name(self, track_index, device_index, chain_index, name):
+        """Set the name of a chain in a rack device."""
+        try:
+            track, device = self._get_rack_device(track_index, device_index)
+
+            if chain_index < 0 or chain_index >= len(device.chains):
+                raise IndexError("Chain index out of range")
+
+            chain = device.chains[chain_index]
+            old_name = chain.name
+            chain.name = name
+
+            return {
+                "success": True,
+                "old_name": old_name,
+                "new_name": chain.name,
+                "device_name": device.name
+            }
+        except Exception as e:
+            self.log_message("Error setting chain name: " + str(e))
+            raise
+
+    def _set_chain_volume(self, track_index, device_index, chain_index, volume):
+        """Set the volume of a chain in a rack device (0.0 to 1.0)."""
+        try:
+            track, device = self._get_rack_device(track_index, device_index)
+
+            if chain_index < 0 or chain_index >= len(device.chains):
+                raise IndexError("Chain index out of range")
+
+            chain = device.chains[chain_index]
+            if not hasattr(chain, 'mixer_device'):
+                raise RuntimeError("Chain does not have a mixer device")
+
+            mixer = chain.mixer_device
+            param = mixer.volume
+
+            # Clamp value to valid range
+            clamped_value = max(param.min, min(param.max, volume))
+            param.value = clamped_value
+
+            return {
+                "success": True,
+                "chain_name": chain.name,
+                "volume": param.value,
+                "device_name": device.name
+            }
+        except Exception as e:
+            self.log_message("Error setting chain volume: " + str(e))
+            raise
+
+    def _set_chain_mute(self, track_index, device_index, chain_index, muted):
+        """Set the mute state of a chain in a rack device."""
+        try:
+            track, device = self._get_rack_device(track_index, device_index)
+
+            if chain_index < 0 or chain_index >= len(device.chains):
+                raise IndexError("Chain index out of range")
+
+            chain = device.chains[chain_index]
+            chain.mute = muted
+
+            return {
+                "success": True,
+                "chain_name": chain.name,
+                "muted": chain.mute,
+                "device_name": device.name
+            }
+        except Exception as e:
+            self.log_message("Error setting chain mute: " + str(e))
+            raise
+
+    def _insert_device_to_chain(self, track_index, device_index, chain_index, device_name, position=None):
+        """Insert a native Live device into a chain. Requires Live 12+."""
+        try:
+            track, device = self._get_rack_device(track_index, device_index)
+
+            if chain_index < 0 or chain_index >= len(device.chains):
+                raise IndexError("Chain index out of range")
+
+            chain = device.chains[chain_index]
+
+            # Live 12 API: Chain.insert_device(device_name, index)
+            if not hasattr(chain, 'insert_device'):
+                raise RuntimeError("insert_device requires Live 12 or later")
+
+            if position is not None:
+                chain.insert_device(device_name, position)
+            else:
+                chain.insert_device(device_name)
+
+            # Get the new device count
+            new_device_count = len(chain.devices)
+
+            return {
+                "success": True,
+                "device_name": device_name,
+                "chain_name": chain.name,
+                "device_count": new_device_count,
+                "rack_name": device.name
+            }
+        except Exception as e:
+            self.log_message("Error inserting device to chain: " + str(e))
             raise
 
     # ============================================

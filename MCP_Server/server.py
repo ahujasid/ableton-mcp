@@ -115,7 +115,10 @@ class AbletonConnection:
             "set_track_volume", "set_track_pan", "set_track_mute",
             "set_track_solo", "set_track_arm", "set_send_level",
             # Clip operations
-            "duplicate_clip", "set_clip_loop", "set_clip_start_end", "clear_clip_notes"
+            "duplicate_clip", "set_clip_loop", "set_clip_start_end", "clear_clip_notes",
+            # Rack/Chain operations
+            "insert_chain", "delete_chain", "set_chain_name", "set_chain_volume",
+            "set_chain_mute", "insert_device_to_chain"
         ]
         
         try:
@@ -872,6 +875,32 @@ def move_arrangement_clip(ctx: Context, track_index: int, clip_index: int, new_s
 
 
 @mcp.tool()
+def align_clips_to_groove(ctx: Context, track_index: int, shift_beats: float) -> str:
+    """
+    Shift all arrangement clips on a track to align with target groove.
+
+    Moves every clip on the specified track by the same amount.
+    Use analyze_groove_timing to calculate the recommended shift.
+
+    Parameters:
+    - track_index: Track containing clips to shift
+    - shift_beats: Amount to shift (positive = later, negative = earlier)
+
+    Returns summary with list of moved clips.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("align_clips_to_groove", {
+            "track_index": track_index,
+            "shift_beats": shift_beats
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error aligning clips to groove: {str(e)}")
+        return f"Error aligning clips to groove: {str(e)}"
+
+
+@mcp.tool()
 def set_arrangement_clip_file_position(
     ctx: Context,
     track_index: int,
@@ -1008,6 +1037,189 @@ def set_device_parameter(ctx: Context, track_index: int, device_index: int, para
     except Exception as e:
         logger.error(f"Error setting device parameter: {str(e)}")
         return f"Error setting device parameter: {str(e)}"
+
+
+# ============================================
+# RACK/CHAIN OPERATIONS
+# ============================================
+
+@mcp.tool()
+def get_rack_chains(ctx: Context, track_index: int, device_index: int) -> str:
+    """
+    Get all chains in a rack device (Audio Effect Rack, Instrument Rack, etc.).
+
+    Parameters:
+    - track_index: The index of the track containing the rack (-1 for master track)
+    - device_index: The index of the rack device on the track
+
+    Returns chain info including name, volume, mute state, and devices in each chain.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_rack_chains", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting rack chains: {str(e)}")
+        return f"Error getting rack chains: {str(e)}"
+
+
+@mcp.tool()
+def insert_chain(ctx: Context, track_index: int, device_index: int, chain_index: int = None) -> str:
+    """
+    Insert a new chain into a rack device. Requires Live 12+.
+
+    Parameters:
+    - track_index: The index of the track containing the rack
+    - device_index: The index of the rack device on the track
+    - chain_index: Optional index where to insert the chain (default: end of list)
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "device_index": device_index
+        }
+        if chain_index is not None:
+            params["chain_index"] = chain_index
+        result = ableton.send_command("insert_chain", params)
+        return f"Inserted chain at index {result.get('chain_index')} in {result.get('device_name')} (total chains: {result.get('chain_count')})"
+    except Exception as e:
+        logger.error(f"Error inserting chain: {str(e)}")
+        return f"Error inserting chain: {str(e)}"
+
+
+@mcp.tool()
+def delete_chain(ctx: Context, track_index: int, device_index: int, chain_index: int) -> str:
+    """
+    Delete a chain from a rack device. Requires Live 12+.
+
+    Parameters:
+    - track_index: The index of the track containing the rack
+    - device_index: The index of the rack device on the track
+    - chain_index: The index of the chain to delete
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_chain", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "chain_index": chain_index
+        })
+        return f"Deleted chain '{result.get('deleted_chain_name')}' from {result.get('device_name')} (remaining chains: {result.get('chain_count')})"
+    except Exception as e:
+        logger.error(f"Error deleting chain: {str(e)}")
+        return f"Error deleting chain: {str(e)}"
+
+
+@mcp.tool()
+def set_chain_name(ctx: Context, track_index: int, device_index: int, chain_index: int, name: str) -> str:
+    """
+    Set the name of a chain in a rack device.
+
+    Parameters:
+    - track_index: The index of the track containing the rack
+    - device_index: The index of the rack device on the track
+    - chain_index: The index of the chain to rename
+    - name: The new name for the chain
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_chain_name", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "chain_index": chain_index,
+            "name": name
+        })
+        return f"Renamed chain from '{result.get('old_name')}' to '{result.get('new_name')}' in {result.get('device_name')}"
+    except Exception as e:
+        logger.error(f"Error setting chain name: {str(e)}")
+        return f"Error setting chain name: {str(e)}"
+
+
+@mcp.tool()
+def set_chain_volume(ctx: Context, track_index: int, device_index: int, chain_index: int, volume: float) -> str:
+    """
+    Set the volume of a chain in a rack device.
+
+    Parameters:
+    - track_index: The index of the track containing the rack
+    - device_index: The index of the rack device on the track
+    - chain_index: The index of the chain
+    - volume: Volume level from 0.0 (silence) to 1.0 (0dB)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_chain_volume", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "chain_index": chain_index,
+            "volume": volume
+        })
+        return f"Set volume of chain '{result.get('chain_name')}' to {result.get('volume')} in {result.get('device_name')}"
+    except Exception as e:
+        logger.error(f"Error setting chain volume: {str(e)}")
+        return f"Error setting chain volume: {str(e)}"
+
+
+@mcp.tool()
+def set_chain_mute(ctx: Context, track_index: int, device_index: int, chain_index: int, muted: bool) -> str:
+    """
+    Set the mute state of a chain in a rack device.
+
+    Parameters:
+    - track_index: The index of the track containing the rack
+    - device_index: The index of the rack device on the track
+    - chain_index: The index of the chain
+    - muted: True to mute, False to unmute
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_chain_mute", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "chain_index": chain_index,
+            "muted": muted
+        })
+        state = "muted" if result.get('muted') else "unmuted"
+        return f"Chain '{result.get('chain_name')}' is now {state} in {result.get('device_name')}"
+    except Exception as e:
+        logger.error(f"Error setting chain mute: {str(e)}")
+        return f"Error setting chain mute: {str(e)}"
+
+
+@mcp.tool()
+def insert_device_to_chain(ctx: Context, track_index: int, device_index: int, chain_index: int, device_name: str, position: int = None) -> str:
+    """
+    Insert a native Live device into a chain. Requires Live 12+.
+
+    Only native Ableton devices can be inserted (e.g., "Saturator", "EQ Eight", "Compressor").
+    Max for Live devices and third-party plugins are not supported.
+
+    Parameters:
+    - track_index: The index of the track containing the rack
+    - device_index: The index of the rack device on the track
+    - chain_index: The index of the chain to add the device to
+    - device_name: The name of the device as it appears in Ableton's browser (e.g., "Saturator", "EQ Eight")
+    - position: Optional position in the chain's device list (default: end)
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "device_index": device_index,
+            "chain_index": chain_index,
+            "device_name": device_name
+        }
+        if position is not None:
+            params["position"] = position
+        result = ableton.send_command("insert_device_to_chain", params)
+        return f"Inserted '{result.get('device_name')}' into chain '{result.get('chain_name')}' in {result.get('rack_name')} (devices: {result.get('device_count')})"
+    except Exception as e:
+        logger.error(f"Error inserting device to chain: {str(e)}")
+        return f"Error inserting device to chain: {str(e)}"
 
 
 # ============================================
@@ -1506,9 +1718,12 @@ def analyze_audio_technical(ctx: Context, file_path: str) -> str:
 @mcp.tool()
 def analyze_audio_describe(ctx: Context, file_path: str, prompt: str) -> str:
     """
-    Ask questions about an audio file using AI (Google Gemini).
+    Ask questions about an audio file using AI (Music Flamingo via Replicate).
 
-    Use this to describe, understand, or ask questions about audio content.
+    Music Flamingo is a state-of-the-art Large Audio-Language Model for music
+    understanding with theory-aware Q&A (harmony, structure, timbre, lyrics,
+    cultural context), chain-of-thought reasoning, and long-form song reasoning.
+
     Examples: "What instruments are playing?", "Describe the mood of this track",
     "What genre would you classify this as?", "Are there any issues with the mix?"
 
@@ -1516,7 +1731,7 @@ def analyze_audio_describe(ctx: Context, file_path: str, prompt: str) -> str:
     - file_path: Absolute path to the audio file (WAV, MP3, AIFF, AAC, OGG, FLAC, M4A)
     - prompt: Your question or instruction about the audio
 
-    Note: Requires GOOGLE_API_KEY environment variable to be set.
+    Note: Requires REPLICATE_API_TOKEN environment variable to be set.
     """
     try:
         from MCP_Server.audio_analysis import analyze_audio_describe as do_describe
@@ -1528,7 +1743,7 @@ def analyze_audio_describe(ctx: Context, file_path: str, prompt: str) -> str:
         return f"Configuration error: {str(e)}"
     except ImportError as e:
         logger.error(f"Missing dependency: {str(e)}")
-        return f"Missing dependency: {str(e)}. Run: pip install google-generativeai"
+        return f"Missing dependency: {str(e)}. Run: pip install replicate"
     except Exception as e:
         logger.error(f"Error analyzing audio: {str(e)}")
         return f"Error analyzing audio: {str(e)}"
@@ -1621,6 +1836,170 @@ def analyze_energy(ctx: Context, file_path: str, bpm: float = None, target_bpm: 
     except Exception as e:
         logger.error(f"Error analyzing energy: {str(e)}")
         return f"Error analyzing energy: {str(e)}"
+
+
+@mcp.tool()
+def analyze_vocal_onsets(ctx: Context, file_path: str, bpm: float = None) -> str:
+    """
+    Detect vocal onsets and return positions.
+
+    Uses librosa onset detection to find transient moments in vocal audio.
+    Useful for analyzing vocal timing and rhythm patterns.
+
+    Parameters:
+    - file_path: Path to vocal audio file
+    - bpm: BPM for beat conversion (auto-detects if not provided)
+
+    Returns JSON with onset times in seconds and beats.
+    """
+    try:
+        from MCP_Server.audio_analysis import analyze_vocal_onsets as do_analysis
+        result = do_analysis(file_path, bpm)
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        logger.error(f"Vocal onset analysis error: {str(e)}")
+        return f"Error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Error analyzing vocal onsets: {str(e)}")
+        return f"Error analyzing vocal onsets: {str(e)}"
+
+
+@mcp.tool()
+def analyze_groove_timing(ctx: Context, vocal_onsets: str, drum_hits: str, bpm: float = 170.0) -> str:
+    """
+    Compare timing feel between vocal onsets and drum groove.
+
+    Analyzes how far each source is from the beat grid and calculates
+    the recommended shift to align vocals with the drum groove.
+
+    Parameters:
+    - vocal_onsets: JSON array of onset beat positions (from analyze_vocal_onsets)
+    - drum_hits: JSON array of drum hit beat positions (kick/snare from MIDI)
+    - bpm: Session tempo for ms calculations (default: 170)
+
+    Returns analysis with:
+    - vocal_grid_offset_ms: How far vocals are from grid
+    - drum_grid_offset_ms: How far drums are from grid
+    - recommended_shift_ms: How much to shift vocals to match drums
+    - recommended_shift_beats: Same in beats
+    """
+    try:
+        from MCP_Server.audio_analysis import analyze_groove_timing as do_analysis
+
+        # Parse JSON inputs
+        vocal_list = json.loads(vocal_onsets) if isinstance(vocal_onsets, str) else vocal_onsets
+        drum_list = json.loads(drum_hits) if isinstance(drum_hits, str) else drum_hits
+
+        result = do_analysis(vocal_list, drum_list, bpm)
+        return json.dumps(result, indent=2)
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON input: {str(e)}")
+        return f"Error: Invalid JSON input - {str(e)}"
+    except Exception as e:
+        logger.error(f"Error analyzing groove timing: {str(e)}")
+        return f"Error analyzing groove timing: {str(e)}"
+
+
+@mcp.tool()
+def analyze_mashup_timing(
+    ctx: Context,
+    vocal_file: str,
+    vocal_track_index: int,
+    drum_track_index: int,
+    drum_clip_index: int = 0,
+    bpm: float = None
+) -> str:
+    """
+    Analyze timing alignment between vocals and drums for a mashup.
+
+    This is a high-level tool that orchestrates the full timing analysis workflow:
+    1. Detects vocal onsets from source file
+    2. Gets vocal clip positions from arrangement (with loop_start/loop_end)
+    3. Maps onsets to arrangement positions using clip offsets
+    4. Extracts drum hits from MIDI clip
+    5. Compares timing feel and recommends shift
+
+    Parameters:
+    - vocal_file: Path to source vocal audio file
+    - vocal_track_index: Track containing vocal clips in arrangement
+    - drum_track_index: Track containing drum MIDI
+    - drum_clip_index: Which arrangement clip has the drums (default: 0)
+    - bpm: Session BPM (auto-detects from session if not provided)
+
+    Returns analysis with recommended timing correction.
+    """
+    try:
+        from MCP_Server.audio_analysis import analyze_vocal_onsets, analyze_groove_timing
+
+        ableton = get_ableton_connection()
+
+        # 1. Get session BPM if not provided
+        if bpm is None:
+            session = ableton.send_command("get_session_info", {})
+            bpm = session.get("tempo", 170.0)
+            logger.info(f"Using session BPM: {bpm}")
+
+        # 2. Detect vocal onsets
+        logger.info(f"Analyzing vocal onsets from: {vocal_file}")
+        onset_result = analyze_vocal_onsets(vocal_file, bpm)
+        onset_beats = onset_result["onset_beats"]
+        logger.info(f"Detected {len(onset_beats)} vocal onsets")
+
+        # 3. Get vocal clip positions with loop_start
+        vocal_clips = ableton.send_command("get_arrangement_clips", {
+            "track_index": vocal_track_index
+        })
+        clips = vocal_clips.get("clips", [])
+        logger.info(f"Found {len(clips)} vocal clips on track {vocal_track_index}")
+
+        # 4. Map onsets to arrangement positions
+        def map_onset_to_arrangement(src_beat, clip_list):
+            for clip in clip_list:
+                src_start = clip.get("loop_start", 0)
+                src_end = clip.get("loop_end", clip.get("length", 0) + src_start)
+                if src_start <= src_beat < src_end:
+                    offset = src_beat - src_start
+                    return clip["start_time"] + offset
+            return None
+
+        mapped_onsets = []
+        for beat in onset_beats:
+            arr_pos = map_onset_to_arrangement(beat, clips)
+            if arr_pos is not None:
+                mapped_onsets.append(arr_pos)
+
+        logger.info(f"Mapped {len(mapped_onsets)} onsets to arrangement")
+
+        # 5. Get drum MIDI notes
+        drum_notes = ableton.send_command("get_arrangement_clip_notes", {
+            "track_index": drum_track_index,
+            "clip_index": drum_clip_index
+        })
+        notes = drum_notes.get("notes", [])
+
+        # Filter to kick (36) and snare (38)
+        drum_hits = [n["start_time"] for n in notes if n.get("pitch") in [36, 38]]
+        logger.info(f"Found {len(drum_hits)} kick/snare hits")
+
+        # 6. Analyze groove timing
+        timing_result = analyze_groove_timing(mapped_onsets, drum_hits, bpm)
+
+        # 7. Return combined analysis
+        result = {
+            "bpm": bpm,
+            "vocal_onsets_total": len(onset_beats),
+            "vocal_onsets_mapped": len(mapped_onsets),
+            "vocal_clips": len(clips),
+            "drum_hits": len(drum_hits),
+            "timing_analysis": timing_result,
+            "recommendation": f"Shift vocal clips by {timing_result['recommended_shift_beats']:.4f} beats ({timing_result['recommended_shift_ms']:.1f}ms)"
+        }
+
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error analyzing mashup timing: {str(e)}")
+        return f"Error analyzing mashup timing: {str(e)}"
 
 
 @mcp.tool()
@@ -1820,33 +2199,90 @@ def set_arrangement_clip_name(ctx: Context, track_index: int, clip_index: int, n
 
 
 @mcp.tool()
-def vocal_to_midi(ctx: Context, audio_path: str, output_midi_path: str, bpm: float = 120.0) -> str:
+def vocal_to_midi(ctx: Context, audio_path: str, output_midi_path: str, bpm: float = 120.0,
+                  create_track: bool = False, track_name: str = "Vocal Rhythm") -> str:
     """
     Convert vocal audio to MIDI based on phoneme categorization.
 
-    Analyzes vocal onsets and categorizes them by phoneme type:
-    - Plosives (P/B/T/K) → MIDI note 60 (C4) - Percussive hits
-    - Fricatives (S/Sh/F) → MIDI note 62 (D4) - High hat sounds
-    - Vowels/Nasals (A/E/M/N) → MIDI note 64 (E4) - Tonal body
+    Analyzes vocal onsets and categorizes them by phoneme type, mapping to
+    standard drum rack MIDI notes (like Ableton's "Convert Drums to MIDI Track"):
+    - Plosives (P/B/T/K) → Snare (D1/38) - Percussive attacks
+    - Fricatives (S/Sh/F) → HiHat (F#1/42) - High frequency content
+    - Vowels/Nasals (A/E/M/N) → Kick (C1/36) - Tonal body
 
     Parameters:
     - audio_path: Path to the vocal audio file
     - output_midi_path: Path to save the output MIDI file
     - bpm: Tempo in BPM (default: 120)
+    - create_track: If True, creates a MIDI track in Ableton with Drum Rack (default: False)
+    - track_name: Name for the new track if create_track is True
 
     Returns summary with onset count and phoneme categories.
     """
     try:
         from MCP_Server.audio_analysis import vocal_to_midi as do_vocal_to_midi
         result = do_vocal_to_midi(audio_path, output_midi_path, bpm)
-        return (
+
+        output = (
             f"Converted vocals to MIDI: {result['output_path']}\n"
             f"Duration: {result['duration']:.1f}s, BPM: {result['bpm']}\n"
             f"Onsets: {result['onset_count']} total\n"
-            f"  - Plosives (C4): {result['categories']['plosive']}\n"
-            f"  - Fricatives (D4): {result['categories']['fricative']}\n"
-            f"  - Vowels (E4): {result['categories']['vowel']}"
+            f"  - Plosives (Snare/D1): {result['categories']['plosive']}\n"
+            f"  - Fricatives (HiHat/F#1): {result['categories']['fricative']}\n"
+            f"  - Vowels (Kick/C1): {result['categories']['vowel']}"
         )
+
+        # Optionally create MIDI track with Drum Rack in Ableton and add notes directly
+        if create_track:
+            try:
+                ableton = get_ableton_connection()
+
+                # Create a new MIDI track
+                track_result = ableton.send_command("create_midi_track", {"index": -1})
+                track_index = track_result.get("track_index")
+
+                # Set track name
+                ableton.send_command("set_track_name", {
+                    "track_index": track_index,
+                    "name": track_name
+                })
+
+                # Load a basic Drum Rack
+                try:
+                    ableton.send_command("load_browser_item", {
+                        "track_index": track_index,
+                        "item_uri": "query:Drums#Drum%20Rack"
+                    })
+                except:
+                    logger.warning("Could not load Drum Rack - you may need to load one manually")
+
+                # Create an arrangement clip with the right length
+                clip_length = result['duration'] * result['bpm'] / 60.0  # Duration in beats
+                clip_result = ableton.send_command("create_clip_in_arrangement", {
+                    "track_index": track_index,
+                    "start_time": 0,
+                    "length": clip_length
+                })
+                clip_index = clip_result.get("clip_index", 0)
+
+                # Add the notes directly to the clip
+                notes = result.get('notes', [])
+                if notes:
+                    ableton.send_command("add_notes_to_arrangement_clip", {
+                        "track_index": track_index,
+                        "clip_index": clip_index,
+                        "notes": notes
+                    })
+
+                output += f"\n\nCreated MIDI track '{track_name}' at index {track_index}"
+                output += f"\nAdded {len(notes)} notes to arrangement clip"
+
+            except Exception as track_err:
+                output += f"\n\nNote: Could not create Ableton track: {str(track_err)}"
+                output += f"\nMIDI file saved to {result['output_path']} - drag it into Ableton manually"
+
+        return output
+
     except Exception as e:
         logger.error(f"Error converting vocal to MIDI: {str(e)}")
         return f"Error converting vocal to MIDI: {str(e)}"
@@ -1973,6 +2409,8 @@ def create_structure_track(
     file_path: str,
     track_name: str = "Structure",
     target_bpm: float = None,
+    audio_track_index: int = None,
+    audio_start_beat: float = None,
     create_cue_points: bool = True
 ) -> str:
     """
@@ -1988,11 +2426,22 @@ def create_structure_track(
     This is the streamlined tool for creating structure tracks - call it once with
     an audio file path and it handles all analysis and MIDI creation automatically.
 
+    IMPORTANT: For accurate alignment, either:
+    - Provide audio_track_index to auto-detect the audio clip's position, OR
+    - Provide audio_start_beat if you know where the audio's bar 1 starts
+
+    The tool uses downbeat detection to snap segment boundaries to actual bar lines,
+    accounting for any intro/silence before bar 1 in the audio file.
+
     Parameters:
     - file_path: Absolute path to the audio file (WAV, MP3, AIFF, etc.)
     - track_name: Name for the MIDI track (default: "Structure")
     - target_bpm: Lock BPM detection to this value (±1 BPM). Use when tempo is
                   misdetected (e.g., 140 BPM detected as 81 BPM).
+    - audio_track_index: Track index containing the audio clip (to auto-detect position)
+    - audio_start_beat: Manual override for where audio's bar 1 starts in arrangement.
+                        If not provided and audio_track_index is given, auto-detects
+                        from the first arrangement clip on that track.
     - create_cue_points: Create locators at section boundaries (default: True)
 
     Returns JSON with track_index, clips created, and analysis summary.
@@ -2007,22 +2456,83 @@ def create_structure_track(
 
         ableton = get_ableton_connection()
 
-        # Step 1: Analyze song structure
+        # Step 1: Get project tempo from Ableton
+        session_info = ableton.send_command("get_session_info", {})
+        project_bpm = session_info.get('tempo', 120.0)
+        logger.info(f"Project tempo: {project_bpm} BPM")
+
+        # Step 2: Analyze song structure
         logger.info(f"Analyzing song structure for {file_path}...")
         structure = do_structure(file_path, include_beats=True, target_bpm=target_bpm)
-        bpm = structure.get('bpm', 120.0)
+        audio_bpm = structure.get('bpm', 120.0)
         segments = structure.get('segments', [])
 
         if not segments:
             return json.dumps({"error": "No segments detected in audio"})
 
-        logger.info(f"Detected BPM: {bpm}, Segments: {len(segments)}")
+        # Get downbeats for proper bar alignment
+        downbeats = structure.get('downbeats', [])
+        logger.info(f"Detected audio BPM: {audio_bpm}, Segments: {len(segments)}, Downbeats: {len(downbeats)}")
 
-        # Step 2: Extract energy features
-        logger.info(f"Extracting energy features at {bpm} BPM...")
-        energy_data = extract_energy_features(file_path, bpm)
+        # Step 3: Determine where bar 1 of the audio starts in the arrangement
+        # This is critical for alignment accuracy
+        #
+        # Key insight: When Ableton warps audio, it typically sets the clip's 1.1.1 marker
+        # to align with the first detected beat. So the clip_start position usually
+        # already accounts for any intro/silence before bar 1.
+        #
+        # The first_downbeat from our analysis tells us where WE think bar 1 is,
+        # which may differ from what Ableton detected. For accuracy, we use our
+        # downbeat positions for segment boundaries, but trust the clip position
+        # for the overall alignment.
 
-        # Step 3: Create MIDI track
+        bar1_offset_beat = 0.0  # Default: bar 1 starts at beat 0
+        first_downbeat_sec = downbeats[0] if downbeats else 0
+        first_downbeat_beats = first_downbeat_sec * audio_bpm / 60.0
+
+        if audio_start_beat is not None:
+            # User explicitly specified where bar 1 starts - trust them completely
+            bar1_offset_beat = audio_start_beat
+            logger.info(f"Using user-specified audio_start_beat: {bar1_offset_beat}")
+        elif audio_track_index is not None:
+            # Auto-detect from the audio clip's position
+            logger.info(f"Auto-detecting audio position from track {audio_track_index}...")
+            clips_result = ableton.send_command("get_arrangement_clips", {
+                "track_index": audio_track_index
+            })
+            audio_clips = clips_result.get('clips', [])
+            if audio_clips:
+                # Use the first clip's start position
+                # For warped clips, Ableton's clip start usually = bar 1 of the audio
+                # (because Ableton aligns the 1.1.1 marker during warping)
+                clip_start = audio_clips[0].get('start_time', 0)
+
+                # If the first downbeat is very close to 0 (< 0.5 beats), assume
+                # Ableton has already aligned things and use clip_start directly.
+                # Otherwise, there's significant intro before bar 1 that we need to account for.
+                if first_downbeat_beats < 0.5:
+                    bar1_offset_beat = clip_start
+                    logger.info(f"Audio clip starts at beat {clip_start}, first downbeat near start ({first_downbeat_beats:.2f} beats)")
+                else:
+                    # Significant offset - add it to the clip start
+                    bar1_offset_beat = clip_start + first_downbeat_beats
+                    logger.info(f"Audio clip starts at beat {clip_start}, first downbeat at {first_downbeat_sec:.2f}s = {first_downbeat_beats:.2f} beats")
+
+                logger.info(f"Bar 1 of audio is at arrangement beat {bar1_offset_beat}")
+            else:
+                logger.warning(f"No clips found on track {audio_track_index}, using beat 0 + first downbeat offset")
+                bar1_offset_beat = first_downbeat_beats
+        else:
+            # No position info provided - assume clip starts at beat 0
+            # Add first downbeat offset if there's intro before bar 1
+            bar1_offset_beat = first_downbeat_beats
+            logger.info(f"No audio position specified. First downbeat at {first_downbeat_sec:.2f}s = bar 1 at beat {bar1_offset_beat:.2f}")
+
+        # Step 4: Extract energy features
+        logger.info(f"Extracting energy features at {audio_bpm} BPM...")
+        energy_data = extract_energy_features(file_path, audio_bpm)
+
+        # Step 5: Create MIDI track
         logger.info(f"Creating MIDI track '{track_name}'...")
         track_result = ableton.send_command("create_midi_track", {"index": -1})
         track_index = track_result.get("index")
@@ -2032,29 +2542,56 @@ def create_structure_track(
             "name": track_name
         })
 
-        # Step 4: Convert segments to beat positions and ensure continuous boundaries
+        # Step 6: Convert segments to beat positions, snapping to downbeats
         # Segments have 'start' and 'end' in seconds
+        # Downbeats are timestamps in seconds where each bar's beat 1 occurs
+
+        # Helper function to find the nearest downbeat and return its bar number
+        def snap_to_nearest_bar(time_sec: float) -> int:
+            """Snap a time in seconds to the nearest bar number (1-indexed)."""
+            if not downbeats:
+                # Fallback: calculate bar from raw time
+                beat = time_sec * audio_bpm / 60.0
+                return max(1, round(beat / 4) + 1)
+
+            # Find closest downbeat
+            best_bar = 1
+            best_dist = float('inf')
+            for i, db_time in enumerate(downbeats):
+                dist = abs(db_time - time_sec)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_bar = i + 1  # 1-indexed bars
+            return best_bar
+
         clips_data = []
         for i, seg in enumerate(segments):
             start_sec = seg.get('start', 0)
             end_sec = seg.get('end', start_sec + 4)
             label = seg.get('label', 'unknown').upper()
 
-            # Convert seconds to beats
-            start_beat = start_sec * bpm / 60.0
-            end_beat = end_sec * bpm / 60.0
+            # Snap to nearest bar boundaries
+            start_bar = snap_to_nearest_bar(start_sec)
+            end_bar = snap_to_nearest_bar(end_sec)
 
-            # Round to nearest quarter note for clean boundaries
-            start_beat = round(start_beat * 4) / 4
-            end_beat = round(end_beat * 4) / 4
+            # Convert bar numbers to arrangement beats
+            # bar 1 = bar1_offset_beat, bar 2 = bar1_offset_beat + 4, etc.
+            start_beat = bar1_offset_beat + (start_bar - 1) * 4
+            end_beat = bar1_offset_beat + (end_bar - 1) * 4
+
+            # Ensure we have at least one bar of content
+            if end_beat <= start_beat:
+                end_beat = start_beat + 4
 
             clips_data.append({
                 'label': label,
                 'start_beat': start_beat,
                 'end_beat': end_beat,
+                'start_bar': start_bar,
+                'end_bar': end_bar,
             })
 
-        # Ensure continuous boundaries (no gaps between clips)
+        # Ensure continuous boundaries (no gaps or overlaps between clips)
         for i in range(1, len(clips_data)):
             if clips_data[i]['start_beat'] != clips_data[i-1]['end_beat']:
                 clips_data[i]['start_beat'] = clips_data[i-1]['end_beat']
@@ -2068,6 +2605,8 @@ def create_structure_track(
         for i, clip_data in enumerate(clips_data):
             start_beat = clip_data['start_beat']
             end_beat = clip_data['end_beat']
+            start_bar = clip_data['start_bar']
+            end_bar = clip_data['end_bar']
             label = clip_data['label']
             length = end_beat - start_beat
 
@@ -2075,7 +2614,7 @@ def create_structure_track(
                 continue
 
             # Create the clip
-            logger.info(f"Creating clip {i}: {label} at beat {start_beat}, length {length}")
+            logger.info(f"Creating clip {i}: {label} (bars {start_bar}-{end_bar}) at arrangement beat {start_beat}, length {length}")
             clip_result = ableton.send_command("create_clip_in_arrangement", {
                 "track_index": track_index,
                 "start_time": start_beat,
@@ -2102,16 +2641,18 @@ def create_structure_track(
                 beat += 4
 
             # Energy meter notes per 16th note
-            # Convert clip beat range to seconds for lookup
-            clip_start_sec = start_beat * 60.0 / bpm
-            clip_end_sec = end_beat * 60.0 / bpm
+            # Convert audio bar range to seconds for energy data lookup
+            # Energy data is in original audio time, so use audio bar positions
+            audio_start_sec = (start_bar - 1) * 4 * 60.0 / audio_bpm
+            audio_end_sec = (end_bar - 1) * 4 * 60.0 / audio_bpm
 
             for j, t in enumerate(energy_times):
-                if t < clip_start_sec or t >= clip_end_sec:
+                if t < audio_start_sec or t >= audio_end_sec:
                     continue
 
-                # Convert time back to beat position within clip
-                beat_pos = (t - clip_start_sec) * bpm / 60.0
+                # Convert time to beat position within clip
+                # t is in seconds from audio start, convert to beats relative to this clip
+                beat_pos = (t - audio_start_sec) * audio_bpm / 60.0
 
                 # Get energy values
                 rms_val = energy_rms[j] if j < len(energy_rms) else 0
@@ -2145,9 +2686,7 @@ def create_structure_track(
                     })
                     time_module.sleep(0.05)
 
-            # Set clip name
-            start_bar = int(start_beat / 4) + 1
-            end_bar = int(end_beat / 4)
+            # Set clip name using audio bar numbers
             clip_name = f"{label} | bars {start_bar}-{end_bar}"
 
             ableton.send_command("set_arrangement_clip_name", {
@@ -2178,7 +2717,9 @@ def create_structure_track(
 
         return json.dumps({
             "success": True,
-            "bpm": bpm,
+            "audio_bpm": audio_bpm,
+            "project_bpm": project_bpm,
+            "bar1_offset_beat": bar1_offset_beat,
             "track_index": track_index,
             "track_name": track_name,
             "clips": created_clips,
