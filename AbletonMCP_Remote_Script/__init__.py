@@ -282,6 +282,8 @@ class AbletonMCP(ControlSurface):
                                  "set_chain_mute", "insert_device_to_chain",
                                  # Sidechain routing
                                  "set_compressor_sidechain_routing",
+                                 # Clip alignment
+                                 "align_clips_to_groove",
                                  # Batch operations
                                  "batch_move_clips"]:
                 # Use a thread-safe approach with a response queue
@@ -1562,6 +1564,9 @@ class AbletonMCP(ControlSurface):
         Shift all arrangement clips on a track by specified beats.
         Useful for aligning vocals to a target groove.
 
+        Uses duplicate+delete approach since start_time is read-only.
+        Processes clips in descending index order to avoid index shifting.
+
         Args:
             track_index: Index of track containing clips to shift
             shift_beats: Amount to shift (positive = later, negative = earlier)
@@ -1575,17 +1580,35 @@ class AbletonMCP(ControlSurface):
             if not hasattr(track, 'arrangement_clips'):
                 raise RuntimeError("arrangement_clips not available (requires Live 11+)")
 
-            moved = []
+            # Collect all clips info first (before we start modifying)
+            clips_to_move = []
             for i, clip in enumerate(track.arrangement_clips):
-                old_start = clip.start_time
-                new_start = old_start + shift_beats
-                clip.start_time = new_start
-                moved.append({
+                clips_to_move.append({
                     "index": i,
                     "name": clip.name,
-                    "old_start": old_start,
-                    "new_start": new_start
+                    "old_start": clip.start_time,
+                    "new_start": clip.start_time + shift_beats
                 })
+
+            # Process in reverse order to avoid index shifting
+            moved = []
+            for clip_info in reversed(clips_to_move):
+                clip = track.arrangement_clips[clip_info["index"]]
+                new_start = clip_info["new_start"]
+
+                # Skip if shift is negligible
+                if abs(shift_beats) < 0.001:
+                    moved.append(clip_info)
+                    continue
+
+                # Duplicate to new position then delete original
+                track.duplicate_clip_to_arrangement(clip, new_start)
+                track.delete_clip(clip)
+
+                moved.append(clip_info)
+
+            # Reverse back to original order for output
+            moved.reverse()
 
             return {
                 "success": True,
@@ -1603,6 +1626,10 @@ class AbletonMCP(ControlSurface):
         """
         Move multiple arrangement clips in a single operation.
 
+        Uses duplicate+delete approach since start_time is read-only.
+        Processes moves grouped by track and sorted by clip index (descending)
+        to avoid index shifting issues.
+
         Args:
             moves: List of dicts, each with:
                 - track_index: Track containing the clip
@@ -1615,61 +1642,101 @@ class AbletonMCP(ControlSurface):
             results = []
             errors = []
 
+            # Group moves by track and sort by clip_index descending within each track
+            # This prevents index shifting from affecting subsequent moves
+            from collections import defaultdict
+            moves_by_track = defaultdict(list)
+
             for i, move in enumerate(moves):
-                try:
-                    track_index = move.get("track_index")
-                    clip_index = move.get("clip_index")
-                    new_start = move.get("new_start")
+                track_index = move.get("track_index")
+                clip_index = move.get("clip_index")
+                new_start = move.get("new_start")
 
-                    if track_index is None or clip_index is None or new_start is None:
-                        errors.append({
-                            "move_index": i,
-                            "error": "Missing required field (track_index, clip_index, or new_start)"
-                        })
-                        continue
-
-                    if track_index < 0 or track_index >= len(self._song.tracks):
-                        errors.append({
-                            "move_index": i,
-                            "error": "Track index out of range"
-                        })
-                        continue
-
-                    track = self._song.tracks[track_index]
-
-                    if not hasattr(track, 'arrangement_clips'):
-                        errors.append({
-                            "move_index": i,
-                            "error": "arrangement_clips not available"
-                        })
-                        continue
-
-                    if clip_index < 0 or clip_index >= len(track.arrangement_clips):
-                        errors.append({
-                            "move_index": i,
-                            "error": "Clip index out of range"
-                        })
-                        continue
-
-                    clip = track.arrangement_clips[clip_index]
-                    old_start = clip.start_time
-                    clip.start_time = new_start
-
-                    results.append({
-                        "move_index": i,
-                        "track_index": track_index,
-                        "track_name": track.name,
-                        "clip_index": clip_index,
-                        "clip_name": clip.name,
-                        "old_start": old_start,
-                        "new_start": new_start
-                    })
-
-                except Exception as e:
+                if track_index is None or clip_index is None or new_start is None:
                     errors.append({
                         "move_index": i,
-                        "error": str(e)
+                        "error": "Missing required field (track_index, clip_index, or new_start)"
                     })
+                    continue
+
+                moves_by_track[track_index].append({
+                    "move_index": i,
+                    "clip_index": clip_index,
+                    "new_start": new_start
+                })
+
+            # Process each track's moves in descending clip index order
+            for track_index, track_moves in moves_by_track.items():
+                # Sort by clip_index descending
+                track_moves.sort(key=lambda m: m["clip_index"], reverse=True)
+
+                if track_index < 0 or track_index >= len(self._song.tracks):
+                    for m in track_moves:
+                        errors.append({
+                            "move_index": m["move_index"],
+                            "error": "Track index out of range"
+                        })
+                    continue
+
+                track = self._song.tracks[track_index]
+
+                if not hasattr(track, 'arrangement_clips'):
+                    for m in track_moves:
+                        errors.append({
+                            "move_index": m["move_index"],
+                            "error": "arrangement_clips not available"
+                        })
+                    continue
+
+                for m in track_moves:
+                    try:
+                        clip_index = m["clip_index"]
+                        new_start = m["new_start"]
+
+                        if clip_index < 0 or clip_index >= len(track.arrangement_clips):
+                            errors.append({
+                                "move_index": m["move_index"],
+                                "error": "Clip index out of range"
+                            })
+                            continue
+
+                        clip = track.arrangement_clips[clip_index]
+                        clip_name = clip.name
+                        old_start = clip.start_time
+
+                        # Skip if already at target position
+                        if abs(new_start - old_start) < 0.001:
+                            results.append({
+                                "move_index": m["move_index"],
+                                "track_index": track_index,
+                                "track_name": track.name,
+                                "clip_name": clip_name,
+                                "old_start": old_start,
+                                "new_start": new_start,
+                                "skipped": True
+                            })
+                            continue
+
+                        # Duplicate to new position
+                        track.duplicate_clip_to_arrangement(clip, new_start)
+
+                        # Delete original
+                        track.delete_clip(clip)
+
+                        results.append({
+                            "move_index": m["move_index"],
+                            "track_index": track_index,
+                            "track_name": track.name,
+                            "clip_name": clip_name,
+                            "old_start": old_start,
+                            "new_start": new_start
+                        })
+
+                    except Exception as e:
+                        errors.append({
+                            "move_index": m["move_index"],
+                            "error": str(e)
+                        })
 
             return {
                 "success": len(errors) == 0,
