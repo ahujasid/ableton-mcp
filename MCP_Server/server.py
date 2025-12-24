@@ -1986,26 +1986,6 @@ def delete_cue_point(ctx: Context, time: float) -> str:
 # ============================================
 
 @mcp.tool()
-def analyze_audio_technical(ctx: Context, file_path: str) -> str:
-    """
-    Perform technical analysis of an audio file.
-
-    Returns BPM, time signature, beat positions, and chord progression with timestamps.
-    Uses ChordMini API (free, rate limited to 2 requests/minute per endpoint).
-
-    Parameters:
-    - file_path: Absolute path to the audio file (WAV, MP3, AIFF, AAC, OGG, FLAC, M4A)
-    """
-    try:
-        from MCP_Server.audio_analysis import analyze_audio_technical as do_analysis
-        result = do_analysis(file_path)
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        logger.error(f"Error analyzing audio: {str(e)}")
-        return f"Error analyzing audio: {str(e)}"
-
-
-@mcp.tool()
 def analyze_audio_describe(ctx: Context, file_path: str, prompt: str) -> str:
     """
     Ask questions about an audio file using AI (Music Flamingo via Replicate).
@@ -2085,7 +2065,7 @@ def analyze_frequency_clash(
 
 
 @mcp.tool()
-def analyze_song_structure(ctx: Context, file_path: str, include_beats: bool = False, target_bpm: float = None) -> str:
+def analyze_song_structure(ctx: Context, file_path: str, include_beats: bool = False, target_bpm: float = None, include_key: bool = True) -> str:
     """
     Analyze song structure to identify sections (intro, verse, chorus, bridge, outro, etc.).
 
@@ -2094,23 +2074,29 @@ def analyze_song_structure(ctx: Context, file_path: str, include_beats: bool = F
     - Beat and downbeat tracking
     - Functional segment boundaries with labels
 
+    Also detects musical key locally using librosa (free, no API cost).
+
     Parameters:
     - file_path: Absolute path to the audio file (WAV, MP3, AIFF, AAC, OGG, FLAC, M4A)
     - include_beats: Include full beat/downbeat arrays (default False to reduce output size)
     - target_bpm: Lock BPM detection to this value (±1 BPM). Use when tempo is misdetected
                   (e.g., 140 BPM track detected as 81 BPM due to half-time feel).
+    - include_key: Run local key detection (default True, free)
 
     Note: Requires REPLICATE_API_TOKEN environment variable. Costs ~$0.10 per track.
 
     Returns JSON with:
     - bpm: tempo in beats per minute
+    - key: detected musical key (e.g., "C major", "A minor")
+    - key_confidence: confidence score 0-1
+    - key_alternatives: top 3 alternative key candidates
     - segments: list of {start, end, label} where label is intro/verse/chorus/bridge/outro/etc
     - beats: list of beat timestamps in seconds (if include_beats=True)
     - downbeats: list of downbeat timestamps in seconds (if include_beats=True)
     """
     try:
         from MCP_Server.audio_analysis import analyze_song_structure as do_analysis
-        result = do_analysis(file_path, include_beats, target_bpm=target_bpm)
+        result = do_analysis(file_path, include_beats, target_bpm=target_bpm, include_key=include_key)
         return json.dumps(result, indent=2)
     except ValueError as e:
         logger.error(f"Song structure analysis configuration error: {str(e)}")
@@ -2672,7 +2658,7 @@ def audio_capture(ctx: Context, start_time: float, duration: float) -> str:
     - duration: Recording duration in seconds
 
     Returns the path to the captured WAV file, which can be used with
-    analyze_audio_technical or analyze_audio_describe.
+    analyze_audio_describe or analyze_frequency_clash.
     """
     import time
     import os

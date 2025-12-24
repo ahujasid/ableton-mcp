@@ -230,8 +230,9 @@ The system uses a simple JSON-based protocol over TCP sockets:
 
 ### Audio Analysis APIs
 
-- **ChordMini**: Used for BPM detection, beat tracking, and chord recognition (free, rate-limited)
-- **Google Gemini**: Used for natural language audio description and analysis (requires `GOOGLE_API_KEY` environment variable)
+- **Replicate (All-In-One)**: Used for BPM detection, beat tracking, song structure analysis, and key detection (requires `REPLICATE_API_TOKEN`)
+- **Music Flamingo**: AI-powered music understanding for detailed audio description (requires `REPLICATE_API_TOKEN`)
+- **Librosa**: Local analysis for vocal onsets, frequency clash detection, and energy features (free, runs locally)
 
 ### Limitations & Security Considerations
 

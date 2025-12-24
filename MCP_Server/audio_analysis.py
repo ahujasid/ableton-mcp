@@ -2,15 +2,14 @@
 Audio analysis module for Ableton MCP.
 
 Provides integration with:
-- ChordMini API for technical music analysis (BPM, beats, chords)
 - Music Flamingo (via Replicate) for advanced music understanding
 - Replicate API for song structure analysis (segments, beats, downbeats)
+- Local librosa-based analysis for onsets, energy, and key detection
 """
 
 import os
 import json
 import logging
-import mimetypes
 import time
 from pathlib import Path
 from typing import Optional
@@ -19,26 +18,8 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# ChordMini API configuration
-CHORDMINI_BASE_URL = "https://chordmini-backend-191567167632.us-central1.run.app"
-
 # Supported audio formats
 SUPPORTED_FORMATS = {'.wav', '.mp3', '.aiff', '.aac', '.ogg', '.flac', '.m4a'}
-
-
-def get_mime_type(file_path: str) -> str:
-    """Get MIME type for an audio file."""
-    ext = Path(file_path).suffix.lower()
-    mime_types = {
-        '.wav': 'audio/wav',
-        '.mp3': 'audio/mpeg',
-        '.aiff': 'audio/aiff',
-        '.aac': 'audio/aac',
-        '.ogg': 'audio/ogg',
-        '.flac': 'audio/flac',
-        '.m4a': 'audio/mp4',
-    }
-    return mime_types.get(ext, 'audio/mpeg')
 
 
 def validate_audio_file(file_path: str) -> tuple[bool, str]:
@@ -56,62 +37,6 @@ def validate_audio_file(file_path: str) -> tuple[bool, str]:
         return False, f"Unsupported format: {ext}. Supported: {', '.join(SUPPORTED_FORMATS)}"
 
     return True, ""
-
-
-class ChordMiniClient:
-    """Client for ChordMini API - technical music analysis."""
-
-    def __init__(self):
-        self.base_url = CHORDMINI_BASE_URL
-
-    def detect_beats(self, file_path: str) -> dict:
-        """
-        Analyze audio file for beats, BPM, and time signature.
-
-        Returns dict with:
-        - bpm: float
-        - time_signature: str (e.g., "4/4")
-        - beats: list of beat timestamps
-        - downbeats: list of downbeat timestamps
-        """
-        valid, error = validate_audio_file(file_path)
-        if not valid:
-            raise ValueError(error)
-
-        url = f"{self.base_url}/api/detect-beats"
-
-        with open(file_path, 'rb') as f:
-            files = {'file': (Path(file_path).name, f, get_mime_type(file_path))}
-            response = requests.post(url, files=files, timeout=120)
-
-        if response.status_code == 429:
-            raise Exception("Rate limited. ChordMini allows 2 requests/minute for beat detection.")
-
-        response.raise_for_status()
-        return response.json()
-
-    def recognize_chords(self, file_path: str) -> dict:
-        """
-        Analyze audio file for chord progression.
-
-        Returns dict with:
-        - chords: list of {chord: str, start: float, end: float}
-        """
-        valid, error = validate_audio_file(file_path)
-        if not valid:
-            raise ValueError(error)
-
-        url = f"{self.base_url}/api/recognize-chords"
-
-        with open(file_path, 'rb') as f:
-            files = {'file': (Path(file_path).name, f, get_mime_type(file_path))}
-            response = requests.post(url, files=files, timeout=120)
-
-        if response.status_code == 429:
-            raise Exception("Rate limited. ChordMini allows 2 requests/minute for chord recognition.")
-
-        response.raise_for_status()
-        return response.json()
 
 
 class AudioFlamingoClient:
@@ -305,7 +230,99 @@ class ReplicateMusicAnalyzer:
         return formatted
 
 
-def analyze_song_structure(file_path: str, include_beats: bool = True, target_bpm: Optional[float] = None) -> dict:
+def detect_key(file_path: str) -> dict:
+    """
+    Detect the musical key of an audio file using librosa.
+
+    Uses chroma feature analysis with Krumhansl-Schmuckler key profiles
+    to determine the most likely key.
+
+    Args:
+        file_path: Path to the audio file
+
+    Returns:
+        Dict with:
+        - key: str (e.g., "C major", "A minor")
+        - key_name: str (e.g., "C", "A")
+        - mode: str ("major" or "minor")
+        - confidence: float (0-1, correlation strength)
+        - all_keys: list of all keys ranked by correlation
+    """
+    import librosa
+    import numpy as np
+
+    valid, error = validate_audio_file(file_path)
+    if not valid:
+        raise ValueError(error)
+
+    logger.info(f"Detecting key for: {file_path}")
+
+    # Load audio
+    y, sr = librosa.load(file_path, sr=22050)
+
+    # Compute chroma features (pitch class energy)
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+
+    # Sum chroma over time to get pitch class distribution
+    chroma_sum = np.sum(chroma, axis=1)
+    chroma_sum = chroma_sum / np.max(chroma_sum)  # Normalize
+
+    # Krumhansl-Schmuckler key profiles
+    # Major key profile (starting from C)
+    major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+    # Minor key profile (starting from C)
+    minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+
+    # Normalize profiles
+    major_profile = major_profile / np.linalg.norm(major_profile)
+    minor_profile = minor_profile / np.linalg.norm(minor_profile)
+    chroma_norm = chroma_sum / np.linalg.norm(chroma_sum)
+
+    # Note names
+    notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+    # Test all 24 keys (12 major + 12 minor)
+    correlations = []
+
+    for i in range(12):
+        # Rotate chroma to align with this root note
+        rotated_chroma = np.roll(chroma_norm, -i)
+
+        # Correlate with major and minor profiles
+        major_corr = np.corrcoef(rotated_chroma, major_profile)[0, 1]
+        minor_corr = np.corrcoef(rotated_chroma, minor_profile)[0, 1]
+
+        correlations.append({
+            "key": f"{notes[i]} major",
+            "key_name": notes[i],
+            "mode": "major",
+            "correlation": float(major_corr)
+        })
+        correlations.append({
+            "key": f"{notes[i]} minor",
+            "key_name": notes[i],
+            "mode": "minor",
+            "correlation": float(minor_corr)
+        })
+
+    # Sort by correlation (highest first)
+    correlations.sort(key=lambda x: x["correlation"], reverse=True)
+
+    # Best match
+    best = correlations[0]
+
+    logger.info(f"Detected key: {best['key']} (confidence: {best['correlation']:.2f})")
+
+    return {
+        "key": best["key"],
+        "key_name": best["key_name"],
+        "mode": best["mode"],
+        "confidence": round(best["correlation"], 3),
+        "all_keys": correlations[:6]  # Top 6 candidates
+    }
+
+
+def analyze_song_structure(file_path: str, include_beats: bool = True, target_bpm: Optional[float] = None, include_key: bool = True) -> dict:
     """
     Analyze song structure to identify sections (intro, verse, chorus, etc.).
 
@@ -314,49 +331,34 @@ def analyze_song_structure(file_path: str, include_beats: bool = True, target_bp
     - Beat and downbeat tracking
     - Functional segment boundaries and labels
 
+    Also detects musical key locally using librosa (free, no API cost).
+
     Args:
         file_path: Path to the audio file
         include_beats: Include beat/downbeat arrays (can be large)
         target_bpm: Lock BPM detection to this value (±1 BPM). Use when tempo is
                    misdetected (e.g., 140 BPM track detected as 81 BPM).
+        include_key: Run local key detection (default True)
 
     Returns:
-        Dict with bpm, segments, beats, downbeats
+        Dict with bpm, segments, beats, downbeats, key
     """
     client = ReplicateMusicAnalyzer()
-    return client.analyze(file_path, include_beats, target_bpm=target_bpm)
+    result = client.analyze(file_path, include_beats, target_bpm=target_bpm)
 
+    # Add key detection (local, free)
+    if include_key:
+        try:
+            key_result = detect_key(file_path)
+            result["key"] = key_result["key"]
+            result["key_confidence"] = key_result["confidence"]
+            result["key_alternatives"] = [k["key"] for k in key_result["all_keys"][1:4]]  # Top 3 alternatives
+        except Exception as e:
+            logger.warning(f"Key detection failed: {e}")
+            result["key"] = None
+            result["key_error"] = str(e)
 
-def analyze_audio_technical(file_path: str) -> dict:
-    """
-    Perform technical analysis of an audio file.
-
-    Returns BPM, time signature, beats, and chord progression.
-    """
-    client = ChordMiniClient()
-
-    results = {
-        "file": file_path,
-        "beats": None,
-        "chords": None,
-        "errors": []
-    }
-
-    # Get beat analysis
-    try:
-        results["beats"] = client.detect_beats(file_path)
-    except Exception as e:
-        logger.error(f"Beat detection failed: {e}")
-        results["errors"].append(f"Beat detection: {str(e)}")
-
-    # Get chord analysis
-    try:
-        results["chords"] = client.recognize_chords(file_path)
-    except Exception as e:
-        logger.error(f"Chord recognition failed: {e}")
-        results["errors"].append(f"Chord recognition: {str(e)}")
-
-    return results
+    return result
 
 
 def analyze_audio_describe(file_path: str, prompt: str) -> str:
