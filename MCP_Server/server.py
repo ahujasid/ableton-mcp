@@ -1096,15 +1096,19 @@ def set_eq_bands(ctx: Context, track_index: int, device_index: int, bands: list,
             {"band": 4, "freq": 5000, "gain": -2.0, "q": 0.7}
         ])
 
-    Frequency bands reference:
-    - Sub: 20-60 Hz
-    - Bass: 60-250 Hz
-    - Low Mid: 250-500 Hz
-    - Mid: 500-2000 Hz
-    - Upper Mid: 2000-4000 Hz
-    - Presence: 4000-6000 Hz
-    - Brilliance: 6000-12000 Hz
-    - Air: 12000-20000 Hz
+    Filter types: 0=LowCut48, 1=LowCut12, 2=LowShelf, 3=Bell, 4=Notch, 5=HighShelf, 6=HighCut12, 7=HighCut48
+
+    Clash band to EQ band mapping (for use with analyze_frequency_clash):
+    | Clash Band  | Freq Range     | Center | EQ Band |
+    |-------------|----------------|--------|---------|
+    | Sub         | 20-60 Hz       | 40 Hz  | 1       |
+    | Bass        | 60-250 Hz      | 125 Hz | 2       |
+    | Low Mid     | 250-500 Hz     | 350 Hz | 3       |
+    | Mid         | 500-2000 Hz    | 1 kHz  | 4       |
+    | Upper Mid   | 2000-4000 Hz   | 3 kHz  | 5       |
+    | Presence    | 4000-6000 Hz   | 5 kHz  | 6       |
+    | Brilliance  | 6000-12000 Hz  | 8.5 kHz| 7       |
+    | Air         | 12000-20000 Hz | 15 kHz | 8       |
     """
     import math
 

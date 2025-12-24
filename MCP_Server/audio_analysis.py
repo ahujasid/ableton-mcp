@@ -1192,9 +1192,10 @@ def analyze_frequency_clash(
     S_b_db = librosa.power_to_db(S_b, ref=np.max)
 
     # Define frequency band edges (in Hz)
-    # Using perceptually meaningful bands
+    # Using perceptually meaningful bands that map to EQ Eight bands 1-8
     band_edges = [20, 60, 150, 400, 1000, 2500, 6000, 12000, 20000]
     band_names = ["Sub", "Bass", "Low Mid", "Mid", "Upper Mid", "Presence", "Brilliance", "Air"]
+    band_centers = [40, 125, 350, 1000, 3000, 5000, 8500, 15000]  # Center frequencies for EQ
 
     # Get mel frequencies
     mel_freqs = librosa.mel_frequencies(n_mels=n_mels, fmin=0, fmax=sr/2)
@@ -1239,6 +1240,8 @@ def analyze_frequency_clash(
         band_info = {
             "name": band_name,
             "freq_range": f"{low_freq}-{high_freq} Hz",
+            "center_freq": band_centers[i],
+            "eq_band": i + 1,  # EQ Eight band number (1-8)
             "energy_a": round(float(norm_a), 3),
             "energy_b": round(float(norm_b), 3),
             "clash_score": round(float(clash_score), 3),
@@ -1263,7 +1266,11 @@ def analyze_frequency_clash(
 
         recommendations.append({
             "band": band["name"],
+            "eq_band": band["eq_band"],
+            "center_freq": band["center_freq"],
             "freq_range": band["freq_range"],
+            "cut_db": cut_amount,
+            "cut_track": cut_track,
             "action": f"Cut {cut_amount}dB on track {cut_track}",
             "reason": f"Both tracks compete in {band['name']} range (clash score: {band['clash_score']})"
         })
