@@ -134,15 +134,17 @@ Once the config file has been set on Claude, and the remote script is running in
 - Group tracks together
 - Set track colors for organization
 - Control track volume, pan, mute, and solo
+- **Set send levels** for routing to reverb/delay return tracks
 
 ### Clip Operations
 - Create, edit, and trigger clips
 - Set clip colors
 - Duplicate clips across tracks and slots
 - Add and manipulate MIDI notes
+- **Read MIDI notes from clips** (pitch, timing, velocity, duration)
 - Quantize MIDI clips to a grid
 - Transpose MIDI clips
-- Control clip loop settings
+- Control clip loop settings (loop start, end, start/end markers)
 
 ### Scene Management
 - Create, delete, and duplicate scenes
@@ -219,6 +221,9 @@ Here are some examples of what you can ask Claude to do:
 - "Transpose the clip in track 1 up by 5 semitones"
 - "Duplicate the clip from track 0, slot 0 to track 1, slot 1"
 - "Set the clip at track 0, slot 0 to red (color index 5)"
+- "Read the MIDI notes from the clip at track 1, slot 0"
+- "Show me all the notes in track 2, clip 1"
+- "Set the loop points for track 0, clip 0 to start at 0 and end at 4 beats"
 
 ### Track Mixing
 - "Set track 0 volume to 0.7"
@@ -226,6 +231,9 @@ Here are some examples of what you can ask Claude to do:
 - "Mute tracks 2 and 3"
 - "Solo track 0"
 - "Set track 0 to blue (color index 45)"
+- "Set send A on track 1 to 0.5"
+- "Route track 2 to reverb at 70%"
+- "Increase the delay send on track 0 to 0.8"
 
 ### Device Control
 - "Show me all parameters for the first device on track 0"

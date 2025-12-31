@@ -240,6 +240,10 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 clip_index = params.get("clip_index", 0)
                 response["result"] = self._analyze_audio_clip(track_index, clip_index)
+            elif command_type == "get_clip_notes":
+                track_index = params.get("track_index", 0)
+                clip_index = params.get("clip_index", 0)
+                response["result"] = self._get_clip_notes(track_index, clip_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
@@ -252,7 +256,8 @@ class AbletonMCP(ControlSurface):
                                  "set_track_color", "set_clip_color", "set_device_parameter",
                                  "quantize_clip", "transpose_clip", "duplicate_clip",
                                  "group_tracks", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo",
-                                 "load_audio_sample", "set_warp_mode", "set_clip_warp", "crop_clip", "reverse_clip"]:
+                                 "load_audio_sample", "set_warp_mode", "set_clip_warp", "crop_clip", "reverse_clip",
+                                 "set_clip_loop_points", "set_clip_start_marker", "set_clip_end_marker", "set_track_send"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -416,6 +421,27 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             result = self._reverse_clip(track_index, clip_index)
+                        elif command_type == "set_clip_loop_points":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            loop_start = params.get("loop_start", 0.0)
+                            loop_end = params.get("loop_end", 4.0)
+                            result = self._set_clip_loop_points(track_index, clip_index, loop_start, loop_end)
+                        elif command_type == "set_clip_start_marker":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            start_marker = params.get("start_marker", 0.0)
+                            result = self._set_clip_start_marker(track_index, clip_index, start_marker)
+                        elif command_type == "set_clip_end_marker":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            end_marker = params.get("end_marker", 0.0)
+                            result = self._set_clip_end_marker(track_index, clip_index, end_marker)
+                        elif command_type == "set_track_send":
+                            track_index = params.get("track_index", 0)
+                            send_index = params.get("send_index", 0)
+                            value = params.get("value", 0.0)
+                            result = self._set_track_send(track_index, send_index, value)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -2308,4 +2334,189 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error analyzing audio clip: " + str(e))
             self.log_message(traceback.format_exc())
+            raise
+
+    def _get_clip_notes(self, track_index, clip_index):
+        """Read all MIDI notes from a clip"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            if clip.is_audio_clip:
+                raise Exception("Clip is not a MIDI clip")
+
+            # Get all notes from the clip
+            # get_notes returns a tuple: (notes, time_range_start, time_range_end)
+            # Each note is a tuple: (pitch, start_time, duration, velocity, muted)
+            notes_data = clip.get_notes(0, 0, clip.length, 128)
+
+            notes_list = []
+            if notes_data and len(notes_data) > 0:
+                notes_tuple = notes_data[0]  # Get the notes tuple
+
+                for note in notes_tuple:
+                    note_dict = {
+                        "pitch": note[0],
+                        "start_time": note[1],
+                        "duration": note[2],
+                        "velocity": note[3],
+                        "muted": note[4] if len(note) > 4 else False
+                    }
+                    notes_list.append(note_dict)
+
+            result = {
+                "clip_name": clip.name,
+                "clip_length": clip.length,
+                "note_count": len(notes_list),
+                "notes": notes_list
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error getting clip notes: " + str(e))
+            raise
+
+    def _set_clip_loop_points(self, track_index, clip_index, loop_start, loop_end):
+        """Set clip loop start and end points"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            # Set loop points
+            clip.loop_start = loop_start
+            clip.loop_end = loop_end
+
+            result = {
+                "loop_start": clip.loop_start,
+                "loop_end": clip.loop_end,
+                "loop_length": clip.loop_end - clip.loop_start
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting clip loop points: " + str(e))
+            raise
+
+    def _set_clip_start_marker(self, track_index, clip_index, start_marker):
+        """Set clip start marker position"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            if not clip.is_audio_clip:
+                raise Exception("Clip is not an audio clip")
+
+            # Set start marker
+            clip.start_marker = start_marker
+
+            result = {
+                "start_marker": clip.start_marker
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting clip start marker: " + str(e))
+            raise
+
+    def _set_clip_end_marker(self, track_index, clip_index, end_marker):
+        """Set clip end marker position"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            if not clip.is_audio_clip:
+                raise Exception("Clip is not an audio clip")
+
+            # Set end marker
+            clip.end_marker = end_marker
+
+            result = {
+                "end_marker": clip.end_marker
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting clip end marker: " + str(e))
+            raise
+
+    def _set_track_send(self, track_index, send_index, value):
+        """Set track send level"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            # Check if the track has sends
+            if not hasattr(track, 'mixer_device'):
+                raise Exception("Track has no mixer device")
+
+            mixer = track.mixer_device
+
+            if not hasattr(mixer, 'sends'):
+                raise Exception("Mixer has no sends")
+
+            if send_index < 0 or send_index >= len(mixer.sends):
+                raise IndexError("Send index out of range")
+
+            send = mixer.sends[send_index]
+
+            # Clamp value between 0.0 and 1.0
+            value = max(0.0, min(1.0, value))
+
+            # Set the send level
+            send.value = value
+
+            result = {
+                "track_index": track_index,
+                "send_index": send_index,
+                "value": send.value
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting track send: " + str(e))
             raise

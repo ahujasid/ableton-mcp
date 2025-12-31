@@ -113,7 +113,8 @@ class AbletonConnection:
             "set_track_color", "set_clip_color",
             "quantize_clip", "transpose_clip", "duplicate_clip",
             "group_tracks", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo",
-            "load_audio_sample", "set_warp_mode", "set_clip_warp", "crop_clip", "reverse_clip"
+            "load_audio_sample", "set_warp_mode", "set_clip_warp", "crop_clip", "reverse_clip",
+            "set_clip_loop_points", "set_clip_start_marker", "set_clip_end_marker", "set_track_send"
         ]
         
         try:
@@ -1285,6 +1286,126 @@ def analyze_audio_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     except Exception as e:
         logger.error(f"Error analyzing audio clip: {str(e)}")
         return f"Error analyzing audio clip: {str(e)}"
+
+@mcp.tool()
+def get_clip_notes(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Read all MIDI notes from a clip.
+
+    Returns all notes with their properties:
+    - pitch (0-127, MIDI note number)
+    - start_time (in beats)
+    - duration (in beats)
+    - velocity (0-127)
+    - mute (boolean)
+
+    This enables analyzing existing MIDI, suggesting changes, transposing,
+    harmonizing, or understanding musical content.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Index of the clip slot
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_clip_notes", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting clip notes: {str(e)}")
+        return f"Error getting clip notes: {str(e)}"
+
+@mcp.tool()
+def set_clip_loop_points(ctx: Context, track_index: int, clip_index: int, loop_start: float, loop_end: float) -> str:
+    """
+    Set the loop start and end points for a clip.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Index of the clip slot
+    - loop_start: Loop start position in beats
+    - loop_end: Loop end position in beats
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_loop_points", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "loop_start": loop_start,
+            "loop_end": loop_end
+        })
+        return f"Set loop points: start={loop_start}, end={loop_end}"
+    except Exception as e:
+        logger.error(f"Error setting clip loop points: {str(e)}")
+        return f"Error setting clip loop points: {str(e)}"
+
+@mcp.tool()
+def set_clip_start_marker(ctx: Context, track_index: int, clip_index: int, start_marker: float) -> str:
+    """
+    Set the start marker position for an audio clip.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Index of the clip slot
+    - start_marker: Start marker position in sample time
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_start_marker", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "start_marker": start_marker
+        })
+        return f"Set clip start marker to {start_marker}"
+    except Exception as e:
+        logger.error(f"Error setting clip start marker: {str(e)}")
+        return f"Error setting clip start marker: {str(e)}"
+
+@mcp.tool()
+def set_clip_end_marker(ctx: Context, track_index: int, clip_index: int, end_marker: float) -> str:
+    """
+    Set the end marker position for an audio clip.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Index of the clip slot
+    - end_marker: End marker position in sample time
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_end_marker", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "end_marker": end_marker
+        })
+        return f"Set clip end marker to {end_marker}"
+    except Exception as e:
+        logger.error(f"Error setting clip end marker: {str(e)}")
+        return f"Error setting clip end marker: {str(e)}"
+
+@mcp.tool()
+def set_track_send(ctx: Context, track_index: int, send_index: int, value: float) -> str:
+    """
+    Set the send level for a track to a return track.
+
+    Parameters:
+    - track_index: Index of the track
+    - send_index: Index of the send (0 for Send A, 1 for Send B, etc.)
+    - value: Send level (0.0 to 1.0)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_send", {
+            "track_index": track_index,
+            "send_index": send_index,
+            "value": value
+        })
+        return f"Set send {send_index} on track {track_index} to {value}"
+    except Exception as e:
+        logger.error(f"Error setting track send: {str(e)}")
+        return f"Error setting track send: {str(e)}"
 
 @mcp.tool()
 def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:
