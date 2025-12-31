@@ -115,7 +115,8 @@ class AbletonConnection:
             "group_tracks", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo",
             "load_audio_sample", "set_warp_mode", "set_clip_warp", "crop_clip", "reverse_clip",
             "set_clip_loop_points", "set_clip_start_marker", "set_clip_end_marker", "set_track_send",
-            "copy_clip_to_arrangement", "create_automation", "clear_automation"
+            "copy_clip_to_arrangement", "create_automation", "clear_automation",
+            "delete_time", "duplicate_time", "insert_silence", "create_locator"
         ]
         
         try:
@@ -1495,7 +1496,7 @@ def clear_automation(ctx: Context, track_index: int, parameter_name: str, start_
 def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:
     """
     Load a drum rack and then load a specific drum kit into it.
-    
+
     Parameters:
     - track_index: The index of the track to load on
     - rack_uri: The URI of the drum rack to load (e.g., 'Drums/Drum Rack')
@@ -1503,42 +1504,154 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) 
     """
     try:
         ableton = get_ableton_connection()
-        
+
         # Step 1: Load the drum rack
         result = ableton.send_command("load_browser_item", {
             "track_index": track_index,
             "item_uri": rack_uri
         })
-        
+
         if not result.get("loaded", False):
             return f"Failed to load drum rack with URI '{rack_uri}'"
-        
+
         # Step 2: Get the drum kit items at the specified path
         kit_result = ableton.send_command("get_browser_items_at_path", {
             "path": kit_path
         })
-        
+
         if "error" in kit_result:
             return f"Loaded drum rack but failed to find drum kit: {kit_result.get('error')}"
-        
+
         # Step 3: Find a loadable drum kit
         kit_items = kit_result.get("items", [])
         loadable_kits = [item for item in kit_items if item.get("is_loadable", False)]
-        
+
         if not loadable_kits:
             return f"Loaded drum rack but no loadable drum kits found at '{kit_path}'"
-        
+
         # Step 4: Load the first loadable kit
         kit_uri = loadable_kits[0].get("uri")
         load_result = ableton.send_command("load_browser_item", {
             "track_index": track_index,
             "item_uri": kit_uri
         })
-        
+
         return f"Loaded drum rack and kit '{loadable_kits[0].get('name')}' on track {track_index}"
     except Exception as e:
         logger.error(f"Error loading drum kit: {str(e)}")
         return f"Error loading drum kit: {str(e)}"
+
+@mcp.tool()
+def get_arrangement_clips(ctx: Context, track_index: int) -> str:
+    """
+    Get all clips in arrangement view for a specific track.
+
+    Returns information about clips placed in the arrangement timeline including
+    their positions, lengths, names, and properties.
+
+    Parameters:
+    - track_index: Index of the track to inspect
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_arrangement_clips", {
+            "track_index": track_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting arrangement clips: {str(e)}")
+        return f"Error getting arrangement clips: {str(e)}"
+
+@mcp.tool()
+def delete_time(ctx: Context, start_time: float, end_time: float) -> str:
+    """
+    Delete a section of time from the arrangement.
+
+    Removes all clips and automation between start and end time,
+    shifting everything after the deleted section to the left.
+
+    Parameters:
+    - start_time: Start position in beats
+    - end_time: End position in beats
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_time", {
+            "start_time": start_time,
+            "end_time": end_time
+        })
+        return f"Deleted time from {start_time} to {end_time} beats"
+    except Exception as e:
+        logger.error(f"Error deleting time: {str(e)}")
+        return f"Error deleting time: {str(e)}"
+
+@mcp.tool()
+def duplicate_time(ctx: Context, start_time: float, end_time: float) -> str:
+    """
+    Duplicate a section of time in the arrangement.
+
+    Copies all clips and automation between start and end time,
+    and pastes them immediately after the end time.
+
+    Parameters:
+    - start_time: Start position in beats
+    - end_time: End position in beats
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_time", {
+            "start_time": start_time,
+            "end_time": end_time
+        })
+        return f"Duplicated time from {start_time} to {end_time} beats"
+    except Exception as e:
+        logger.error(f"Error duplicating time: {str(e)}")
+        return f"Error duplicating time: {str(e)}"
+
+@mcp.tool()
+def insert_silence(ctx: Context, position: float, length: float) -> str:
+    """
+    Insert silence at a position in the arrangement.
+
+    Shifts all clips and automation after the position to the right
+    by the specified length, creating empty space.
+
+    Parameters:
+    - position: Position in beats where to insert silence
+    - length: Length of silence to insert in beats
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("insert_silence", {
+            "position": position,
+            "length": length
+        })
+        return f"Inserted {length} beats of silence at position {position}"
+    except Exception as e:
+        logger.error(f"Error inserting silence: {str(e)}")
+        return f"Error inserting silence: {str(e)}"
+
+@mcp.tool()
+def create_locator(ctx: Context, position: float, name: str = "") -> str:
+    """
+    Create a locator/marker at a position in the arrangement.
+
+    Locators help mark important sections like verse, chorus, bridge, etc.
+
+    Parameters:
+    - position: Position in beats where to create the locator
+    - name: Optional name for the locator (e.g., "Verse", "Chorus")
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_locator", {
+            "position": position,
+            "name": name
+        })
+        return f"Created locator '{name}' at position {position} beats"
+    except Exception as e:
+        logger.error(f"Error creating locator: {str(e)}")
+        return f"Error creating locator: {str(e)}"
 
 # Main execution
 def main():

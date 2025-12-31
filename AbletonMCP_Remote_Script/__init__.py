@@ -244,6 +244,9 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 clip_index = params.get("clip_index", 0)
                 response["result"] = self._get_clip_notes(track_index, clip_index)
+            elif command_type == "get_arrangement_clips":
+                track_index = params.get("track_index", 0)
+                response["result"] = self._get_arrangement_clips(track_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
@@ -258,7 +261,8 @@ class AbletonMCP(ControlSurface):
                                  "group_tracks", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo",
                                  "load_audio_sample", "set_warp_mode", "set_clip_warp", "crop_clip", "reverse_clip",
                                  "set_clip_loop_points", "set_clip_start_marker", "set_clip_end_marker", "set_track_send",
-                                 "copy_clip_to_arrangement", "create_automation", "clear_automation"]:
+                                 "copy_clip_to_arrangement", "create_automation", "clear_automation",
+                                 "delete_time", "duplicate_time", "insert_silence", "create_locator"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -459,6 +463,22 @@ class AbletonMCP(ControlSurface):
                             start_time = params.get("start_time", 0.0)
                             end_time = params.get("end_time", 999999.0)
                             result = self._clear_automation(track_index, parameter_name, start_time, end_time)
+                        elif command_type == "delete_time":
+                            start_time = params.get("start_time", 0.0)
+                            end_time = params.get("end_time", 4.0)
+                            result = self._delete_time(start_time, end_time)
+                        elif command_type == "duplicate_time":
+                            start_time = params.get("start_time", 0.0)
+                            end_time = params.get("end_time", 4.0)
+                            result = self._duplicate_time(start_time, end_time)
+                        elif command_type == "insert_silence":
+                            position = params.get("position", 0.0)
+                            length = params.get("length", 4.0)
+                            result = self._insert_silence(position, length)
+                        elif command_type == "create_locator":
+                            position = params.get("position", 0.0)
+                            name = params.get("name", "")
+                            result = self._create_locator(position, name)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -2724,4 +2744,149 @@ class AbletonMCP(ControlSurface):
 
         except Exception as e:
             self.log_message("Error clearing automation: " + str(e))
+            raise
+
+    def _get_arrangement_clips(self, track_index):
+        """Get all clips in arrangement view for a track"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            clips = []
+
+            # Check if the track has an arrangement clips property
+            if not hasattr(track, 'arrangement_clips'):
+                raise Exception("Track does not have arrangement clips (may be a group track or return track)")
+
+            # Iterate through arrangement clips
+            for clip in track.arrangement_clips:
+                clip_info = {
+                    "name": clip.name,
+                    "start_time": clip.start_time,
+                    "end_time": clip.end_time,
+                    "length": clip.length,
+                    "loop_start": clip.loop_start if hasattr(clip, 'loop_start') else None,
+                    "loop_end": clip.loop_end if hasattr(clip, 'loop_end') else None,
+                    "is_audio_clip": clip.is_audio_clip,
+                    "is_midi_clip": clip.is_midi_clip,
+                    "muted": clip.muted if hasattr(clip, 'muted') else False,
+                    "color_index": clip.color_index if hasattr(clip, 'color_index') else None
+                }
+
+                clips.append(clip_info)
+
+            result = {
+                "track_index": track_index,
+                "track_name": track.name,
+                "clip_count": len(clips),
+                "clips": clips
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error getting arrangement clips: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _delete_time(self, start_time, end_time):
+        """Delete a section of time from the arrangement"""
+        try:
+            # Validate parameters
+            if start_time >= end_time:
+                raise ValueError("Start time must be less than end time")
+
+            # Use Live's delete_time method
+            self._song.delete_time(start_time, end_time - start_time)
+
+            result = {
+                "deleted_from": start_time,
+                "deleted_to": end_time,
+                "deleted_length": end_time - start_time
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error deleting time: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _duplicate_time(self, start_time, end_time):
+        """Duplicate a section of time in the arrangement"""
+        try:
+            # Validate parameters
+            if start_time >= end_time:
+                raise ValueError("Start time must be less than end time")
+
+            # Use Live's duplicate_time method
+            # This copies the time section and pastes it at end_time
+            self._song.duplicate_time(start_time, end_time - start_time)
+
+            result = {
+                "duplicated_from": start_time,
+                "duplicated_to": end_time,
+                "duplicated_length": end_time - start_time,
+                "pasted_at": end_time
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error duplicating time: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _insert_silence(self, position, length):
+        """Insert silence at a position in the arrangement"""
+        try:
+            # Validate parameters
+            if length <= 0:
+                raise ValueError("Length must be greater than 0")
+
+            # Use Live's insert_time method (inserts silence)
+            self._song.insert_time(position, length)
+
+            result = {
+                "inserted_at": position,
+                "inserted_length": length
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error inserting silence: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _create_locator(self, position, name):
+        """Create a locator at a position in the arrangement"""
+        try:
+            # Create a cue point (locator)
+            # Live's API calls them "cue_points"
+            cue_points = self._song.cue_points
+
+            # Create a new cue point
+            self._song.create_cue_point(position)
+
+            # Find the newly created cue point and set its name
+            # The cue points are sorted by time, so find the one at our position
+            for cue_point in cue_points:
+                if abs(cue_point.time - position) < 0.001:  # Allow small floating point error
+                    if name:
+                        cue_point.name = name
+                    result = {
+                        "position": cue_point.time,
+                        "name": cue_point.name
+                    }
+                    return result
+
+            # If we couldn't find it (shouldn't happen), return a generic result
+            result = {
+                "position": position,
+                "name": name
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error creating locator: " + str(e))
+            self.log_message(traceback.format_exc())
             raise

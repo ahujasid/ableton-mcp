@@ -163,6 +163,11 @@ Once the config file has been set on Claude, and the remote script is running in
 - Jump to specific positions in the arrangement
 - Get current loop and playback information
 - **Copy clips from session view to arrangement timeline**
+- **Inspect arrangement clips** - see what's placed on the timeline for each track
+- **Delete time sections** - remove a section of the arrangement and shift everything left
+- **Duplicate time sections** - copy a section and paste it immediately after
+- **Insert silence** - push everything to the right to create empty space
+- **Create locators/markers** - mark important sections (verse, chorus, etc.)
 - **Create automation lanes** for volume, pan, sends, and device parameters
 - **Clear automation** in specific time ranges
 
@@ -214,6 +219,12 @@ Here are some examples of what you can ask Claude to do:
 - "Jump to the 16 beat mark"
 - "Copy the clip from track 1, slot 0 to arrangement at beat 8"
 - "Place this session clip at bar 16 in the arrangement"
+- "Show me what clips are in the arrangement on track 0"
+- "Delete the section from beat 8 to beat 16 in the arrangement"
+- "Duplicate the 8-bar section from beat 0 to 8"
+- "Insert 4 bars of silence at beat 16"
+- "Create a locator at beat 32 called 'Chorus'"
+- "Mark the verse section at beat 8"
 
 ### Scene Management
 - "Create a new scene called 'Chorus' at index 2"
