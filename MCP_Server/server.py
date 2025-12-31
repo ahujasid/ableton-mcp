@@ -116,7 +116,8 @@ class AbletonConnection:
             "load_audio_sample", "set_warp_mode", "set_clip_warp", "crop_clip", "reverse_clip",
             "set_clip_loop_points", "set_clip_start_marker", "set_clip_end_marker", "set_track_send",
             "copy_clip_to_arrangement", "create_automation", "clear_automation",
-            "delete_time", "duplicate_time", "insert_silence", "create_locator"
+            "delete_time", "duplicate_time", "insert_silence", "create_locator",
+            "delete_clip", "set_metronome", "tap_tempo", "set_macro_value", "capture_midi", "apply_groove"
         ]
         
         try:
@@ -1652,6 +1653,158 @@ def create_locator(ctx: Context, position: float, name: str = "") -> str:
     except Exception as e:
         logger.error(f"Error creating locator: {str(e)}")
         return f"Error creating locator: {str(e)}"
+
+@mcp.tool()
+def delete_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Delete a clip from a clip slot.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Index of the clip slot
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        return f"Deleted clip at track {track_index}, slot {clip_index}"
+    except Exception as e:
+        logger.error(f"Error deleting clip: {str(e)}")
+        return f"Error deleting clip: {str(e)}"
+
+@mcp.tool()
+def set_metronome(ctx: Context, enabled: bool) -> str:
+    """
+    Enable or disable the metronome.
+
+    Parameters:
+    - enabled: True to enable metronome, False to disable
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_metronome", {
+            "enabled": enabled
+        })
+        status = "enabled" if enabled else "disabled"
+        return f"Metronome {status}"
+    except Exception as e:
+        logger.error(f"Error setting metronome: {str(e)}")
+        return f"Error setting metronome: {str(e)}"
+
+@mcp.tool()
+def tap_tempo(ctx: Context) -> str:
+    """
+    Tap tempo - call this repeatedly to set tempo by tapping.
+
+    Tap this function multiple times in rhythm to set the song tempo.
+    Ableton will calculate the tempo based on the time between taps.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("tap_tempo")
+        return f"Tempo tap registered. Current tempo: {result.get('tempo', 'unknown')} BPM"
+    except Exception as e:
+        logger.error(f"Error tapping tempo: {str(e)}")
+        return f"Error tapping tempo: {str(e)}"
+
+@mcp.tool()
+def get_macro_values(ctx: Context, track_index: int, device_index: int) -> str:
+    """
+    Get the values of all 8 macro controls on a rack device.
+
+    Racks (Instrument Rack, Drum Rack, Audio Effect Rack, MIDI Effect Rack)
+    have 8 macro knobs that can control multiple parameters at once.
+
+    Parameters:
+    - track_index: Index of the track
+    - device_index: Index of the rack device on that track
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_macro_values", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting macro values: {str(e)}")
+        return f"Error getting macro values: {str(e)}"
+
+@mcp.tool()
+def set_macro_value(ctx: Context, track_index: int, device_index: int, macro_index: int, value: float) -> str:
+    """
+    Set the value of a specific macro control on a rack device.
+
+    Parameters:
+    - track_index: Index of the track
+    - device_index: Index of the rack device on that track
+    - macro_index: Index of the macro (0-7 for Macro 1-8)
+    - value: Value to set (0.0 to 1.0)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_macro_value", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "macro_index": macro_index,
+            "value": value
+        })
+        return f"Set Macro {macro_index + 1} to {value}"
+    except Exception as e:
+        logger.error(f"Error setting macro value: {str(e)}")
+        return f"Error setting macro value: {str(e)}"
+
+@mcp.tool()
+def capture_midi(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Capture recently played MIDI into a clip slot.
+
+    This captures MIDI notes that were recently played (even if not recording),
+    and creates a new clip with those notes. This is a Live 11+ feature.
+
+    Great for capturing spontaneous ideas without having to record first.
+
+    Parameters:
+    - track_index: Index of the track to capture MIDI to
+    - clip_index: Index of the clip slot to create the captured clip in
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("capture_midi", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        return f"Captured MIDI to track {track_index}, slot {clip_index}"
+    except Exception as e:
+        logger.error(f"Error capturing MIDI: {str(e)}")
+        return f"Error capturing MIDI: {str(e)}"
+
+@mcp.tool()
+def apply_groove(ctx: Context, track_index: int, clip_index: int, groove_amount: float = 1.0) -> str:
+    """
+    Apply groove/swing to a MIDI clip.
+
+    Groove adds timing variations and velocity changes to create more human feel.
+    Uses the global groove pool settings in Ableton.
+
+    Parameters:
+    - track_index: Index of the track containing the clip
+    - clip_index: Index of the clip slot
+    - groove_amount: Amount of groove to apply (0.0 = none, 1.0 = full)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("apply_groove", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "groove_amount": groove_amount
+        })
+        return f"Applied groove (amount: {groove_amount}) to clip at track {track_index}, slot {clip_index}"
+    except Exception as e:
+        logger.error(f"Error applying groove: {str(e)}")
+        return f"Error applying groove: {str(e)}"
 
 # Main execution
 def main():

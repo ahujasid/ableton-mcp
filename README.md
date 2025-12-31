@@ -138,6 +138,7 @@ Once the config file has been set on Claude, and the remote script is running in
 
 ### Clip Operations
 - Create, edit, and trigger clips
+- **Delete clips** from clip slots
 - Set clip colors
 - Duplicate clips across tracks and slots
 - Add and manipulate MIDI notes
@@ -145,6 +146,8 @@ Once the config file has been set on Claude, and the remote script is running in
 - Quantize MIDI clips to a grid
 - Transpose MIDI clips
 - Control clip loop settings (loop start, end, start/end markers)
+- **Apply groove/swing** to MIDI clips for human feel
+- **Capture recently played MIDI** into clips (Live 11+)
 
 ### Scene Management
 - Create, delete, and duplicate scenes
@@ -176,6 +179,7 @@ Once the config file has been set on Claude, and the remote script is running in
 - Get all parameters for any device
 - Set device parameter values
 - Control device chains
+- **Get and set macro controls** on rack devices (all 8 macros)
 
 ### Audio Clip Operations
 - Load audio samples from Ableton's browser into clip slots
@@ -197,8 +201,10 @@ Once the config file has been set on Claude, and the remote script is running in
 
 ### Session Control
 - Change tempo and time signature
+- **Tap tempo** to set BPM by rhythm
+- **Enable/disable metronome** for recording
 - Load sounds and instruments from browser
-- Control transport and metronome
+- Control transport
 
 ## Example Commands
 
@@ -211,6 +217,9 @@ Here are some examples of what you can ask Claude to do:
 - "Add a jazz chord progression to the clip in track 1"
 
 ### Recording & Arrangement
+- "Turn on the metronome"
+- "Enable metronome for recording"
+- "Tap tempo" (call multiple times to set tempo by rhythm)
 - "Arm track 0 for recording"
 - "Start recording in arrangement view"
 - "Enable overdub mode and start recording"
@@ -236,10 +245,14 @@ Here are some examples of what you can ask Claude to do:
 - "Quantize the clip in track 0, slot 0 to 16th notes"
 - "Transpose the clip in track 1 up by 5 semitones"
 - "Duplicate the clip from track 0, slot 0 to track 1, slot 1"
+- "Delete the clip in track 2, slot 3"
 - "Set the clip at track 0, slot 0 to red (color index 5)"
 - "Read the MIDI notes from the clip at track 1, slot 0"
 - "Show me all the notes in track 2, clip 1"
 - "Set the loop points for track 0, clip 0 to start at 0 and end at 4 beats"
+- "Apply groove to the clip at track 0, slot 0 with 80% swing"
+- "Add swing to my drum pattern in track 1"
+- "Capture the MIDI I just played into track 0, slot 1"
 
 ### Track Mixing
 - "Set track 0 volume to 0.7"
@@ -254,6 +267,9 @@ Here are some examples of what you can ask Claude to do:
 ### Device Control
 - "Show me all parameters for the first device on track 0"
 - "Set parameter 3 of device 0 on track 0 to 0.8"
+- "Get the macro values for the rack on track 1"
+- "Set macro 1 on the drum rack to 0.75"
+- "Adjust the filter cutoff macro to 0.5"
 - "Add reverb to my drums"
 - "Load a 808 drum rack into the selected track"
 

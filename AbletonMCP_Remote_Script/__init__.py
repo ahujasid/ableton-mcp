@@ -247,6 +247,10 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_arrangement_clips":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_arrangement_clips(track_index)
+            elif command_type == "get_macro_values":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                response["result"] = self._get_macro_values(track_index, device_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
@@ -262,7 +266,8 @@ class AbletonMCP(ControlSurface):
                                  "load_audio_sample", "set_warp_mode", "set_clip_warp", "crop_clip", "reverse_clip",
                                  "set_clip_loop_points", "set_clip_start_marker", "set_clip_end_marker", "set_track_send",
                                  "copy_clip_to_arrangement", "create_automation", "clear_automation",
-                                 "delete_time", "duplicate_time", "insert_silence", "create_locator"]:
+                                 "delete_time", "duplicate_time", "insert_silence", "create_locator",
+                                 "delete_clip", "set_metronome", "tap_tempo", "set_macro_value", "capture_midi", "apply_groove"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -479,6 +484,30 @@ class AbletonMCP(ControlSurface):
                             position = params.get("position", 0.0)
                             name = params.get("name", "")
                             result = self._create_locator(position, name)
+                        elif command_type == "delete_clip":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            result = self._delete_clip(track_index, clip_index)
+                        elif command_type == "set_metronome":
+                            enabled = params.get("enabled", False)
+                            result = self._set_metronome(enabled)
+                        elif command_type == "tap_tempo":
+                            result = self._tap_tempo()
+                        elif command_type == "set_macro_value":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            macro_index = params.get("macro_index", 0)
+                            value = params.get("value", 0.0)
+                            result = self._set_macro_value(track_index, device_index, macro_index, value)
+                        elif command_type == "capture_midi":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            result = self._capture_midi(track_index, clip_index)
+                        elif command_type == "apply_groove":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            groove_amount = params.get("groove_amount", 1.0)
+                            result = self._apply_groove(track_index, clip_index, groove_amount)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -2888,5 +2917,231 @@ class AbletonMCP(ControlSurface):
 
         except Exception as e:
             self.log_message("Error creating locator: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _delete_clip(self, track_index, clip_index):
+        """Delete a clip from a clip slot"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot to delete")
+
+            # Delete the clip
+            clip_slot.delete_clip()
+
+            result = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "deleted": True
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error deleting clip: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _set_metronome(self, enabled):
+        """Enable or disable the metronome"""
+        try:
+            self._song.metronome = enabled
+
+            result = {
+                "metronome": self._song.metronome
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error setting metronome: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _tap_tempo(self):
+        """Tap tempo to set BPM"""
+        try:
+            # Call the tap_tempo method
+            self._song.tap_tempo()
+
+            result = {
+                "tempo": self._song.tempo
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error tapping tempo: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _get_macro_values(self, track_index, device_index):
+        """Get the values of all 8 macro controls on a rack device"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+
+            device = track.devices[device_index]
+
+            # Check if this is a rack device (has macros)
+            if not hasattr(device, 'macros_mapped'):
+                raise Exception("Device is not a rack (no macros)")
+
+            # Get all 8 macro values
+            macros = []
+            for i in range(8):
+                if i < len(device.parameters):
+                    # Macros are typically the first 8 parameters after the device on/off
+                    macro_param = device.parameters[i + 1] if len(device.parameters) > i + 1 else None
+                    if macro_param:
+                        macros.append({
+                            "index": i,
+                            "name": macro_param.name,
+                            "value": macro_param.value,
+                            "min": macro_param.min,
+                            "max": macro_param.max,
+                            "is_enabled": macro_param.is_enabled if hasattr(macro_param, 'is_enabled') else True
+                        })
+
+            result = {
+                "track_index": track_index,
+                "device_index": device_index,
+                "device_name": device.name,
+                "macros": macros
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error getting macro values: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _set_macro_value(self, track_index, device_index, macro_index, value):
+        """Set the value of a specific macro control on a rack device"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+
+            device = track.devices[device_index]
+
+            # Check if this is a rack device
+            if not hasattr(device, 'macros_mapped'):
+                raise Exception("Device is not a rack (no macros)")
+
+            # Validate macro index
+            if macro_index < 0 or macro_index > 7:
+                raise IndexError("Macro index must be 0-7")
+
+            # Get the macro parameter (macros start at index 1 after device on/off)
+            param_index = macro_index + 1
+            if param_index >= len(device.parameters):
+                raise Exception("Macro {0} not available on this device".format(macro_index + 1))
+
+            macro_param = device.parameters[param_index]
+
+            # Set the value
+            macro_param.value = value
+
+            result = {
+                "track_index": track_index,
+                "device_index": device_index,
+                "macro_index": macro_index,
+                "macro_name": macro_param.name,
+                "value": macro_param.value
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error setting macro value: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _capture_midi(self, track_index, clip_index):
+        """Capture recently played MIDI into a clip slot"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            # Check if capture_midi is available (Live 11+)
+            if not hasattr(self._song, 'capture_midi'):
+                raise Exception("Capture MIDI is not available (requires Live 11 or later)")
+
+            # Capture MIDI
+            self._song.capture_midi()
+
+            # The captured MIDI should now be in the clip slot
+            result = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "captured": True,
+                "has_clip": clip_slot.has_clip
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error capturing MIDI: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _apply_groove(self, track_index, clip_index, groove_amount):
+        """Apply groove to a MIDI clip"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            if clip.is_audio_clip:
+                raise Exception("Cannot apply groove to audio clips")
+
+            # Set the groove amount
+            if hasattr(clip, 'groove_amount'):
+                clip.groove_amount = groove_amount
+            else:
+                raise Exception("Groove amount not available on this clip")
+
+            result = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "groove_amount": groove_amount
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error applying groove: " + str(e))
             self.log_message(traceback.format_exc())
             raise
