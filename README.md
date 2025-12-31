@@ -15,6 +15,9 @@ Give feedback, get inspired, and build on top of the MCP: [Discord](https://disc
 - **Clip creation**: Create and edit MIDI clips with notes
 - **Session control**: Start and stop playback, fire clips, and control transport
 - **Arrangement recording**: Arm tracks and record into arrangement view with overdub support
+- **Audio sample loading**: Load audio files and samples into clip slots from Ableton's browser
+- **Audio warping**: Control warp modes, enable/disable warping, and manipulate audio time-stretching
+- **Audio clip manipulation**: Crop and reverse audio clips for creative sound design
 
 ## Components
 
@@ -163,6 +166,14 @@ Once the config file has been set on Claude, and the remote script is running in
 - Set device parameter values
 - Control device chains
 
+### Audio Clip Operations
+- Load audio samples from Ableton's browser into clip slots
+- Get detailed information about audio clips (warp settings, loop points, etc.)
+- Set warp mode (Beats, Tones, Texture, Re-Pitch, Complex, Complex Pro)
+- Enable/disable warping for audio clips
+- Crop audio clips to loop boundaries
+- Reverse audio clip samples for creative effects
+
 ### Session Control
 - Change tempo and time signature
 - Load sounds and instruments from browser
@@ -210,6 +221,15 @@ Here are some examples of what you can ask Claude to do:
 - "Set parameter 3 of device 0 on track 0 to 0.8"
 - "Add reverb to my drums"
 - "Load a 808 drum rack into the selected track"
+
+### Audio Clip Manipulation
+- "Load an audio sample from the browser into track 0, slot 0"
+- "Get info about the audio clip in track 1, slot 2"
+- "Set the warp mode to Complex Pro for the clip at track 0, slot 0"
+- "Enable warping for the audio clip in track 1, slot 0"
+- "Disable warping for track 2, clip 3"
+- "Crop the audio clip at track 0, slot 1 to its loop boundaries"
+- "Reverse the audio sample in track 1, slot 0"
 
 ### Session Control
 - "Set the tempo to 120 BPM"

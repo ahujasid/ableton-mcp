@@ -112,7 +112,8 @@ class AbletonConnection:
             "create_scene", "delete_scene", "duplicate_scene", "trigger_scene", "set_scene_name",
             "set_track_color", "set_clip_color",
             "quantize_clip", "transpose_clip", "duplicate_clip",
-            "group_tracks", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo"
+            "group_tracks", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo",
+            "load_audio_sample", "set_warp_mode", "set_clip_warp", "crop_clip", "reverse_clip"
         ]
         
         try:
@@ -1127,6 +1128,135 @@ def set_track_solo(ctx: Context, track_index: int, solo: bool) -> str:
     except Exception as e:
         logger.error(f"Error setting track solo: {str(e)}")
         return f"Error setting track solo: {str(e)}"
+
+@mcp.tool()
+def load_audio_sample(ctx: Context, track_index: int, clip_index: int, file_path: str = "", browser_uri: str = "") -> str:
+    """
+    Load an audio sample into a clip slot.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Index of the clip slot
+    - file_path: Path to the audio file to load (WAV, MP3, AIFF, etc.)
+    - browser_uri: URI of the sample in Ableton's browser (alternative to file_path)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("load_audio_sample", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "file_path": file_path,
+            "browser_uri": browser_uri
+        })
+        return f"Loaded audio sample into track {track_index}, slot {clip_index}"
+    except Exception as e:
+        logger.error(f"Error loading audio sample: {str(e)}")
+        return f"Error loading audio sample: {str(e)}"
+
+@mcp.tool()
+def get_audio_clip_info(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Get information about an audio clip including warp settings.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Index of the clip slot
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_audio_clip_info", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting audio clip info: {str(e)}")
+        return f"Error getting audio clip info: {str(e)}"
+
+@mcp.tool()
+def set_warp_mode(ctx: Context, track_index: int, clip_index: int, warp_mode: str) -> str:
+    """
+    Set the warp mode for an audio clip.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Index of the clip slot
+    - warp_mode: Warp mode (beats, tones, texture, re_pitch, complex, complex_pro)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_warp_mode", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "warp_mode": warp_mode
+        })
+        return f"Set warp mode to {warp_mode} for clip at track {track_index}, slot {clip_index}"
+    except Exception as e:
+        logger.error(f"Error setting warp mode: {str(e)}")
+        return f"Error setting warp mode: {str(e)}"
+
+@mcp.tool()
+def set_clip_warp(ctx: Context, track_index: int, clip_index: int, warping_enabled: bool) -> str:
+    """
+    Enable or disable warping for an audio clip.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Index of the clip slot
+    - warping_enabled: True to enable warping, False to disable
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_warp", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "warping_enabled": warping_enabled
+        })
+        status = "enabled" if warping_enabled else "disabled"
+        return f"Warping {status} for clip at track {track_index}, slot {clip_index}"
+    except Exception as e:
+        logger.error(f"Error setting clip warp: {str(e)}")
+        return f"Error setting clip warp: {str(e)}"
+
+@mcp.tool()
+def crop_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Crop an audio clip to its loop boundaries.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Index of the clip slot
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("crop_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        return f"Cropped clip at track {track_index}, slot {clip_index}"
+    except Exception as e:
+        logger.error(f"Error cropping clip: {str(e)}")
+        return f"Error cropping clip: {str(e)}"
+
+@mcp.tool()
+def reverse_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Reverse an audio clip's sample.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Index of the clip slot
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("reverse_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        return f"Reversed clip at track {track_index}, slot {clip_index}"
+    except Exception as e:
+        logger.error(f"Error reversing clip: {str(e)}")
+        return f"Error reversing clip: {str(e)}"
 
 @mcp.tool()
 def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:

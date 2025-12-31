@@ -232,6 +232,10 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 device_index = params.get("device_index", 0)
                 response["result"] = self._get_device_parameters(track_index, device_index)
+            elif command_type == "get_audio_clip_info":
+                track_index = params.get("track_index", 0)
+                clip_index = params.get("clip_index", 0)
+                response["result"] = self._get_audio_clip_info(track_index, clip_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
@@ -243,7 +247,8 @@ class AbletonMCP(ControlSurface):
                                  "create_scene", "delete_scene", "duplicate_scene", "trigger_scene", "set_scene_name",
                                  "set_track_color", "set_clip_color", "set_device_parameter",
                                  "quantize_clip", "transpose_clip", "duplicate_clip",
-                                 "group_tracks", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo"]:
+                                 "group_tracks", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo",
+                                 "load_audio_sample", "set_warp_mode", "set_clip_warp", "crop_clip", "reverse_clip"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -383,6 +388,30 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             solo = params.get("solo", False)
                             result = self._set_track_solo(track_index, solo)
+                        elif command_type == "load_audio_sample":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            file_path = params.get("file_path", "")
+                            browser_uri = params.get("browser_uri", "")
+                            result = self._load_audio_sample(track_index, clip_index, file_path, browser_uri)
+                        elif command_type == "set_warp_mode":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            warp_mode = params.get("warp_mode", "beats")
+                            result = self._set_warp_mode(track_index, clip_index, warp_mode)
+                        elif command_type == "set_clip_warp":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            warping_enabled = params.get("warping_enabled", True)
+                            result = self._set_clip_warp(track_index, clip_index, warping_enabled)
+                        elif command_type == "crop_clip":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            result = self._crop_clip(track_index, clip_index)
+                        elif command_type == "reverse_clip":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            result = self._reverse_clip(track_index, clip_index)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -1644,12 +1673,12 @@ class AbletonMCP(ControlSurface):
     def get_browser_items_at_path(self, path):
         """
         Get browser items at a specific path.
-        
+
         Args:
             path: Path in the format "category/folder/subfolder"
                  where category is one of: instruments, sounds, drums, audio_effects, midi_effects
                  or any other available browser category
-                 
+
         Returns:
             Dictionary with items at the specified path
         """
@@ -1658,24 +1687,24 @@ class AbletonMCP(ControlSurface):
             app = self.application()
             if not app:
                 raise RuntimeError("Could not access Live application")
-                
+
             # Check if browser is available
             if not hasattr(app, 'browser') or app.browser is None:
                 raise RuntimeError("Browser is not available in the Live application")
-            
+
             # Log available browser attributes to help diagnose issues
             browser_attrs = [attr for attr in dir(app.browser) if not attr.startswith('_')]
             self.log_message("Available browser attributes: {0}".format(browser_attrs))
-                
+
             # Parse the path
             path_parts = path.split("/")
             if not path_parts:
                 raise ValueError("Invalid path")
-            
+
             # Determine the root category
             root_category = path_parts[0].lower()
             current_item = None
-            
+
             # Check standard categories first
             if root_category == "instruments" and hasattr(app.browser, 'instruments'):
                 current_item = app.browser.instruments
@@ -1698,7 +1727,7 @@ class AbletonMCP(ControlSurface):
                             break
                         except Exception as e:
                             self.log_message("Error accessing browser attribute {0}: {1}".format(attr, str(e)))
-                
+
                 if not found:
                     # If we still haven't found the category, return available categories
                     return {
@@ -1707,34 +1736,34 @@ class AbletonMCP(ControlSurface):
                         "available_categories": browser_attrs,
                         "items": []
                     }
-            
+
             # Navigate through the path
             for i in range(1, len(path_parts)):
                 part = path_parts[i]
                 if not part:  # Skip empty parts
                     continue
-                
+
                 if not hasattr(current_item, 'children'):
                     return {
                         "path": path,
                         "error": "Item at '{0}' has no children".format('/'.join(path_parts[:i])),
                         "items": []
                     }
-                
+
                 found = False
                 for child in current_item.children:
                     if hasattr(child, 'name') and child.name.lower() == part.lower():
                         current_item = child
                         found = True
                         break
-                
+
                 if not found:
                     return {
                         "path": path,
                         "error": "Path part '{0}' not found".format(part),
                         "items": []
                     }
-            
+
             # Get items at the current path
             items = []
             if hasattr(current_item, 'children'):
@@ -1747,7 +1776,7 @@ class AbletonMCP(ControlSurface):
                         "uri": child.uri if hasattr(child, 'uri') else None
                     }
                     items.append(item_info)
-            
+
             result = {
                 "path": path,
                 "name": current_item.name if hasattr(current_item, 'name') else "Unknown",
@@ -1757,11 +1786,296 @@ class AbletonMCP(ControlSurface):
                 "is_loadable": hasattr(current_item, 'is_loadable') and current_item.is_loadable,
                 "items": items
             }
-            
+
             self.log_message("Retrieved {0} items at path: {1}".format(len(items), path))
             return result
-            
+
         except Exception as e:
             self.log_message("Error getting browser items at path: {0}".format(str(e)))
             self.log_message(traceback.format_exc())
+            raise
+
+    # Audio clip manipulation methods
+
+    def _load_audio_sample(self, track_index, clip_index, file_path, browser_uri):
+        """Load an audio sample into a clip slot"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            # Access the application's browser
+            app = self.application()
+            if not app:
+                raise RuntimeError("Could not access Live application")
+
+            # Select the clip slot
+            self._song.view.highlighted_clip_slot = clip_slot
+
+            # If browser_uri is provided, use it
+            if browser_uri:
+                # Find and load the browser item
+                item = self._find_browser_item_by_uri(app.browser, browser_uri)
+                if not item:
+                    raise ValueError("Browser item with URI '{0}' not found".format(browser_uri))
+                app.browser.load_item(item)
+            # If file_path is provided, try to load it
+            elif file_path:
+                # For file paths, we need to convert to a format Ableton can use
+                # Try to create a file URI
+                if not file_path.startswith("file://"):
+                    file_uri = "file://" + file_path
+                else:
+                    file_uri = file_path
+
+                # Try to find the item in user library or samples
+                # This is a simplified approach - in practice, we might need to
+                # use LiveAPI or other methods
+                try:
+                    # Attempt to load via browser preview
+                    # Note: This is a basic implementation and may need refinement
+                    self.log_message("Attempting to load audio from path: {0}".format(file_path))
+
+                    # For now, we'll raise an informative error
+                    # In a full implementation, we'd need to use Live's API more deeply
+                    raise NotImplementedError(
+                        "Direct file path loading is not yet fully implemented. "
+                        "Please use browser_uri parameter with a browser item URI instead."
+                    )
+                except Exception as e:
+                    self.log_message("Error loading from file path: {0}".format(str(e)))
+                    raise
+            else:
+                raise ValueError("Either file_path or browser_uri must be provided")
+
+            # Wait a moment for the clip to load
+            import time
+            time.sleep(0.2)
+
+            result = {
+                "loaded": True,
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "has_clip": clip_slot.has_clip
+            }
+
+            if clip_slot.has_clip:
+                clip = clip_slot.clip
+                result["clip_name"] = clip.name
+                result["is_audio_clip"] = clip.is_audio_clip
+
+            return result
+        except Exception as e:
+            self.log_message("Error loading audio sample: " + str(e))
+            raise
+
+    def _get_audio_clip_info(self, track_index, clip_index):
+        """Get information about an audio clip"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            if not clip.is_audio_clip:
+                raise Exception("Clip is not an audio clip")
+
+            # Get warp mode as string
+            warp_mode_map = {
+                0: "beats",
+                1: "tones",
+                2: "texture",
+                3: "re_pitch",
+                4: "complex",
+                5: "complex_pro"
+            }
+
+            warp_mode = "unknown"
+            if hasattr(clip, 'warp_mode'):
+                warp_mode = warp_mode_map.get(clip.warp_mode, "unknown")
+
+            result = {
+                "name": clip.name,
+                "length": clip.length,
+                "is_audio_clip": clip.is_audio_clip,
+                "warping": clip.warping if hasattr(clip, 'warping') else None,
+                "warp_mode": warp_mode,
+                "start_marker": clip.start_marker if hasattr(clip, 'start_marker') else None,
+                "end_marker": clip.end_marker if hasattr(clip, 'end_marker') else None,
+                "loop_start": clip.loop_start if hasattr(clip, 'loop_start') else None,
+                "loop_end": clip.loop_end if hasattr(clip, 'loop_end') else None,
+                "gain": clip.gain if hasattr(clip, 'gain') else None,
+                "file_path": clip.file_path if hasattr(clip, 'file_path') else None
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error getting audio clip info: " + str(e))
+            raise
+
+    def _set_warp_mode(self, track_index, clip_index, warp_mode):
+        """Set the warp mode for an audio clip"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            if not clip.is_audio_clip:
+                raise Exception("Clip is not an audio clip")
+
+            # Map warp mode string to enum value
+            warp_mode_map = {
+                "beats": 0,
+                "tones": 1,
+                "texture": 2,
+                "re_pitch": 3,
+                "complex": 4,
+                "complex_pro": 5
+            }
+
+            if warp_mode.lower() not in warp_mode_map:
+                raise ValueError("Invalid warp mode. Must be one of: beats, tones, texture, re_pitch, complex, complex_pro")
+
+            clip.warp_mode = warp_mode_map[warp_mode.lower()]
+
+            result = {
+                "warp_mode": warp_mode.lower(),
+                "warping": clip.warping
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting warp mode: " + str(e))
+            raise
+
+    def _set_clip_warp(self, track_index, clip_index, warping_enabled):
+        """Enable or disable warping for an audio clip"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            if not clip.is_audio_clip:
+                raise Exception("Clip is not an audio clip")
+
+            clip.warping = warping_enabled
+
+            result = {
+                "warping": clip.warping
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting clip warp: " + str(e))
+            raise
+
+    def _crop_clip(self, track_index, clip_index):
+        """Crop an audio clip to its loop boundaries"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            if not clip.is_audio_clip:
+                raise Exception("Clip is not an audio clip")
+
+            # Crop the clip
+            clip.crop()
+
+            result = {
+                "cropped": True,
+                "length": clip.length
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error cropping clip: " + str(e))
+            raise
+
+    def _reverse_clip(self, track_index, clip_index):
+        """Reverse an audio clip"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            # Check if this is an audio clip
+            if not clip.is_audio_clip:
+                raise Exception("Clip is not an audio clip")
+
+            # Note: The reverse functionality might not be directly available in all API versions
+            # We'll try to access the sample if available
+            if hasattr(clip, 'sample'):
+                sample = clip.sample
+                # Try to reverse via the sample's reverse property
+                if hasattr(sample, 'reverse'):
+                    sample.reverse = not sample.reverse
+                    result = {
+                        "reversed": sample.reverse
+                    }
+                    return result
+
+            # If direct reverse is not available, raise an informative error
+            raise NotImplementedError(
+                "Audio clip reversal is not available in this version of the API. "
+                "You may need to use Ableton's built-in reverse function manually."
+            )
+        except Exception as e:
+            self.log_message("Error reversing clip: " + str(e))
             raise
