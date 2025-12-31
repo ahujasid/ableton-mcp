@@ -1,7 +1,10 @@
-# AbletonMCP - Ableton Live Model Context Protocol Integration
-[![smithery badge](https://smithery.ai/badge/@ahujasid/ableton-mcp)](https://smithery.ai/server/@ahujasid/ableton-mcp)
+# AbletonMCP Extended - Ableton Live Model Context Protocol Integration
 
-AbletonMCP connects Ableton Live to Claude AI through the Model Context Protocol (MCP), allowing Claude to directly interact with and control Ableton Live. This integration enables prompt-assisted music production, track creation, and Live session manipulation.
+**72 tools for comprehensive Ableton Live control**
+
+AbletonMCP Extended connects Ableton Live to Claude AI through the Model Context Protocol (MCP), allowing Claude to directly interact with and control Ableton Live. This extended version includes 72 tools for comprehensive music production, track creation, arrangement manipulation, and Live session control.
+
+Based on the original [ableton-mcp](https://github.com/ahujasid/ableton-mcp) by Siddharth Ahuja, with 56 additional tools for professional workflows.
 
 ### Join the Community
 
@@ -29,12 +32,12 @@ The system consists of two main components:
 
 ## Installation
 
-### Installing via Smithery
+### Quick Install
 
-To install Ableton Live Integration for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@ahujasid/ableton-mcp):
+Install via pip/uvx:
 
 ```bash
-npx -y @smithery/cli install @ahujasid/ableton-mcp --client claude
+uvx ableton-mcp-extended
 ```
 
 ### Prerequisites
@@ -64,7 +67,7 @@ Otherwise, install from [uv's official website][https://docs.astral.sh/uv/gettin
         "AbletonMCP": {
             "command": "uvx",
             "args": [
-                "ableton-mcp"
+                "ableton-mcp-extended"
             ]
         }
     }
@@ -73,10 +76,10 @@ Otherwise, install from [uv's official website][https://docs.astral.sh/uv/gettin
 
 ### Cursor Integration
 
-Run ableton-mcp without installing it permanently through uvx. Go to Cursor Settings > MCP and paste this as a command:
+Run ableton-mcp-extended without installing it permanently through uvx. Go to Cursor Settings > MCP and paste this as a command:
 
 ```
-uvx ableton-mcp
+uvx ableton-mcp-extended
 ```
 
 ⚠️ Only run one instance of the MCP server (either on Cursor or Claude Desktop), not both
