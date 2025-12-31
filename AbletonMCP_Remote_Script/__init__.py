@@ -267,7 +267,8 @@ class AbletonMCP(ControlSurface):
                                  "set_clip_loop_points", "set_clip_start_marker", "set_clip_end_marker", "set_track_send",
                                  "copy_clip_to_arrangement", "create_automation", "clear_automation",
                                  "delete_time", "duplicate_time", "insert_silence", "create_locator",
-                                 "delete_clip", "set_metronome", "tap_tempo", "set_macro_value", "capture_midi", "apply_groove"]:
+                                 "delete_clip", "set_metronome", "tap_tempo", "set_macro_value", "capture_midi", "apply_groove",
+                                 "freeze_track", "unfreeze_track", "export_track_audio"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
