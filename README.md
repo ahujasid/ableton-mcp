@@ -14,6 +14,7 @@ Give feedback, get inspired, and build on top of the MCP: [Discord](https://disc
 - **Instrument and effect selection**: Claude can access and load the right instruments, effects and sounds from Ableton's library
 - **Clip creation**: Create and edit MIDI clips with notes
 - **Session control**: Start and stop playback, fire clips, and control transport
+- **Arrangement recording**: Arm tracks and record into arrangement view with overdub support
 
 ## Components
 
@@ -130,6 +131,10 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Arm/disarm tracks for recording
+- Start and stop arrangement recording
+- Enable/disable arrangement overdub mode
+- Get recording status and armed tracks information
 
 ## Example Commands
 
@@ -145,6 +150,10 @@ Here are some examples of what you can ask Claude to do:
 - "Add a jazz chord progression to the clip in track 1"
 - "Set the tempo to 120 BPM"
 - "Play the clip in track 2"
+- "Arm track 0 for recording"
+- "Start recording in arrangement view"
+- "Enable overdub mode and start recording"
+- "Show me which tracks are armed for recording"
 
 
 ## Troubleshooting

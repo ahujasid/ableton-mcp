@@ -226,10 +226,12 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
             # Commands that modify Live's state should be scheduled on the main thread
-            elif command_type in ["create_midi_track", "set_track_name", 
-                                 "create_clip", "add_notes_to_clip", "set_clip_name", 
+            elif command_type in ["create_midi_track", "set_track_name",
+                                 "create_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item"]:
+                                 "start_playback", "stop_playback", "load_browser_item",
+                                 "arm_track", "disarm_track", "set_arrangement_overdub",
+                                 "start_arrangement_recording", "stop_arrangement_recording"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -282,7 +284,20 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
                             result = self._load_browser_item(track_index, item_uri)
-                        
+                        elif command_type == "arm_track":
+                            track_index = params.get("track_index", 0)
+                            result = self._arm_track(track_index)
+                        elif command_type == "disarm_track":
+                            track_index = params.get("track_index", 0)
+                            result = self._disarm_track(track_index)
+                        elif command_type == "set_arrangement_overdub":
+                            enabled = params.get("enabled", False)
+                            result = self._set_arrangement_overdub(enabled)
+                        elif command_type == "start_arrangement_recording":
+                            result = self._start_arrangement_recording()
+                        elif command_type == "stop_arrangement_recording":
+                            result = self._stop_arrangement_recording()
+
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
@@ -326,6 +341,8 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_browser_items_at_path":
                 path = params.get("path", "")
                 response["result"] = self.get_browser_items_at_path(path)
+            elif command_type == "get_recording_status":
+                response["result"] = self._get_recording_status()
             else:
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
@@ -628,7 +645,7 @@ class AbletonMCP(ControlSurface):
         """Stop playing the session"""
         try:
             self._song.stop_playing()
-            
+
             result = {
                 "playing": self._song.is_playing
             }
@@ -636,7 +653,129 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error stopping playback: " + str(e))
             raise
-    
+
+    def _arm_track(self, track_index):
+        """Arm a track for recording"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            # Check if the track can be armed
+            if not track.can_be_armed:
+                raise Exception("Track cannot be armed (may be an audio track without audio input)")
+
+            track.arm = True
+
+            result = {
+                "track_index": track_index,
+                "track_name": track.name,
+                "armed": track.arm
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error arming track: " + str(e))
+            raise
+
+    def _disarm_track(self, track_index):
+        """Disarm a track from recording"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+            track.arm = False
+
+            result = {
+                "track_index": track_index,
+                "track_name": track.name,
+                "armed": track.arm
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error disarming track: " + str(e))
+            raise
+
+    def _set_arrangement_overdub(self, enabled):
+        """Enable or disable arrangement overdub mode"""
+        try:
+            self._song.arrangement_overdub = enabled
+
+            result = {
+                "arrangement_overdub": self._song.arrangement_overdub
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting arrangement overdub: " + str(e))
+            raise
+
+    def _start_arrangement_recording(self):
+        """Start recording into the arrangement view"""
+        try:
+            # Enable arrangement recording
+            self._song.record_mode = True
+
+            # Start playback to begin recording
+            if not self._song.is_playing:
+                self._song.start_playing()
+
+            result = {
+                "recording": self._song.record_mode,
+                "playing": self._song.is_playing,
+                "arrangement_overdub": self._song.arrangement_overdub
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error starting arrangement recording: " + str(e))
+            raise
+
+    def _stop_arrangement_recording(self):
+        """Stop arrangement recording"""
+        try:
+            # Disable arrangement recording
+            self._song.record_mode = False
+
+            # Stop playback
+            if self._song.is_playing:
+                self._song.stop_playing()
+
+            result = {
+                "recording": self._song.record_mode,
+                "playing": self._song.is_playing
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error stopping arrangement recording: " + str(e))
+            raise
+
+    def _get_recording_status(self):
+        """Get the current recording status"""
+        try:
+            # Get list of armed tracks
+            armed_tracks = []
+            for i, track in enumerate(self._song.tracks):
+                if track.arm:
+                    armed_tracks.append({
+                        "index": i,
+                        "name": track.name,
+                        "is_midi": track.has_midi_input,
+                        "is_audio": track.has_audio_input
+                    })
+
+            result = {
+                "record_mode": self._song.record_mode,
+                "arrangement_overdub": self._song.arrangement_overdub,
+                "session_record": self._song.session_record,
+                "is_playing": self._song.is_playing,
+                "armed_tracks": armed_tracks,
+                "armed_track_count": len(armed_tracks)
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error getting recording status: " + str(e))
+            raise
+
     def _get_browser_item(self, uri, path):
         """Get a browser item by URI or path"""
         try:

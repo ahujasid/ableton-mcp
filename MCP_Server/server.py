@@ -105,7 +105,9 @@ class AbletonConnection:
             "create_midi_track", "create_audio_track", "set_track_name",
             "create_clip", "add_notes_to_clip", "set_clip_name",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
-            "start_playback", "stop_playback", "load_instrument_or_effect"
+            "start_playback", "stop_playback", "load_instrument_or_effect",
+            "arm_track", "disarm_track", "set_arrangement_overdub",
+            "start_arrangement_recording", "stop_arrangement_recording"
         ]
         
         try:
@@ -602,6 +604,95 @@ def get_browser_items_at_path(ctx: Context, path: str) -> str:
         else:
             logger.error(f"Error getting browser items at path: {error_msg}")
             return f"Error getting browser items at path: {error_msg}"
+
+@mcp.tool()
+def arm_track(ctx: Context, track_index: int) -> str:
+    """
+    Arm a track for recording.
+
+    Parameters:
+    - track_index: The index of the track to arm
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("arm_track", {"track_index": track_index})
+        return f"Armed track {track_index} for recording"
+    except Exception as e:
+        logger.error(f"Error arming track: {str(e)}")
+        return f"Error arming track: {str(e)}"
+
+@mcp.tool()
+def disarm_track(ctx: Context, track_index: int) -> str:
+    """
+    Disarm a track from recording.
+
+    Parameters:
+    - track_index: The index of the track to disarm
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("disarm_track", {"track_index": track_index})
+        return f"Disarmed track {track_index}"
+    except Exception as e:
+        logger.error(f"Error disarming track: {str(e)}")
+        return f"Error disarming track: {str(e)}"
+
+@mcp.tool()
+def set_arrangement_overdub(ctx: Context, enabled: bool) -> str:
+    """
+    Enable or disable arrangement overdub mode.
+
+    Parameters:
+    - enabled: True to enable overdub, False to disable
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_arrangement_overdub", {"enabled": enabled})
+        status = "enabled" if enabled else "disabled"
+        return f"Arrangement overdub {status}"
+    except Exception as e:
+        logger.error(f"Error setting arrangement overdub: {str(e)}")
+        return f"Error setting arrangement overdub: {str(e)}"
+
+@mcp.tool()
+def start_arrangement_recording(ctx: Context) -> str:
+    """
+    Start recording into the arrangement view.
+    This will start playback and begin recording on all armed tracks.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("start_arrangement_recording")
+        return "Started arrangement recording"
+    except Exception as e:
+        logger.error(f"Error starting arrangement recording: {str(e)}")
+        return f"Error starting arrangement recording: {str(e)}"
+
+@mcp.tool()
+def stop_arrangement_recording(ctx: Context) -> str:
+    """
+    Stop arrangement recording and stop playback.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("stop_arrangement_recording")
+        return "Stopped arrangement recording"
+    except Exception as e:
+        logger.error(f"Error stopping arrangement recording: {str(e)}")
+        return f"Error stopping arrangement recording: {str(e)}"
+
+@mcp.tool()
+def get_recording_status(ctx: Context) -> str:
+    """
+    Get the current recording status including armed tracks and recording modes.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_recording_status")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting recording status: {str(e)}")
+        return f"Error getting recording status: {str(e)}"
 
 @mcp.tool()
 def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:
