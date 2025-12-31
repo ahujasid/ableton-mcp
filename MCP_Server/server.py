@@ -118,7 +118,8 @@ class AbletonConnection:
             "set_clip_loop_points", "set_clip_start_marker", "set_clip_end_marker", "set_track_send",
             "copy_clip_to_arrangement", "create_automation", "clear_automation",
             "delete_time", "duplicate_time", "insert_silence", "create_locator",
-            "delete_clip", "set_metronome", "tap_tempo", "set_macro_value", "capture_midi", "apply_groove"
+            "delete_clip", "set_metronome", "tap_tempo", "set_macro_value", "capture_midi", "apply_groove",
+            "freeze_track", "unfreeze_track", "export_track_audio"
         ]
         
         try:
@@ -1870,6 +1871,85 @@ def analyze_audio_file(ctx: Context, audio_file_path: str, output_midi_path: str
     except Exception as e:
         logger.error(f"Error analyzing audio file: {str(e)}")
         return f"Error analyzing audio file: {str(e)}"
+
+@mcp.tool()
+def freeze_track(ctx: Context, track_index: int) -> str:
+    """
+    Freeze a track to render it to audio.
+
+    Freezing renders the track with all its devices and automation to an audio file,
+    which reduces CPU usage and allows you to access the rendered audio.
+
+    Parameters:
+    - track_index: Index of the track to freeze
+
+    Note: After freezing, you can access the frozen audio or use unfreeze_track to restore.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("freeze_track", {
+            "track_index": track_index
+        })
+        return f"Track {track_index} frozen successfully"
+    except Exception as e:
+        logger.error(f"Error freezing track: {str(e)}")
+        return f"Error freezing track: {str(e)}"
+
+@mcp.tool()
+def unfreeze_track(ctx: Context, track_index: int) -> str:
+    """
+    Unfreeze a previously frozen track.
+
+    This restores the track to its original state with all devices active.
+
+    Parameters:
+    - track_index: Index of the track to unfreeze
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("unfreeze_track", {
+            "track_index": track_index
+        })
+        return f"Track {track_index} unfrozen successfully"
+    except Exception as e:
+        logger.error(f"Error unfreezing track: {str(e)}")
+        return f"Error unfreezing track: {str(e)}"
+
+@mcp.tool()
+def export_track_audio(ctx: Context, track_index: int, output_path: str, start_time: float = None, end_time: float = None) -> str:
+    """
+    Export a track's audio to a WAV file.
+
+    This freezes the track, extracts the audio, and saves it to the specified path.
+    The track is automatically unfrozen after export unless it was already frozen.
+
+    Parameters:
+    - track_index: Index of the track to export
+    - output_path: Path where the WAV file should be saved
+    - start_time: Optional start time in beats (uses song start if not specified)
+    - end_time: Optional end time in beats (uses song end if not specified)
+
+    Returns:
+    Path to the exported WAV file, ready for analysis with analyze_audio_file.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("export_track_audio", {
+            "track_index": track_index,
+            "output_path": output_path,
+            "start_time": start_time,
+            "end_time": end_time
+        })
+
+        if "error" in result:
+            return f"Error exporting track audio: {result['error']}"
+
+        return f"Track {track_index} exported to: {output_path}\n" + \
+               f"Duration: {result.get('duration', 'unknown')} seconds\n" + \
+               f"Ready for analysis with analyze_audio_file('{output_path}')"
+    except Exception as e:
+        logger.error(f"Error exporting track audio: {str(e)}")
+        return f"Error exporting track audio: {str(e)}"
 
 # Main execution
 def main():

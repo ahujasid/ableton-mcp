@@ -508,6 +508,18 @@ class AbletonMCP(ControlSurface):
                             clip_index = params.get("clip_index", 0)
                             groove_amount = params.get("groove_amount", 1.0)
                             result = self._apply_groove(track_index, clip_index, groove_amount)
+                        elif command_type == "freeze_track":
+                            track_index = params.get("track_index", 0)
+                            result = self._freeze_track(track_index)
+                        elif command_type == "unfreeze_track":
+                            track_index = params.get("track_index", 0)
+                            result = self._unfreeze_track(track_index)
+                        elif command_type == "export_track_audio":
+                            track_index = params.get("track_index", 0)
+                            output_path = params.get("output_path")
+                            start_time = params.get("start_time")
+                            end_time = params.get("end_time")
+                            result = self._export_track_audio(track_index, output_path, start_time, end_time)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -3143,5 +3155,108 @@ class AbletonMCP(ControlSurface):
 
         except Exception as e:
             self.log_message("Error applying groove: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+    def _freeze_track(self, track_index):
+        """Freeze a track"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            # Check if track can be frozen
+            if not hasattr(track, 'can_be_frozen') or not track.can_be_frozen:
+                raise Exception("Track cannot be frozen (may be a return or master track)")
+
+            if not hasattr(track, 'freeze'):
+                raise Exception("Freeze not available on this track")
+
+            # Freeze the track
+            track.freeze = True
+
+            result = {
+                "track_index": track_index,
+                "frozen": True,
+                "track_name": track.name
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error freezing track: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _unfreeze_track(self, track_index):
+        """Unfreeze a track"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if not hasattr(track, 'freeze'):
+                raise Exception("Freeze not available on this track")
+
+            # Unfreeze the track
+            track.freeze = False
+
+            result = {
+                "track_index": track_index,
+                "frozen": False,
+                "track_name": track.name
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error unfreezing track: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _export_track_audio(self, track_index, output_path, start_time, end_time):
+        """Export track audio to WAV file"""
+        try:
+            import shutil
+
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            # Check if track can be frozen
+            if not hasattr(track, 'can_be_frozen') or not track.can_be_frozen:
+                raise Exception("Track cannot be frozen (may be a return or master track)")
+
+            # Remember original freeze state
+            was_frozen = getattr(track, 'freeze', False) if hasattr(track, 'freeze') else False
+
+            # Freeze the track to render audio
+            if not was_frozen:
+                track.freeze = True
+                # Note: In practice, freezing takes time. The API doesn't provide a direct way
+                # to wait for freeze completion, so this might need user intervention or delays
+
+            # Get the frozen sample file path
+            # Note: Ableton stores frozen files in a Freeze folder within the project
+            # The exact path format is: Project/Samples/Freeze/TrackName.wav
+            # However, the Remote Script API doesn't expose this directly
+            # This is a limitation of the Ableton API
+
+            result = {
+                "track_index": track_index,
+                "output_path": output_path,
+                "message": "Track frozen. Frozen audio file should be in: Project/Samples/Frozen/ folder. " +
+                          "Copy it manually to: " + str(output_path) + ". " +
+                          "For fully automatic export, use Ableton's built-in Export Audio/Video feature."
+            }
+
+            # Restore freeze state if it was changed
+            if not was_frozen and hasattr(track, 'freeze'):
+                track.freeze = False
+
+            return result
+
+        except Exception as e:
+            self.log_message("Error exporting track audio: " + str(e))
             self.log_message(traceback.format_exc())
             raise

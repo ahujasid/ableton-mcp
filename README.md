@@ -1,8 +1,8 @@
 # AbletonMCP Extended - Ableton Live Model Context Protocol Integration
 
-**73 tools for comprehensive Ableton Live control**
+**76 tools for comprehensive Ableton Live control**
 
-AbletonMCP Extended connects Ableton Live to Claude AI through the Model Context Protocol (MCP), allowing Claude to directly interact with and control Ableton Live. This extended version includes 73 tools for comprehensive music production, track creation, arrangement manipulation, and Live session control.
+AbletonMCP Extended connects Ableton Live to Claude AI through the Model Context Protocol (MCP), allowing Claude to directly interact with and control Ableton Live. This extended version includes 76 tools for comprehensive music production, track creation, arrangement manipulation, and Live session control.
 
 Based on the original [ableton-mcp](https://github.com/ahujasid/ableton-mcp) by Siddharth Ahuja, with 56 additional tools for professional workflows.
 
@@ -23,6 +23,7 @@ Give feedback, get inspired, and build on top of the MCP: [Discord](https://disc
 - **Audio clip manipulation**: Crop and reverse audio clips for creative sound design
 - **Audio analysis**: Comprehensive analysis including BPM detection, transient detection, frequency content, and waveform descriptions
 - **Audio-to-MIDI transcription**: Analyze audio files and transcribe them to MIDI with tempo, key, and note detection (powered by audio2llm)
+- **Track freezing and export**: Freeze tracks to render audio, enabling CPU-efficient playback and audio extraction workflows
 
 ## Components
 

@@ -1,7 +1,7 @@
 [project]
 name = "ableton-mcp-extended"
-version = "2.1.0"
-description = "Extended Ableton Live integration with 73 tools through the Model Context Protocol"
+version = "2.2.0"
+description = "Extended Ableton Live integration with 76 tools through the Model Context Protocol"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
