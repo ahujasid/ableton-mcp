@@ -18,6 +18,7 @@ Give feedback, get inspired, and build on top of the MCP: [Discord](https://disc
 - **Audio sample loading**: Load audio files and samples into clip slots from Ableton's browser
 - **Audio warping**: Control warp modes, enable/disable warping, and manipulate audio time-stretching
 - **Audio clip manipulation**: Crop and reverse audio clips for creative sound design
+- **Audio analysis**: Comprehensive analysis including BPM detection, transient detection, frequency content, and waveform descriptions
 
 ## Components
 
@@ -174,6 +175,16 @@ Once the config file has been set on Claude, and the remote script is running in
 - Crop audio clips to loop boundaries
 - Reverse audio clip samples for creative effects
 
+### Audio Analysis
+- Comprehensive audio clip analysis with detailed characteristics
+- BPM and tempo detection from warped clips
+- Transient detection using warp markers (identifies hit positions)
+- Transient density analysis (distinguishes drums from sustained sounds)
+- Audio file properties (sample rate, bit depth, duration, channels)
+- Frequency content analysis based on warp mode and clip properties
+- Waveform envelope description (gain, fades, loop characteristics)
+- Pitch and key information when available
+
 ### Session Control
 - Change tempo and time signature
 - Load sounds and instruments from browser
@@ -230,6 +241,14 @@ Here are some examples of what you can ask Claude to do:
 - "Disable warping for track 2, clip 3"
 - "Crop the audio clip at track 0, slot 1 to its loop boundaries"
 - "Reverse the audio sample in track 1, slot 0"
+
+### Audio Analysis
+- "Analyze the audio clip in track 0, slot 0"
+- "Tell me about the frequency content of the clip at track 1, slot 2"
+- "Describe the transients in the audio clip on track 2, slot 0"
+- "What's the BPM and rhythm characteristics of track 0, clip 1?"
+- "Give me a comprehensive analysis of the drum loop in track 3, slot 0"
+- "Analyze the waveform and audio properties of track 1, clip 0"
 
 ### Session Control
 - "Set the tempo to 120 BPM"

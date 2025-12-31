@@ -1259,6 +1259,34 @@ def reverse_clip(ctx: Context, track_index: int, clip_index: int) -> str:
         return f"Error reversing clip: {str(e)}"
 
 @mcp.tool()
+def analyze_audio_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Analyze an audio clip to provide detailed information about its characteristics.
+
+    Returns comprehensive analysis including:
+    - BPM and tempo information
+    - Key/pitch detection (if available)
+    - Warp markers and transient positions
+    - Audio file properties (sample rate, bit depth, duration)
+    - Frequency characteristics (brightness, spectral centroid estimates)
+    - Waveform envelope description
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Index of the clip slot
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("analyze_audio_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error analyzing audio clip: {str(e)}")
+        return f"Error analyzing audio clip: {str(e)}"
+
+@mcp.tool()
 def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:
     """
     Load a drum rack and then load a specific drum kit into it.

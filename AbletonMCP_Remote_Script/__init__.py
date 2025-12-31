@@ -236,6 +236,10 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 clip_index = params.get("clip_index", 0)
                 response["result"] = self._get_audio_clip_info(track_index, clip_index)
+            elif command_type == "analyze_audio_clip":
+                track_index = params.get("track_index", 0)
+                clip_index = params.get("clip_index", 0)
+                response["result"] = self._analyze_audio_clip(track_index, clip_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
@@ -2078,4 +2082,230 @@ class AbletonMCP(ControlSurface):
             )
         except Exception as e:
             self.log_message("Error reversing clip: " + str(e))
+            raise
+
+    def _analyze_audio_clip(self, track_index, clip_index):
+        """Analyze an audio clip comprehensively"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            if not clip.is_audio_clip:
+                raise Exception("Clip is not an audio clip")
+
+            # Initialize analysis result
+            analysis = {
+                "basic_info": {},
+                "tempo_rhythm": {},
+                "transients": {},
+                "audio_properties": {},
+                "frequency_analysis": {},
+                "waveform_description": {}
+            }
+
+            # Basic clip information
+            analysis["basic_info"] = {
+                "name": clip.name,
+                "length_beats": clip.length,
+                "loop_start": clip.loop_start if hasattr(clip, 'loop_start') else None,
+                "loop_end": clip.loop_end if hasattr(clip, 'loop_end') else None,
+                "file_path": clip.file_path if hasattr(clip, 'file_path') else None
+            }
+
+            # Tempo and rhythm analysis
+            warp_mode_map = {
+                0: "beats",
+                1: "tones",
+                2: "texture",
+                3: "re_pitch",
+                4: "complex",
+                5: "complex_pro"
+            }
+
+            analysis["tempo_rhythm"] = {
+                "warping_enabled": clip.warping if hasattr(clip, 'warping') else None,
+                "warp_mode": warp_mode_map.get(clip.warp_mode, "unknown") if hasattr(clip, 'warp_mode') else None,
+                "signature_numerator": clip.signature_numerator if hasattr(clip, 'signature_numerator') else None,
+                "signature_denominator": clip.signature_denominator if hasattr(clip, 'signature_denominator') else None
+            }
+
+            # Calculate estimated BPM if warping is enabled
+            if hasattr(clip, 'warping') and clip.warping:
+                try:
+                    # Get the song tempo
+                    current_tempo = self._song.tempo
+                    analysis["tempo_rhythm"]["detected_bpm"] = current_tempo
+
+                    # If the clip has warp markers, we can analyze tempo changes
+                    if hasattr(clip, 'warp_markers') and clip.warp_markers:
+                        analysis["tempo_rhythm"]["has_tempo_automation"] = True
+                except:
+                    pass
+
+            # Transient detection via warp markers
+            transient_positions = []
+            transient_count = 0
+
+            if hasattr(clip, 'warp_markers'):
+                try:
+                    warp_markers = clip.warp_markers
+                    transient_count = len(warp_markers)
+
+                    for marker in warp_markers:
+                        if hasattr(marker, 'sample_time') and hasattr(marker, 'beat_time'):
+                            transient_positions.append({
+                                "sample_time": marker.sample_time,
+                                "beat_time": marker.beat_time
+                            })
+
+                    analysis["transients"]["warp_marker_count"] = transient_count
+                    analysis["transients"]["warp_markers"] = transient_positions[:20]  # Limit to first 20
+
+                    # Analyze transient density
+                    if transient_count > 0 and clip.length > 0:
+                        density = transient_count / clip.length
+                        if density > 4:
+                            analysis["transients"]["density"] = "very_high"
+                            analysis["transients"]["description"] = "Very dense, likely drums or percussion"
+                        elif density > 2:
+                            analysis["transients"]["density"] = "high"
+                            analysis["transients"]["description"] = "High transient density, rhythmic content"
+                        elif density > 0.5:
+                            analysis["transients"]["density"] = "medium"
+                            analysis["transients"]["description"] = "Moderate transient density"
+                        else:
+                            analysis["transients"]["density"] = "low"
+                            analysis["transients"]["description"] = "Low transient density, likely sustained sounds"
+                except Exception as e:
+                    self.log_message("Error analyzing warp markers: " + str(e))
+                    analysis["transients"]["error"] = str(e)
+
+            # Audio file properties
+            if hasattr(clip, 'sample'):
+                sample = clip.sample
+                try:
+                    if hasattr(sample, 'length'):
+                        analysis["audio_properties"]["sample_length"] = sample.length
+
+                        # Calculate duration in seconds
+                        if hasattr(sample, 'sample_rate') and sample.sample_rate > 0:
+                            duration_seconds = sample.length / sample.sample_rate
+                            analysis["audio_properties"]["duration_seconds"] = duration_seconds
+                            analysis["audio_properties"]["sample_rate"] = sample.sample_rate
+
+                    if hasattr(sample, 'bit_depth'):
+                        analysis["audio_properties"]["bit_depth"] = sample.bit_depth
+
+                    if hasattr(sample, 'channels'):
+                        analysis["audio_properties"]["channels"] = sample.channels
+                        analysis["audio_properties"]["is_stereo"] = sample.channels == 2
+
+                    # Get gain information
+                    if hasattr(clip, 'gain'):
+                        analysis["audio_properties"]["gain"] = clip.gain
+
+                except Exception as e:
+                    self.log_message("Error getting sample properties: " + str(e))
+
+            # Frequency and spectral analysis (estimates based on warp mode and properties)
+            # Note: Direct spectral analysis is not available in Live's Python API
+            # We provide educated estimates based on clip properties
+            frequency_hints = []
+
+            if hasattr(clip, 'warp_mode'):
+                if clip.warp_mode == 0:  # Beats mode
+                    frequency_hints.append("Likely percussive/rhythmic content")
+                    analysis["frequency_analysis"]["character"] = "percussive"
+                elif clip.warp_mode == 1:  # Tones mode
+                    frequency_hints.append("Likely tonal/melodic content")
+                    analysis["frequency_analysis"]["character"] = "tonal"
+                elif clip.warp_mode == 2:  # Texture mode
+                    frequency_hints.append("Likely atmospheric/textural content")
+                    analysis["frequency_analysis"]["character"] = "textural"
+                elif clip.warp_mode == 4 or clip.warp_mode == 5:  # Complex/Complex Pro
+                    frequency_hints.append("Full-bandwidth material, likely mixed/mastered")
+                    analysis["frequency_analysis"]["character"] = "full_spectrum"
+
+            analysis["frequency_analysis"]["hints"] = frequency_hints
+            analysis["frequency_analysis"]["note"] = (
+                "Direct spectral analysis not available in Ableton Python API. "
+                "Analysis based on warp mode and clip properties."
+            )
+
+            # Waveform description based on available data
+            waveform_desc = []
+
+            # Analyze clip envelope if available
+            if hasattr(clip, 'gain'):
+                if clip.gain > 0.9:
+                    waveform_desc.append("High gain - likely loud/compressed")
+                elif clip.gain < 0.3:
+                    waveform_desc.append("Low gain - quiet/ambient")
+
+            # Check for fades
+            if hasattr(clip, 'start_marker') and hasattr(clip, 'end_marker'):
+                start = clip.start_marker
+                end = clip.end_marker
+                if start > 0:
+                    waveform_desc.append("Has fade-in or trimmed start")
+                if hasattr(clip, 'sample') and hasattr(clip.sample, 'length'):
+                    if end < clip.sample.length:
+                        waveform_desc.append("Has fade-out or trimmed end")
+
+            # Analyze loop points for waveform characteristics
+            if hasattr(clip, 'loop_start') and hasattr(clip, 'loop_end'):
+                loop_length = clip.loop_end - clip.loop_start
+                if loop_length < 1:
+                    waveform_desc.append("Very short loop - likely one-shot or stab")
+                elif loop_length < 4:
+                    waveform_desc.append("Short loop - likely rhythmic element")
+                elif loop_length < 16:
+                    waveform_desc.append("Medium loop - likely phrase or section")
+                else:
+                    waveform_desc.append("Long loop - likely full section or arrangement")
+
+            analysis["waveform_description"]["characteristics"] = waveform_desc
+
+            # Add pitch/key information if available
+            if hasattr(clip, 'pitch_coarse'):
+                analysis["pitch_info"] = {
+                    "pitch_coarse": clip.pitch_coarse,
+                    "note": "Pitch adjustment in semitones"
+                }
+                if hasattr(clip, 'pitch_fine'):
+                    analysis["pitch_info"]["pitch_fine"] = clip.pitch_fine
+
+            # Summary
+            summary_parts = []
+
+            if analysis["tempo_rhythm"].get("warping_enabled"):
+                summary_parts.append("warped audio")
+            else:
+                summary_parts.append("unwarped audio")
+
+            if analysis["transients"].get("density"):
+                summary_parts.append(analysis["transients"]["density"] + " transient density")
+
+            if analysis["frequency_analysis"].get("character"):
+                summary_parts.append(analysis["frequency_analysis"]["character"] + " character")
+
+            analysis["summary"] = ", ".join(summary_parts).capitalize()
+
+            return analysis
+
+        except Exception as e:
+            self.log_message("Error analyzing audio clip: " + str(e))
+            self.log_message(traceback.format_exc())
             raise
