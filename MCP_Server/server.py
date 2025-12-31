@@ -198,7 +198,6 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
 # Create the MCP server with lifespan support
 mcp = FastMCP(
     "AbletonMCP",
-    description="Ableton Live integration through the Model Context Protocol",
     lifespan=server_lifespan
 )
 
