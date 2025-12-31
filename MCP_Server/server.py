@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, List, Union
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -1804,6 +1805,71 @@ def apply_groove(ctx: Context, track_index: int, clip_index: int, groove_amount:
     except Exception as e:
         logger.error(f"Error applying groove: {str(e)}")
         return f"Error applying groove: {str(e)}"
+
+@mcp.tool()
+def analyze_audio_file(ctx: Context, audio_file_path: str, output_midi_path: str = None, prefer_polyphonic: bool = True) -> str:
+    """
+    Transcribe an audio file to MIDI and analyze its musical content.
+
+    Uses audio2llm to convert audio (WAV, MP3, etc.) into MIDI notes and extract
+    musical features like tempo, key, and note events. Great for analyzing audio clips
+    exported from Ableton and recreating them as MIDI.
+
+    Parameters:
+    - audio_file_path: Path to the audio file to analyze (e.g., exported from Ableton)
+    - output_midi_path: Optional path to save the transcribed MIDI file
+    - prefer_polyphonic: Use polyphonic transcription if available (default: True)
+
+    Returns:
+    Musical analysis including tempo, key, and note events in LLM-friendly text format.
+    """
+    try:
+        # Import audio2llm
+        try:
+            from audio2llm import transcribe_audio, save_midi, events_to_lines
+        except ImportError:
+            return "Error: audio2llm package not installed. Install with: pip install audio2llm"
+
+        # Check if file exists
+        if not os.path.exists(audio_file_path):
+            return f"Error: Audio file not found: {audio_file_path}"
+
+        # Transcribe the audio
+        logger.info(f"Transcribing audio file: {audio_file_path}")
+        result = transcribe_audio(audio_file_path, prefer_polyphonic=prefer_polyphonic)
+
+        # Save MIDI if output path provided
+        if output_midi_path:
+            save_midi(result.events, output_midi_path, tempo_bpm=result.meta.tempo_bpm)
+            logger.info(f"Saved MIDI to: {output_midi_path}")
+
+        # Convert to text format
+        lines = events_to_lines(
+            result.events,
+            tempo_bpm=result.meta.tempo_bpm,
+            key=result.meta.key
+        )
+
+        # Build response
+        response = f"Audio Analysis for: {os.path.basename(audio_file_path)}\n\n"
+        response += f"Tempo: {result.meta.tempo_bpm:.2f} BPM\n"
+        response += f"Key: {result.meta.key}\n"
+        response += f"Total Notes: {len(result.events)}\n"
+
+        if output_midi_path:
+            response += f"MIDI saved to: {output_midi_path}\n"
+
+        response += f"\n--- Note Events ---\n"
+        response += "\n".join(lines[:50])  # Limit to first 50 notes for readability
+
+        if len(lines) > 50:
+            response += f"\n... and {len(lines) - 50} more notes"
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Error analyzing audio file: {str(e)}")
+        return f"Error analyzing audio file: {str(e)}"
 
 # Main execution
 def main():
