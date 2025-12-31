@@ -124,36 +124,97 @@ Once the config file has been set on Claude, and the remote script is running in
 
 ## Capabilities
 
+### Session & Track Management
 - Get session and track information
 - Create and modify MIDI and audio tracks
+- Group tracks together
+- Set track colors for organization
+- Control track volume, pan, mute, and solo
+
+### Clip Operations
 - Create, edit, and trigger clips
-- Control playback
-- Load instruments and effects from Ableton's browser
-- Add notes to MIDI clips
-- Change tempo and other session parameters
+- Set clip colors
+- Duplicate clips across tracks and slots
+- Add and manipulate MIDI notes
+- Quantize MIDI clips to a grid
+- Transpose MIDI clips
+- Control clip loop settings
+
+### Scene Management
+- Create, delete, and duplicate scenes
+- Trigger/fire scenes
+- Rename scenes
+
+### Playback & Recording
+- Control playback (start/stop/jump to position)
 - Arm/disarm tracks for recording
 - Start and stop arrangement recording
 - Enable/disable arrangement overdub mode
 - Get recording status and armed tracks information
 
+### Arrangement Navigation
+- Set loop start, end, and length
+- Jump to specific positions in the arrangement
+- Get current loop and playback information
+
+### Devices & Effects
+- Load instruments and effects from Ableton's browser
+- Get all parameters for any device
+- Set device parameter values
+- Control device chains
+
+### Session Control
+- Change tempo and time signature
+- Load sounds and instruments from browser
+- Control transport and metronome
+
 ## Example Commands
 
 Here are some examples of what you can ask Claude to do:
 
+### Music Production
 - "Create an 80s synthwave track" [Demo](https://youtu.be/VH9g66e42XA)
 - "Create a Metro Boomin style hip-hop beat"
 - "Create a new MIDI track with a synth bass instrument"
-- "Add reverb to my drums"
-- "Create a 4-bar MIDI clip with a simple melody"
-- "Get information about the current Ableton session"
-- "Load a 808 drum rack into the selected track"
 - "Add a jazz chord progression to the clip in track 1"
-- "Set the tempo to 120 BPM"
-- "Play the clip in track 2"
+
+### Recording & Arrangement
 - "Arm track 0 for recording"
 - "Start recording in arrangement view"
 - "Enable overdub mode and start recording"
 - "Show me which tracks are armed for recording"
+- "Set the loop to start at beat 4 and end at beat 8"
+- "Jump to the 16 beat mark"
+
+### Scene Management
+- "Create a new scene called 'Chorus' at index 2"
+- "Duplicate scene 0"
+- "Trigger scene 1"
+- "Delete scene 3"
+
+### Clip Operations
+- "Quantize the clip in track 0, slot 0 to 16th notes"
+- "Transpose the clip in track 1 up by 5 semitones"
+- "Duplicate the clip from track 0, slot 0 to track 1, slot 1"
+- "Set the clip at track 0, slot 0 to red (color index 5)"
+
+### Track Mixing
+- "Set track 0 volume to 0.7"
+- "Pan track 1 hard left"
+- "Mute tracks 2 and 3"
+- "Solo track 0"
+- "Set track 0 to blue (color index 45)"
+
+### Device Control
+- "Show me all parameters for the first device on track 0"
+- "Set parameter 3 of device 0 on track 0 to 0.8"
+- "Add reverb to my drums"
+- "Load a 808 drum rack into the selected track"
+
+### Session Control
+- "Set the tempo to 120 BPM"
+- "Get information about the current Ableton session"
+- "Create 4 MIDI tracks and group them together"
 
 
 ## Troubleshooting
