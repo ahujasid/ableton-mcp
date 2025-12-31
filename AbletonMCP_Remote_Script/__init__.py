@@ -279,6 +279,9 @@ class AbletonMCP(ControlSurface):
                         if command_type == "create_midi_track":
                             index = params.get("index", -1)
                             result = self._create_midi_track(index)
+                        elif command_type == "create_audio_track":
+                            index = params.get("index", -1)
+                            result = self._create_audio_track(index)
                         elif command_type == "set_track_name":
                             track_index = params.get("track_index", 0)
                             name = params.get("name", "")
