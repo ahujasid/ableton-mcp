@@ -162,6 +162,9 @@ Once the config file has been set on Claude, and the remote script is running in
 - Set loop start, end, and length
 - Jump to specific positions in the arrangement
 - Get current loop and playback information
+- **Copy clips from session view to arrangement timeline**
+- **Create automation lanes** for volume, pan, sends, and device parameters
+- **Clear automation** in specific time ranges
 
 ### Devices & Effects
 - Load instruments and effects from Ableton's browser
@@ -209,6 +212,8 @@ Here are some examples of what you can ask Claude to do:
 - "Show me which tracks are armed for recording"
 - "Set the loop to start at beat 4 and end at beat 8"
 - "Jump to the 16 beat mark"
+- "Copy the clip from track 1, slot 0 to arrangement at beat 8"
+- "Place this session clip at bar 16 in the arrangement"
 
 ### Scene Management
 - "Create a new scene called 'Chorus' at index 2"
@@ -257,6 +262,14 @@ Here are some examples of what you can ask Claude to do:
 - "What's the BPM and rhythm characteristics of track 0, clip 1?"
 - "Give me a comprehensive analysis of the drum loop in track 3, slot 0"
 - "Analyze the waveform and audio properties of track 1, clip 0"
+
+### Automation
+- "Create a volume fade from 0 to 1 over 8 beats on track 0"
+- "Automate the pan from left to right on track 2"
+- "Add a filter sweep automation on device 0 parameter 3"
+- "Create a reverb send build from beat 4 to beat 8"
+- "Clear all automation on track 1"
+- "Automate the volume to drop at beat 16"
 
 ### Session Control
 - "Set the tempo to 120 BPM"

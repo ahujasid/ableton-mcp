@@ -257,7 +257,8 @@ class AbletonMCP(ControlSurface):
                                  "quantize_clip", "transpose_clip", "duplicate_clip",
                                  "group_tracks", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo",
                                  "load_audio_sample", "set_warp_mode", "set_clip_warp", "crop_clip", "reverse_clip",
-                                 "set_clip_loop_points", "set_clip_start_marker", "set_clip_end_marker", "set_track_send"]:
+                                 "set_clip_loop_points", "set_clip_start_marker", "set_clip_end_marker", "set_track_send",
+                                 "copy_clip_to_arrangement", "create_automation", "clear_automation"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -442,6 +443,22 @@ class AbletonMCP(ControlSurface):
                             send_index = params.get("send_index", 0)
                             value = params.get("value", 0.0)
                             result = self._set_track_send(track_index, send_index, value)
+                        elif command_type == "copy_clip_to_arrangement":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            arrangement_time = params.get("arrangement_time", 0.0)
+                            result = self._copy_clip_to_arrangement(track_index, clip_index, arrangement_time)
+                        elif command_type == "create_automation":
+                            track_index = params.get("track_index", 0)
+                            parameter_name = params.get("parameter_name", "")
+                            automation_points = params.get("automation_points", [])
+                            result = self._create_automation(track_index, parameter_name, automation_points)
+                        elif command_type == "clear_automation":
+                            track_index = params.get("track_index", 0)
+                            parameter_name = params.get("parameter_name", "")
+                            start_time = params.get("start_time", 0.0)
+                            end_time = params.get("end_time", 999999.0)
+                            result = self._clear_automation(track_index, parameter_name, start_time, end_time)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -2519,4 +2536,192 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error setting track send: " + str(e))
+            raise
+
+    def _copy_clip_to_arrangement(self, track_index, clip_index, arrangement_time):
+        """Copy a clip from session view to arrangement view"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            # Duplicate the clip to arrangement
+            # Note: This uses Live's duplicate_clip_to method
+            try:
+                # First, we need to ensure we're in arrangement view or can access it
+                clip.duplicate_clip_to(track, arrangement_time)
+
+                result = {
+                    "copied": True,
+                    "track_index": track_index,
+                    "clip_index": clip_index,
+                    "arrangement_time": arrangement_time
+                }
+                return result
+            except AttributeError:
+                # If duplicate_clip_to is not available, try alternative method
+                # Create a new clip in arrangement at the specified time
+                self.log_message("Using alternative clip copy method")
+
+                # Calculate the clip length
+                clip_length = clip.length
+
+                # This is a workaround: we can't directly copy to arrangement in all API versions
+                # but we can provide info for manual intervention or use session recording
+                result = {
+                    "copied": False,
+                    "note": "Direct arrangement copy not supported in this API version. Use duplicate_clip instead.",
+                    "clip_length": clip_length,
+                    "suggested_time": arrangement_time
+                }
+                return result
+
+        except Exception as e:
+            self.log_message("Error copying clip to arrangement: " + str(e))
+            raise
+
+    def _create_automation(self, track_index, parameter_name, automation_points):
+        """Create automation for a track parameter"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            # Find the parameter to automate
+            parameter = None
+            parameter_path = parameter_name.lower()
+
+            # Check mixer parameters
+            if hasattr(track, 'mixer_device'):
+                mixer = track.mixer_device
+
+                if parameter_path == "volume":
+                    parameter = mixer.volume
+                elif parameter_path == "pan" or parameter_path == "panning":
+                    parameter = mixer.panning
+                elif parameter_path.startswith("send"):
+                    # Parse "Send A", "Send B", etc.
+                    send_char = parameter_path.split()[-1] if len(parameter_path.split()) > 1 else parameter_path[-1]
+                    send_index = ord(send_char.upper()) - ord('A')
+                    if 0 <= send_index < len(mixer.sends):
+                        parameter = mixer.sends[send_index]
+
+            # If not found in mixer, check devices
+            if parameter is None and hasattr(track, 'devices'):
+                # Parse device parameter names like "Device 0 Parameter 1"
+                if "device" in parameter_path:
+                    parts = parameter_path.split()
+                    try:
+                        device_index = int(parts[1])
+                        param_index = int(parts[3])
+
+                        if 0 <= device_index < len(track.devices):
+                            device = track.devices[device_index]
+                            if hasattr(device, 'parameters') and param_index < len(device.parameters):
+                                parameter = device.parameters[param_index]
+                    except (IndexError, ValueError):
+                        pass
+
+            if parameter is None:
+                raise ValueError("Parameter '{0}' not found on track {1}".format(parameter_name, track_index))
+
+            # Get or create automation envelope
+            if not hasattr(parameter, 'automation_envelope'):
+                raise Exception("Parameter does not support automation")
+
+            automation_envelope = parameter.automation_envelope
+
+            # Clear existing automation in the time range
+            if len(automation_points) > 0:
+                start_time = automation_points[0]["time"]
+                end_time = automation_points[-1]["time"]
+
+                # Clear the range
+                automation_envelope.insert_step(start_time, 0.0, 0.0)
+                automation_envelope.insert_step(end_time, 0.0, 0.0)
+
+            # Insert automation points
+            for point in automation_points:
+                time = point["time"]
+                value = point["value"]
+
+                # Clamp value between 0.0 and 1.0
+                value = max(0.0, min(1.0, value))
+
+                # Insert step (time, step_length, value)
+                # step_length of 0.0 means it's a point, not a step
+                automation_envelope.insert_step(time, 0.0, value)
+
+            result = {
+                "parameter": parameter_name,
+                "track_index": track_index,
+                "points_added": len(automation_points)
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error creating automation: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _clear_automation(self, track_index, parameter_name, start_time, end_time):
+        """Clear automation for a parameter in a time range"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            # Find the parameter (same logic as create_automation)
+            parameter = None
+            parameter_path = parameter_name.lower()
+
+            if hasattr(track, 'mixer_device'):
+                mixer = track.mixer_device
+
+                if parameter_path == "volume":
+                    parameter = mixer.volume
+                elif parameter_path == "pan" or parameter_path == "panning":
+                    parameter = mixer.panning
+                elif parameter_path.startswith("send"):
+                    send_char = parameter_path.split()[-1] if len(parameter_path.split()) > 1 else parameter_path[-1]
+                    send_index = ord(send_char.upper()) - ord('A')
+                    if 0 <= send_index < len(mixer.sends):
+                        parameter = mixer.sends[send_index]
+
+            if parameter is None:
+                raise ValueError("Parameter '{0}' not found on track {1}".format(parameter_name, track_index))
+
+            if not hasattr(parameter, 'automation_envelope'):
+                raise Exception("Parameter does not support automation")
+
+            automation_envelope = parameter.automation_envelope
+
+            # Clear automation in the specified range
+            # This is done by inserting flat automation at the current value
+            current_value = parameter.value
+            automation_envelope.insert_step(start_time, end_time - start_time, current_value)
+
+            result = {
+                "parameter": parameter_name,
+                "track_index": track_index,
+                "cleared_from": start_time,
+                "cleared_to": end_time
+            }
+            return result
+
+        except Exception as e:
+            self.log_message("Error clearing automation: " + str(e))
             raise

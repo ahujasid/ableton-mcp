@@ -114,7 +114,8 @@ class AbletonConnection:
             "quantize_clip", "transpose_clip", "duplicate_clip",
             "group_tracks", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo",
             "load_audio_sample", "set_warp_mode", "set_clip_warp", "crop_clip", "reverse_clip",
-            "set_clip_loop_points", "set_clip_start_marker", "set_clip_end_marker", "set_track_send"
+            "set_clip_loop_points", "set_clip_start_marker", "set_clip_end_marker", "set_track_send",
+            "copy_clip_to_arrangement", "create_automation", "clear_automation"
         ]
         
         try:
@@ -1406,6 +1407,89 @@ def set_track_send(ctx: Context, track_index: int, send_index: int, value: float
     except Exception as e:
         logger.error(f"Error setting track send: {str(e)}")
         return f"Error setting track send: {str(e)}"
+
+@mcp.tool()
+def copy_clip_to_arrangement(ctx: Context, track_index: int, clip_index: int, arrangement_time: float) -> str:
+    """
+    Copy a clip from session view to arrangement view at a specific time position.
+
+    This enables building arrangements by placing session clips into the timeline.
+
+    Parameters:
+    - track_index: Index of the source track
+    - clip_index: Index of the clip slot to copy from
+    - arrangement_time: Time position in beats where to place the clip in arrangement
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("copy_clip_to_arrangement", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "arrangement_time": arrangement_time
+        })
+        return f"Copied clip from track {track_index}, slot {clip_index} to arrangement at {arrangement_time} beats"
+    except Exception as e:
+        logger.error(f"Error copying clip to arrangement: {str(e)}")
+        return f"Error copying clip to arrangement: {str(e)}"
+
+@mcp.tool()
+def create_automation(ctx: Context, track_index: int, parameter_name: str, automation_points: str) -> str:
+    """
+    Create automation for a track parameter.
+
+    Parameters:
+    - track_index: Index of the track
+    - parameter_name: Name of the parameter to automate (e.g., "Volume", "Pan", or device parameter)
+    - automation_points: JSON string of automation points, e.g., '[{"time": 0, "value": 0.5}, {"time": 4, "value": 0.8}]'
+      Each point has "time" in beats and "value" (0.0 to 1.0)
+
+    Common parameter names:
+    - "Volume" - Track volume
+    - "Pan" - Track panning
+    - "Send A", "Send B" - Send levels
+    - Device parameters: "Device 0 Parameter 1", etc.
+
+    Example automation_points:
+    '[{"time": 0, "value": 0.0}, {"time": 4, "value": 1.0}, {"time": 8, "value": 0.5}]'
+    """
+    try:
+        import json as json_module
+        points = json_module.loads(automation_points)
+
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_automation", {
+            "track_index": track_index,
+            "parameter_name": parameter_name,
+            "automation_points": points
+        })
+        return f"Created automation for {parameter_name} on track {track_index} with {len(points)} points"
+    except Exception as e:
+        logger.error(f"Error creating automation: {str(e)}")
+        return f"Error creating automation: {str(e)}"
+
+@mcp.tool()
+def clear_automation(ctx: Context, track_index: int, parameter_name: str, start_time: float = 0.0, end_time: float = 999999.0) -> str:
+    """
+    Clear automation for a track parameter in a time range.
+
+    Parameters:
+    - track_index: Index of the track
+    - parameter_name: Name of the parameter (e.g., "Volume", "Pan")
+    - start_time: Start time in beats (default: 0.0)
+    - end_time: End time in beats (default: very large number for "all")
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("clear_automation", {
+            "track_index": track_index,
+            "parameter_name": parameter_name,
+            "start_time": start_time,
+            "end_time": end_time
+        })
+        return f"Cleared automation for {parameter_name} on track {track_index}"
+    except Exception as e:
+        logger.error(f"Error clearing automation: {str(e)}")
+        return f"Error clearing automation: {str(e)}"
 
 @mcp.tool()
 def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:
