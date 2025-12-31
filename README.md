@@ -42,6 +42,26 @@ Install via pip/uvx:
 uvx ableton-mcp-extended
 ```
 
+### Optional: Enhanced Audio-to-MIDI Transcription
+
+For **significantly better polyphonic audio transcription** (detecting chords, multiple instruments simultaneously), install `basic-pitch`:
+
+```bash
+pip install basic-pitch
+```
+
+**Why install this?**
+- **Without basic-pitch**: Monophonic transcription (one note at a time) - works for simple melodies
+- **With basic-pitch**: Polyphonic transcription (multiple simultaneous notes) - works for chords, complex arrangements, and full mixes
+
+The `analyze_audio_file` tool will automatically use the best available transcription method. Basic Pitch provides professional-grade transcription powered by Spotify's ML model.
+
+**Workflow with audio2llm:**
+1. Provide Claude with any WAV/MP3 audio file path
+2. Claude analyzes it and extracts: tempo, key, and musical notes
+3. Claude can recreate the audio as MIDI in Ableton or generate complementary parts
+4. Perfect for sampling, remixing, or learning from reference tracks
+
 ### Prerequisites
 
 - Ableton Live 10 or newer
