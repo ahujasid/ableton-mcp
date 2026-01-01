@@ -189,12 +189,16 @@ def get_ableton_connection():
     
     if _ableton_connection is not None:
         try:
-            # Test the connection with a simple ping
-            # We'll try to send an empty message, which should fail if the connection is dead
-            # but won't affect Ableton if it's alive
-            _ableton_connection.sock.settimeout(1.0)
-            _ableton_connection.sock.sendall(b'')
-            return _ableton_connection
+            # Test the connection with a lightweight ping command
+            _ableton_connection.sock.settimeout(2.0)
+            ping_cmd = json.dumps({"type": "ping", "params": {}}).encode('utf-8')
+            _ableton_connection.sock.sendall(ping_cmd)
+            response = _ableton_connection.receive_full_response(_ableton_connection.sock)
+            result = json.loads(response.decode('utf-8'))
+            if result.get("status") == "success":
+                return _ableton_connection
+            else:
+                raise Exception("Ping failed")
         except Exception as e:
             logger.warning(f"Existing connection is no longer valid: {str(e)}")
             try:
