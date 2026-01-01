@@ -220,7 +220,9 @@ class AbletonMCP(ControlSurface):
         
         try:
             # Route the command to the appropriate handler
-            if command_type == "get_session_info":
+            if command_type == "ping":
+                response["result"] = {"status": "ok"}
+            elif command_type == "get_session_info":
                 response["result"] = self._get_session_info()
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
