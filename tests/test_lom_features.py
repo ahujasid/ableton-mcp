@@ -850,3 +850,213 @@ class TestMCPToolsExist:
             # Look backwards for @mcp.tool()
             preceding = source[max(0, idx - 100) : idx]
             assert "@mcp.tool()" in preceding, f"Function '{func}' missing @mcp.tool() decorator"
+
+
+class TestInvalidIndexErrorHandling:
+    """Tests for error handling when invalid indices are provided."""
+
+    def test_delete_track_invalid_index(self, mock_tcp_server):
+        """Test error response when deleting track with invalid index."""
+        import pytest
+
+        mock_tcp_server.set_response(
+            "delete_track",
+            {"status": "error", "message": "Track index out of range"},
+        )
+
+        from MCP_Server.server import AbletonConnection
+
+        conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
+
+        with pytest.raises(Exception) as exc_info:
+            conn.send_command("delete_track", {"track_index": 999})
+
+        assert "Track index out of range" in str(exc_info.value)
+        assert mock_tcp_server.received_commands[-1]["params"]["track_index"] == 999
+
+    def test_fire_scene_invalid_index(self, mock_tcp_server):
+        """Test error response when firing scene with invalid index."""
+        import pytest
+
+        mock_tcp_server.set_response(
+            "fire_scene",
+            {"status": "error", "message": "Scene index out of range"},
+        )
+
+        from MCP_Server.server import AbletonConnection
+
+        conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
+
+        with pytest.raises(Exception) as exc_info:
+            conn.send_command("fire_scene", {"scene_index": -1})
+
+        assert "Scene index out of range" in str(exc_info.value)
+        assert mock_tcp_server.received_commands[-1]["params"]["scene_index"] == -1
+
+    def test_get_scene_info_invalid_index(self, mock_tcp_server):
+        """Test error response when getting scene info with invalid index."""
+        import pytest
+
+        mock_tcp_server.set_response(
+            "get_scene_info",
+            {"status": "error", "message": "Scene index out of range"},
+        )
+
+        from MCP_Server.server import AbletonConnection
+
+        conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
+
+        with pytest.raises(Exception) as exc_info:
+            conn.send_command("get_scene_info", {"scene_index": 999})
+
+        assert "Scene index out of range" in str(exc_info.value)
+        assert mock_tcp_server.received_commands[-1]["params"]["scene_index"] == 999
+
+    def test_set_track_mute_invalid_index(self, mock_tcp_server):
+        """Test error response when muting track with invalid index."""
+        import pytest
+
+        mock_tcp_server.set_response(
+            "set_track_mute",
+            {"status": "error", "message": "Track index out of range"},
+        )
+
+        from MCP_Server.server import AbletonConnection
+
+        conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
+
+        with pytest.raises(Exception) as exc_info:
+            conn.send_command("set_track_mute", {"track_index": -5, "muted": True})
+
+        assert "Track index out of range" in str(exc_info.value)
+        assert mock_tcp_server.received_commands[-1]["params"]["track_index"] == -5
+
+
+class TestEmptyClipSlotErrors:
+    """Tests for error handling when operating on empty clip slots."""
+
+    def test_delete_clip_no_clip_in_slot(self, mock_tcp_server):
+        """Test error response when deleting from empty clip slot."""
+        import pytest
+
+        mock_tcp_server.set_response(
+            "delete_clip",
+            {"status": "error", "message": "No clip in slot"},
+        )
+
+        from MCP_Server.server import AbletonConnection
+
+        conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
+
+        with pytest.raises(Exception) as exc_info:
+            conn.send_command("delete_clip", {"track_index": 0, "clip_index": 5})
+
+        assert "No clip in slot" in str(exc_info.value)
+        params = mock_tcp_server.received_commands[-1]["params"]
+        assert params["track_index"] == 0
+        assert params["clip_index"] == 5
+
+    def test_get_notes_from_clip_no_clip_in_slot(self, mock_tcp_server):
+        """Test error response when reading notes from empty clip slot."""
+        import pytest
+
+        mock_tcp_server.set_response(
+            "get_notes_from_clip",
+            {"status": "error", "message": "No clip in slot"},
+        )
+
+        from MCP_Server.server import AbletonConnection
+
+        conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
+
+        with pytest.raises(Exception) as exc_info:
+            conn.send_command("get_notes_from_clip", {"track_index": 0, "clip_index": 10})
+
+        assert "No clip in slot" in str(exc_info.value)
+        params = mock_tcp_server.received_commands[-1]["params"]
+        assert params["clip_index"] == 10
+
+
+class TestVolumePanBoundaryClamping:
+    """Tests for volume and pan value clamping at boundaries."""
+
+    def test_set_track_volume_negative_clamped(self, mock_tcp_server):
+        """Test that negative volume values are clamped to 0."""
+        mock_tcp_server.set_response(
+            "set_track_volume",
+            {"status": "success", "result": {"volume": 0.0, "track_name": "Bass"}},
+        )
+
+        from MCP_Server.server import AbletonConnection
+
+        conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
+        result = conn.send_command("set_track_volume", {"track_index": 0, "volume": -0.5})
+
+        # Verify the command was sent (clamping happens on Remote Script side)
+        assert mock_tcp_server.received_commands[-1]["params"]["volume"] == -0.5
+        # The response should show clamped value
+        assert result["volume"] == 0.0
+
+    def test_set_track_panning_over_max_clamped(self, mock_tcp_server):
+        """Test that pan values > 1.0 are clamped."""
+        mock_tcp_server.set_response(
+            "set_track_panning",
+            {"status": "success", "result": {"panning": 1.0, "track_name": "Lead"}},
+        )
+
+        from MCP_Server.server import AbletonConnection
+
+        conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
+        result = conn.send_command("set_track_panning", {"track_index": 1, "pan": 2.5})
+
+        # Verify command sent with original value
+        assert mock_tcp_server.received_commands[-1]["params"]["pan"] == 2.5
+        # Response should show clamped value
+        assert result["panning"] == 1.0
+
+    def test_set_track_panning_under_min_clamped(self, mock_tcp_server):
+        """Test that pan values < -1.0 are clamped."""
+        mock_tcp_server.set_response(
+            "set_track_panning",
+            {"status": "success", "result": {"panning": -1.0, "track_name": "Lead"}},
+        )
+
+        from MCP_Server.server import AbletonConnection
+
+        conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
+        result = conn.send_command("set_track_panning", {"track_index": 1, "pan": -3.0})
+
+        # Verify command sent with original value
+        assert mock_tcp_server.received_commands[-1]["params"]["pan"] == -3.0
+        # Response should show clamped value
+        assert result["panning"] == -1.0
+
+    def test_volume_clamping_exists_in_remote_script(self):
+        """Verify volume clamping logic exists in Remote Script."""
+        remote_script_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "AbletonMCP_Remote_Script",
+            "__init__.py",
+        )
+
+        with open(remote_script_path) as f:
+            source = f.read()
+
+        # Should have clamping logic for volume (0.0 to 1.0)
+        assert "max(0.0, min(1.0, volume))" in source
+
+    def test_panning_clamping_exists_in_remote_script(self):
+        """Verify panning clamping logic exists in Remote Script."""
+        remote_script_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "AbletonMCP_Remote_Script",
+            "__init__.py",
+        )
+
+        with open(remote_script_path) as f:
+            source = f.read()
+
+        # Should have clamping logic for pan (-1.0 to 1.0)
+        assert "max(-1.0, min(1.0, pan))" in source

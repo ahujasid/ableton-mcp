@@ -60,8 +60,10 @@ class AbletonMCP(ControlSurface):
         if self.server:
             try:
                 self.server.close()
-            except:
-                pass
+            except socket.error as e:
+                self.log_message("Error closing server socket: {0}".format(str(e)))
+            except Exception as e:
+                self.log_message("Unexpected error closing server: {0}".format(str(e)))
 
         # Wait for the server thread to exit
         if self.server_thread and self.server_thread.is_alive():
@@ -195,8 +197,9 @@ class AbletonMCP(ControlSurface):
                     except AttributeError:
                         # Python 2: string is already bytes
                         client.sendall(json.dumps(error_response))
-                    except:
+                    except Exception as send_error:
                         # If we can't send the error, the connection is probably dead
+                        self.log_message("Failed to send error response: {0}".format(str(send_error)))
                         break
 
                     # For serious errors, break the loop
@@ -207,8 +210,10 @@ class AbletonMCP(ControlSurface):
         finally:
             try:
                 client.close()
-            except:
-                pass
+            except socket.error as e:
+                self.log_message("Error closing client socket: {0}".format(str(e)))
+            except Exception as e:
+                self.log_message("Unexpected error closing client: {0}".format(str(e)))
             self.log_message("Client handler stopped")
 
     def _process_command(self, command):
@@ -291,10 +296,6 @@ class AbletonMCP(ControlSurface):
                             result = self._start_playback()
                         elif command_type == "stop_playback":
                             result = self._stop_playback()
-                        elif command_type == "load_instrument_or_effect":
-                            track_index = params.get("track_index", 0)
-                            uri = params.get("uri", "")
-                            result = self._load_instrument_or_effect(track_index, uri)
                         elif command_type == "load_browser_item":
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
@@ -1163,7 +1164,8 @@ class AbletonMCP(ControlSurface):
                 return "midi_effect"
             else:
                 return "unknown"
-        except:
+        except Exception as e:
+            self.log_message("Error determining device type: {0}".format(str(e)))
             return "unknown"
 
     def get_browser_tree(self, category_type="all"):
@@ -1193,7 +1195,8 @@ class AbletonMCP(ControlSurface):
             result = {
                 "type": category_type,
                 "categories": [],
-                "available_categories": browser_attrs
+                "available_categories": browser_attrs,
+                "failed_categories": []
             }
 
             # Helper function to process a browser item and its children
@@ -1222,6 +1225,7 @@ class AbletonMCP(ControlSurface):
                         result["categories"].append(instruments)
                 except Exception as e:
                     self.log_message("Error processing instruments: {0}".format(str(e)))
+                    result["failed_categories"].append("instruments")
 
             if (category_type == "all" or category_type == "sounds") and hasattr(app.browser, 'sounds'):
                 try:
@@ -1231,6 +1235,7 @@ class AbletonMCP(ControlSurface):
                         result["categories"].append(sounds)
                 except Exception as e:
                     self.log_message("Error processing sounds: {0}".format(str(e)))
+                    result["failed_categories"].append("sounds")
 
             if (category_type == "all" or category_type == "drums") and hasattr(app.browser, 'drums'):
                 try:
@@ -1240,6 +1245,7 @@ class AbletonMCP(ControlSurface):
                         result["categories"].append(drums)
                 except Exception as e:
                     self.log_message("Error processing drums: {0}".format(str(e)))
+                    result["failed_categories"].append("drums")
 
             if (category_type == "all" or category_type == "audio_effects") and hasattr(app.browser, 'audio_effects'):
                 try:
@@ -1249,6 +1255,7 @@ class AbletonMCP(ControlSurface):
                         result["categories"].append(audio_effects)
                 except Exception as e:
                     self.log_message("Error processing audio_effects: {0}".format(str(e)))
+                    result["failed_categories"].append("audio_effects")
 
             if (category_type == "all" or category_type == "midi_effects") and hasattr(app.browser, 'midi_effects'):
                 try:
@@ -1258,6 +1265,7 @@ class AbletonMCP(ControlSurface):
                         result["categories"].append(midi_effects)
                 except Exception as e:
                     self.log_message("Error processing midi_effects: {0}".format(str(e)))
+                    result["failed_categories"].append("midi_effects")
 
             # Try to process other potentially available categories
             for attr in browser_attrs:
@@ -1272,9 +1280,15 @@ class AbletonMCP(ControlSurface):
                                 result["categories"].append(category)
                     except Exception as e:
                         self.log_message("Error processing {0}: {1}".format(attr, str(e)))
+                        result["failed_categories"].append(attr)
 
             self.log_message("Browser tree generated for {0} with {1} root categories".format(
                 category_type, len(result['categories'])))
+
+            # Add warning if some categories failed
+            if result["failed_categories"]:
+                result["warning"] = "Some categories failed to load: {0}".format(
+                    ", ".join(result["failed_categories"]))
             return result
 
         except Exception as e:
