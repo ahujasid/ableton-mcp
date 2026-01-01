@@ -38,7 +38,10 @@ class AbletonMCP(ControlSurface):
         
         # Cache the song reference for easier access
         self._song = self.song()
-        
+
+        # Cache for browser URIs to avoid repeated tree traversal
+        self._browser_uri_cache = {}
+
         # Start the socket server
         self.start_server()
         
@@ -760,20 +763,18 @@ class AbletonMCP(ControlSurface):
             self.log_message(traceback.format_exc())
             raise
     
-    def _find_browser_item_by_uri(self, browser_or_item, uri, max_depth=10, current_depth=0):
-        """Find a browser item by its URI"""
+    def _populate_browser_cache(self, browser_or_item, max_depth=10, current_depth=0):
+        """Populate the URI cache from browser tree"""
         try:
-            # Check if this is the item we're looking for
-            if hasattr(browser_or_item, 'uri') and browser_or_item.uri == uri:
-                return browser_or_item
-            
-            # Stop recursion if we've reached max depth
             if current_depth >= max_depth:
-                return None
-            
+                return
+
+            # Add this item to cache if it has a URI
+            if hasattr(browser_or_item, 'uri') and browser_or_item.uri:
+                self._browser_uri_cache[browser_or_item.uri] = browser_or_item
+
             # Check if this is a browser with root categories
             if hasattr(browser_or_item, 'instruments'):
-                # Check all main categories
                 categories = [
                     browser_or_item.instruments,
                     browser_or_item.sounds,
@@ -781,21 +782,68 @@ class AbletonMCP(ControlSurface):
                     browser_or_item.audio_effects,
                     browser_or_item.midi_effects
                 ]
-                
+                for category in categories:
+                    self._populate_browser_cache(category, max_depth, current_depth + 1)
+                return
+
+            # Recurse into children
+            if hasattr(browser_or_item, 'children') and browser_or_item.children:
+                for child in browser_or_item.children:
+                    self._populate_browser_cache(child, max_depth, current_depth + 1)
+        except Exception as e:
+            self.log_message("Error populating browser cache: {0}".format(str(e)))
+
+    def _clear_browser_cache(self):
+        """Clear the browser URI cache"""
+        self._browser_uri_cache = {}
+        self.log_message("Browser URI cache cleared")
+
+    def _find_browser_item_by_uri(self, browser_or_item, uri, max_depth=10, current_depth=0):
+        """Find a browser item by its URI, using cache for O(1) lookup"""
+        try:
+            # Check cache first
+            if uri in self._browser_uri_cache:
+                return self._browser_uri_cache[uri]
+
+            # Cache miss - populate cache if empty
+            if not self._browser_uri_cache and hasattr(browser_or_item, 'instruments'):
+                self.log_message("Populating browser URI cache...")
+                self._populate_browser_cache(browser_or_item)
+                self.log_message("Browser cache populated with {0} items".format(len(self._browser_uri_cache)))
+
+                # Try cache again
+                if uri in self._browser_uri_cache:
+                    return self._browser_uri_cache[uri]
+
+            # Fall back to original traversal for items not in cache
+            if hasattr(browser_or_item, 'uri') and browser_or_item.uri == uri:
+                return browser_or_item
+
+            if current_depth >= max_depth:
+                return None
+
+            if hasattr(browser_or_item, 'instruments'):
+                categories = [
+                    browser_or_item.instruments,
+                    browser_or_item.sounds,
+                    browser_or_item.drums,
+                    browser_or_item.audio_effects,
+                    browser_or_item.midi_effects
+                ]
                 for category in categories:
                     item = self._find_browser_item_by_uri(category, uri, max_depth, current_depth + 1)
                     if item:
+                        self._browser_uri_cache[uri] = item  # Cache the find
                         return item
-                
                 return None
-            
-            # Check if this item has children
+
             if hasattr(browser_or_item, 'children') and browser_or_item.children:
                 for child in browser_or_item.children:
                     item = self._find_browser_item_by_uri(child, uri, max_depth, current_depth + 1)
                     if item:
+                        self._browser_uri_cache[uri] = item  # Cache the find
                         return item
-            
+
             return None
         except Exception as e:
             self.log_message("Error finding browser item by URI: {0}".format(str(e)))
