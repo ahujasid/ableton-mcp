@@ -4,6 +4,8 @@ import os
 import sys
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -89,10 +91,10 @@ class TestConnectionHealthCheck:
         ):
             try:
                 get_ableton_connection()
-                # Should attempt to connect
-                assert mock_connect.called
-            except Exception:
-                pass  # May fail without real server
+            except (ConnectionError, OSError) as e:
+                pytest.skip(f"Skipping due to connection error: {e}")
+            # Should attempt to connect
+            assert mock_connect.called
 
     def test_invalid_connection_triggers_reconnect(self):
         """Test that failed ping triggers reconnection attempt."""

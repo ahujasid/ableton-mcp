@@ -238,6 +238,17 @@ class TestModifyingCommands:
             "start_playback",
             "stop_playback",
             "load_instrument_or_effect",
+            "undo",
+            "redo",
+            "delete_track",
+            "delete_clip",
+            "set_metronome",
+            "fire_scene",
+            "set_track_mute",
+            "set_track_solo",
+            "set_track_arm",
+            "set_track_volume",
+            "set_track_panning",
         ]
 
         # Read the source to verify these are all handled

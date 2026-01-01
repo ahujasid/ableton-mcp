@@ -206,7 +206,6 @@ class TestAnyioThreadPool:
         with patch.object(conn, "send_command", side_effect=track_thread):
             await conn.send_command_async("get_session_info")
 
-        # The sync call should happen in a different thread
-        if call_threads:
-            # anyio runs it in a worker thread
-            assert call_threads[0] != main_thread or True  # May be same in some configs
+        # The sync call should happen in a different thread (anyio worker thread)
+        assert call_threads, "send_command should have been called"
+        assert call_threads[0] != main_thread, "async call should run in worker thread, not main"
