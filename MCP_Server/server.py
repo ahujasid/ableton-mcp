@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import anyio
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, List, Union
@@ -165,6 +166,12 @@ class AbletonConnection:
             self.sock = None
             raise Exception(f"Communication error with Ableton: {str(e)}")
 
+    async def send_command_async(self, command_type: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Async wrapper for send_command using anyio thread pool"""
+        return await anyio.to_thread.run_sync(
+            lambda: self.send_command(command_type, params)
+        )
+
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
     """Manage server startup and shutdown lifecycle"""
@@ -267,43 +274,43 @@ def get_ableton_connection():
 # Core Tool endpoints
 
 @mcp.tool()
-def get_session_info(ctx: Context) -> str:
+async def get_session_info(ctx: Context) -> str:
     """Get detailed information about the current Ableton session"""
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("get_session_info")
+        result = await ableton.send_command_async("get_session_info")
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting session info from Ableton: {str(e)}")
         return f"Error getting session info: {str(e)}"
 
 @mcp.tool()
-def get_track_info(ctx: Context, track_index: int) -> str:
+async def get_track_info(ctx: Context, track_index: int) -> str:
     """
     Get detailed information about a specific track in Ableton.
-    
+
     Parameters:
     - track_index: The index of the track to get information about
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("get_track_info", {"track_index": track_index})
+        result = await ableton.send_command_async("get_track_info", {"track_index": track_index})
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting track info from Ableton: {str(e)}")
         return f"Error getting track info: {str(e)}"
 
 @mcp.tool()
-def create_midi_track(ctx: Context, index: int = -1) -> str:
+async def create_midi_track(ctx: Context, index: int = -1) -> str:
     """
     Create a new MIDI track in the Ableton session.
-    
+
     Parameters:
     - index: The index to insert the track at (-1 = end of list)
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("create_midi_track", {"index": index})
+        result = await ableton.send_command_async("create_midi_track", {"index": index})
         return f"Created new MIDI track: {result.get('name', 'unknown')}"
     except Exception as e:
         logger.error(f"Error creating MIDI track: {str(e)}")
@@ -311,27 +318,27 @@ def create_midi_track(ctx: Context, index: int = -1) -> str:
 
 
 @mcp.tool()
-def set_track_name(ctx: Context, track_index: int, name: str) -> str:
+async def set_track_name(ctx: Context, track_index: int, name: str) -> str:
     """
     Set the name of a track.
-    
+
     Parameters:
     - track_index: The index of the track to rename
     - name: The new name for the track
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("set_track_name", {"track_index": track_index, "name": name})
+        result = await ableton.send_command_async("set_track_name", {"track_index": track_index, "name": name})
         return f"Renamed track to: {result.get('name', name)}"
     except Exception as e:
         logger.error(f"Error setting track name: {str(e)}")
         return f"Error setting track name: {str(e)}"
 
 @mcp.tool()
-def create_clip(ctx: Context, track_index: int, clip_index: int, length: float = 4.0) -> str:
+async def create_clip(ctx: Context, track_index: int, clip_index: int, length: float = 4.0) -> str:
     """
     Create a new MIDI clip in the specified track and clip slot.
-    
+
     Parameters:
     - track_index: The index of the track to create the clip in
     - clip_index: The index of the clip slot to create the clip in
@@ -339,9 +346,9 @@ def create_clip(ctx: Context, track_index: int, clip_index: int, length: float =
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("create_clip", {
-            "track_index": track_index, 
-            "clip_index": clip_index, 
+        result = await ableton.send_command_async("create_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index,
             "length": length
         })
         return f"Created new clip at track {track_index}, slot {clip_index} with length {length} beats"
@@ -350,15 +357,15 @@ def create_clip(ctx: Context, track_index: int, clip_index: int, length: float =
         return f"Error creating clip: {str(e)}"
 
 @mcp.tool()
-def add_notes_to_clip(
-    ctx: Context, 
-    track_index: int, 
-    clip_index: int, 
+async def add_notes_to_clip(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
     notes: List[Dict[str, Union[int, float, bool]]]
 ) -> str:
     """
     Add MIDI notes to a clip.
-    
+
     Parameters:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
@@ -366,7 +373,7 @@ def add_notes_to_clip(
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("add_notes_to_clip", {
+        result = await ableton.send_command_async("add_notes_to_clip", {
             "track_index": track_index,
             "clip_index": clip_index,
             "notes": notes
@@ -377,10 +384,10 @@ def add_notes_to_clip(
         return f"Error adding notes to clip: {str(e)}"
 
 @mcp.tool()
-def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) -> str:
+async def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) -> str:
     """
     Set the name of a clip.
-    
+
     Parameters:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
@@ -388,7 +395,7 @@ def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) ->
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("set_clip_name", {
+        result = await ableton.send_command_async("set_clip_name", {
             "track_index": track_index,
             "clip_index": clip_index,
             "name": name
@@ -399,16 +406,16 @@ def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) ->
         return f"Error setting clip name: {str(e)}"
 
 @mcp.tool()
-def set_tempo(ctx: Context, tempo: float) -> str:
+async def set_tempo(ctx: Context, tempo: float) -> str:
     """
     Set the tempo of the Ableton session.
-    
+
     Parameters:
     - tempo: The new tempo in BPM
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("set_tempo", {"tempo": tempo})
+        result = await ableton.send_command_async("set_tempo", {"tempo": tempo})
         return f"Set tempo to {tempo} BPM"
     except Exception as e:
         logger.error(f"Error setting tempo: {str(e)}")
@@ -416,21 +423,21 @@ def set_tempo(ctx: Context, tempo: float) -> str:
 
 
 @mcp.tool()
-def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
+async def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
     """
     Load an instrument or effect onto a track using its URI.
-    
+
     Parameters:
     - track_index: The index of the track to load the instrument on
     - uri: The URI of the instrument or effect to load (e.g., 'query:Synths#Instrument%20Rack:Bass:FileId_5116')
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("load_browser_item", {
+        result = await ableton.send_command_async("load_browser_item", {
             "track_index": track_index,
             "item_uri": uri
         })
-        
+
         # Check if the instrument was loaded successfully
         if result.get("loaded", False):
             new_devices = result.get("new_devices", [])
@@ -446,17 +453,17 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
         return f"Error loading instrument by URI: {str(e)}"
 
 @mcp.tool()
-def fire_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+async def fire_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     """
     Start playing a clip.
-    
+
     Parameters:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("fire_clip", {
+        result = await ableton.send_command_async("fire_clip", {
             "track_index": track_index,
             "clip_index": clip_index
         })
@@ -466,17 +473,17 @@ def fire_clip(ctx: Context, track_index: int, clip_index: int) -> str:
         return f"Error firing clip: {str(e)}"
 
 @mcp.tool()
-def stop_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+async def stop_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     """
     Stop playing a clip.
-    
+
     Parameters:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("stop_clip", {
+        result = await ableton.send_command_async("stop_clip", {
             "track_index": track_index,
             "clip_index": clip_index
         })
@@ -486,38 +493,38 @@ def stop_clip(ctx: Context, track_index: int, clip_index: int) -> str:
         return f"Error stopping clip: {str(e)}"
 
 @mcp.tool()
-def start_playback(ctx: Context) -> str:
+async def start_playback(ctx: Context) -> str:
     """Start playing the Ableton session."""
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("start_playback")
+        result = await ableton.send_command_async("start_playback")
         return "Started playback"
     except Exception as e:
         logger.error(f"Error starting playback: {str(e)}")
         return f"Error starting playback: {str(e)}"
 
 @mcp.tool()
-def stop_playback(ctx: Context) -> str:
+async def stop_playback(ctx: Context) -> str:
     """Stop playing the Ableton session."""
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("stop_playback")
+        result = await ableton.send_command_async("stop_playback")
         return "Stopped playback"
     except Exception as e:
         logger.error(f"Error stopping playback: {str(e)}")
         return f"Error stopping playback: {str(e)}"
 
 @mcp.tool()
-def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
+async def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
     """
     Get a hierarchical tree of browser categories from Ableton.
-    
+
     Parameters:
     - category_type: Type of categories to get ('all', 'instruments', 'sounds', 'drums', 'audio_effects', 'midi_effects')
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("get_browser_tree", {
+        result = await ableton.send_command_async("get_browser_tree", {
             "category_type": category_type
         })
         
@@ -571,17 +578,17 @@ def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
             return f"Error getting browser tree: {error_msg}"
 
 @mcp.tool()
-def get_browser_items_at_path(ctx: Context, path: str) -> str:
+async def get_browser_items_at_path(ctx: Context, path: str) -> str:
     """
     Get browser items at a specific path in Ableton's browser.
-    
+
     Parameters:
     - path: Path in the format "category/folder/subfolder"
             where category is one of the available browser categories in Ableton
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("get_browser_items_at_path", {
+        result = await ableton.send_command_async("get_browser_items_at_path", {
             "path": path
         })
         
@@ -612,10 +619,10 @@ def get_browser_items_at_path(ctx: Context, path: str) -> str:
             return f"Error getting browser items at path: {error_msg}"
 
 @mcp.tool()
-def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:
+async def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:
     """
     Load a drum rack and then load a specific drum kit into it.
-    
+
     Parameters:
     - track_index: The index of the track to load on
     - rack_uri: The URI of the drum rack to load (e.g., 'Drums/Drum Rack')
@@ -623,38 +630,38 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) 
     """
     try:
         ableton = get_ableton_connection()
-        
+
         # Step 1: Load the drum rack
-        result = ableton.send_command("load_browser_item", {
+        result = await ableton.send_command_async("load_browser_item", {
             "track_index": track_index,
             "item_uri": rack_uri
         })
-        
+
         if not result.get("loaded", False):
             return f"Failed to load drum rack with URI '{rack_uri}'"
-        
+
         # Step 2: Get the drum kit items at the specified path
-        kit_result = ableton.send_command("get_browser_items_at_path", {
+        kit_result = await ableton.send_command_async("get_browser_items_at_path", {
             "path": kit_path
         })
-        
+
         if "error" in kit_result:
             return f"Loaded drum rack but failed to find drum kit: {kit_result.get('error')}"
-        
+
         # Step 3: Find a loadable drum kit
         kit_items = kit_result.get("items", [])
         loadable_kits = [item for item in kit_items if item.get("is_loadable", False)]
-        
+
         if not loadable_kits:
             return f"Loaded drum rack but no loadable drum kits found at '{kit_path}'"
-        
+
         # Step 4: Load the first loadable kit
         kit_uri = loadable_kits[0].get("uri")
-        load_result = ableton.send_command("load_browser_item", {
+        load_result = await ableton.send_command_async("load_browser_item", {
             "track_index": track_index,
             "item_uri": kit_uri
         })
-        
+
         return f"Loaded drum rack and kit '{loadable_kits[0].get('name')}' on track {track_index}"
     except Exception as e:
         logger.error(f"Error loading drum kit: {str(e)}")
