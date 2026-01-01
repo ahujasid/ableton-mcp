@@ -3,14 +3,20 @@ from mcp.server.fastmcp import FastMCP, Context
 import socket
 import json
 import logging
+import os
+import time
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, List, Union
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, 
+logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("AbletonMCPServer")
+
+# Configurable delay for state-modifying commands (in seconds)
+# Set ABLETON_MCP_COMMAND_DELAY=0.1 to restore original 100ms delays if needed
+COMMAND_DELAY = float(os.environ.get("ABLETON_MCP_COMMAND_DELAY", "0"))
 
 @dataclass
 class AbletonConnection:
@@ -115,6 +121,10 @@ class AbletonConnection:
             self.sock.sendall(json.dumps(command).encode('utf-8'))
             logger.info(f"Command sent, waiting for response...")
 
+            # Optional delay for state-modifying commands (configurable via env var)
+            if COMMAND_DELAY > 0 and is_modifying_command:
+                time.sleep(COMMAND_DELAY)
+
             # Set timeout based on command type
             timeout = 15.0 if is_modifying_command else 10.0
             self.sock.settimeout(timeout)
@@ -130,6 +140,10 @@ class AbletonConnection:
             if response.get("status") == "error":
                 logger.error(f"Ableton error: {response.get('message')}")
                 raise Exception(response.get("message", "Unknown error from Ableton"))
+
+            # Optional post-response delay for state-modifying commands
+            if COMMAND_DELAY > 0 and is_modifying_command:
+                time.sleep(COMMAND_DELAY)
 
             return response.get("result", {})
         except socket.timeout:
