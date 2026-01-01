@@ -27,6 +27,55 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["MCP_Server"]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-mock>=3.12.0",
+    "ruff>=0.8.0",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "B905",   # zip without explicit strict parameter
+    "ARG001", # unused function argument (common in test fixtures)
+    "SIM105", # contextlib.suppress suggestion (stylistic)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "S101", "B017", "SIM102", "SIM105", "SIM222"]  # Allow test patterns
+"AbletonMCP_Remote_Script/*" = ["UP", "C4", "E722", "SIM105", "W293"]  # Python 2 compatibility
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
 [project.urls]
 "Homepage" = "https://github.com/ahujasid/ableton-mcp"
 "Bug Tracker" = "https://github.com/ahujasid/ableton-mcp/issues"
