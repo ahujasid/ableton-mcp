@@ -114,6 +114,17 @@ class TestGetArrangementClips:
         assert parsed["tracks"][0]["clip_count"] == 0
 
 
+    async def test_handles_error(self, mock_ableton_connection):
+        """Test error handling for get_arrangement_clips."""
+        from MCP_Server.server import get_arrangement_clips
+
+        mock_ableton_connection.send_command_async.side_effect = Exception("Connection lost")
+
+        result = await get_arrangement_clips(MagicMock())
+
+        assert "Error" in result
+
+
 class TestDuplicateClipToArrangement:
     """Tests for duplicate_clip_to_arrangement tool."""
 
@@ -140,3 +151,29 @@ class TestDuplicateClipToArrangement:
         assert "My Clip" in result
         assert "32.0" in result
         assert "Lead" in result
+
+    async def test_handles_invalid_track_index(self, mock_ableton_connection):
+        """Test duplicate_clip_to_arrangement with invalid track index."""
+        from MCP_Server.server import duplicate_clip_to_arrangement
+
+        mock_ableton_connection.send_command_async.side_effect = Exception(
+            "Track index out of range"
+        )
+
+        result = await duplicate_clip_to_arrangement(
+            MagicMock(), track_index=999, clip_index=0, time=0.0
+        )
+
+        assert "Error" in result
+
+    async def test_handles_empty_clip_slot(self, mock_ableton_connection):
+        """Test duplicate_clip_to_arrangement with empty clip slot."""
+        from MCP_Server.server import duplicate_clip_to_arrangement
+
+        mock_ableton_connection.send_command_async.side_effect = Exception("No clip in slot")
+
+        result = await duplicate_clip_to_arrangement(
+            MagicMock(), track_index=0, clip_index=5, time=0.0
+        )
+
+        assert "Error" in result

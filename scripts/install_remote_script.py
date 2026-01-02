@@ -96,8 +96,17 @@ def main() -> None:
         print(f"{YELLOW}Permission denied: {e}{RESET}")
         print("Try running with appropriate permissions.")
         sys.exit(1)
+    except FileNotFoundError as e:
+        print(f"{YELLOW}File not found: {e}{RESET}")
+        print("Please ensure the AbletonMCP_Remote_Script directory exists.")
+        sys.exit(1)
+    except OSError as e:
+        print(f"{YELLOW}File system error: {e}{RESET}")
+        print("Check disk space and file system permissions.")
+        sys.exit(1)
     except Exception as e:
         print(f"{YELLOW}Installation failed: {e}{RESET}")
+        print("Please report this issue with the full error message.")
         sys.exit(1)
 
 

@@ -239,6 +239,20 @@ class TestModifyingCommands:
             "set_track_arm",
             "set_track_volume",
             "set_track_panning",
+            # Arrangement view commands
+            "set_song_time",
+            "set_loop_region",
+            "set_loop_enabled",
+            "continue_playing",
+            "jump_by_bars",
+            "jump_to_cue_point",
+            "create_cue_point",
+            "delete_cue_point",
+            "jump_to_next_cue_point",
+            "jump_to_prev_cue_point",
+            "duplicate_clip_to_arrangement",
+            "set_record_mode",
+            "set_arrangement_overdub",
         ]
 
         # Read the source to verify these are all handled

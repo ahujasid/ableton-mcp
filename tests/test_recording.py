@@ -36,6 +36,16 @@ class TestSetRecordMode:
         )
         assert "disabled" in result
 
+    async def test_handles_error(self, mock_ableton_connection):
+        """Test error handling for set_record_mode."""
+        from MCP_Server.server import set_record_mode
+
+        mock_ableton_connection.send_command_async.side_effect = Exception("Cannot arm track")
+
+        result = await set_record_mode(MagicMock(), enabled=True)
+
+        assert "Error" in result
+
 
 class TestSetArrangementOverdub:
     """Tests for set_arrangement_overdub tool."""
@@ -69,3 +79,13 @@ class TestSetArrangementOverdub:
             "set_arrangement_overdub", {"enabled": False}
         )
         assert "disabled" in result
+
+    async def test_handles_error(self, mock_ableton_connection):
+        """Test error handling for set_arrangement_overdub."""
+        from MCP_Server.server import set_arrangement_overdub
+
+        mock_ableton_connection.send_command_async.side_effect = Exception("Connection lost")
+
+        result = await set_arrangement_overdub(MagicMock(), enabled=True)
+
+        assert "Error" in result

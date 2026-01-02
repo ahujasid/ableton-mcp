@@ -109,6 +109,8 @@ class AbletonConnection:
         command = {"type": command_type, "params": params or {}}
 
         # Check if this is a state-modifying command
+        # IMPORTANT: Keep in sync with modifying_commands list in
+        # AbletonMCP_Remote_Script/__init__.py (lines ~254-267)
         is_modifying_command = command_type in [
             "create_midi_track",
             "create_audio_track",
@@ -844,7 +846,7 @@ async def set_song_time(ctx: Context, time: float) -> str:
     Set the song playhead position.
 
     Parameters:
-    - time: Position in beats (e.g., 32.0 = bar 9 in 4/4 time)
+    - time: Position in beats (e.g., 32.0 = start of bar 9 in 4/4 time, counting bars from 1)
     """
     try:
         ableton = get_ableton_connection()
