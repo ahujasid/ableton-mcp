@@ -57,6 +57,19 @@ class TestSetSongTime:
         )
         assert "64.0" in result
 
+    async def test_sets_playhead_at_zero(self, mock_ableton_connection):
+        """Test set_song_time at time 0 (boundary)."""
+        from MCP_Server.server import set_song_time
+
+        mock_ableton_connection.send_command_async.return_value = {"current_song_time": 0.0}
+
+        result = await set_song_time(MagicMock(), time=0.0)
+
+        mock_ableton_connection.send_command_async.assert_called_once_with(
+            "set_song_time", {"time": 0.0}
+        )
+        assert "0" in result
+
     async def test_handles_error(self, mock_ableton_connection):
         """Test error handling."""
         from MCP_Server.server import set_song_time
@@ -103,6 +116,19 @@ class TestSetLoopEnabled:
             "set_loop_enabled", {"enabled": True}
         )
         assert "enabled" in result.lower()
+
+    async def test_disables_loop(self, mock_ableton_connection):
+        """Test that set_loop_enabled disables loop."""
+        from MCP_Server.server import set_loop_enabled
+
+        mock_ableton_connection.send_command_async.return_value = {"loop_enabled": False}
+
+        result = await set_loop_enabled(MagicMock(), enabled=False)
+
+        mock_ableton_connection.send_command_async.assert_called_once_with(
+            "set_loop_enabled", {"enabled": False}
+        )
+        assert "disabled" in result.lower()
 
 
 class TestContinuePlaying:
@@ -154,3 +180,17 @@ class TestJumpByBars:
         result = await jump_by_bars(MagicMock(), bars=-4)
 
         assert "-4" in result or "backward" in result.lower()
+
+    async def test_jumps_zero_bars(self, mock_ableton_connection):
+        """Test jump_by_bars with 0 bars (no-op)."""
+        from MCP_Server.server import jump_by_bars
+
+        mock_ableton_connection.send_command_async.return_value = {
+            "current_song_time": 32.0,
+            "bars_jumped": 0,
+        }
+
+        result = await jump_by_bars(MagicMock(), bars=0)
+
+        # Should complete without error
+        assert "0" in result

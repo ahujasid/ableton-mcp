@@ -26,6 +26,21 @@ class TestGetCuePoints:
         assert len(parsed["cue_points"]) == 2
         assert parsed["cue_points"][0]["name"] == "Intro"
 
+    async def test_returns_empty_cue_points(self, mock_ableton_connection):
+        """Test get_cue_points with no cue points."""
+        from MCP_Server.server import get_cue_points
+
+        mock_ableton_connection.send_command_async.return_value = {
+            "cue_points": [],
+            "count": 0,
+        }
+
+        result = await get_cue_points(MagicMock())
+
+        parsed = json.loads(result)
+        assert parsed["count"] == 0
+        assert len(parsed["cue_points"]) == 0
+
 
 class TestJumpToCuePoint:
     """Tests for jump_to_cue_point tool."""
@@ -45,6 +60,18 @@ class TestJumpToCuePoint:
             "jump_to_cue_point", {"index": 2}
         )
         assert "Chorus" in result
+
+    async def test_handles_invalid_index(self, mock_ableton_connection):
+        """Test jump_to_cue_point with invalid index."""
+        from MCP_Server.server import jump_to_cue_point
+
+        mock_ableton_connection.send_command_async.side_effect = Exception(
+            "Cue point index out of range"
+        )
+
+        result = await jump_to_cue_point(MagicMock(), index=999)
+
+        assert "Error" in result
 
 
 class TestCreateCuePoint:
@@ -121,6 +148,16 @@ class TestCreateCuePoint:
 
         assert "already exists" in result
 
+    async def test_handles_error(self, mock_ableton_connection):
+        """Test error handling in create_cue_point."""
+        from MCP_Server.server import create_cue_point
+
+        mock_ableton_connection.send_command_async.side_effect = Exception("Connection lost")
+
+        result = await create_cue_point(MagicMock(), time=32.0, name="Test")
+
+        assert "Error" in result
+
 
 class TestDeleteCuePoint:
     """Tests for delete_cue_point tool."""
@@ -142,6 +179,18 @@ class TestDeleteCuePoint:
         )
         assert "Bridge" in result
         assert "Deleted" in result
+
+    async def test_handles_invalid_index(self, mock_ableton_connection):
+        """Test delete_cue_point with invalid index."""
+        from MCP_Server.server import delete_cue_point
+
+        mock_ableton_connection.send_command_async.side_effect = Exception(
+            "Cue point index out of range"
+        )
+
+        result = await delete_cue_point(MagicMock(), index=-1)
+
+        assert "Error" in result
 
 
 class TestJumpToNextCuePoint:

@@ -251,6 +251,8 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", None)
                 response["result"] = self._get_arrangement_clips(track_index)
             # Commands that modify Live's state should be scheduled on the main thread
+            # IMPORTANT: Keep in sync with is_modifying_command list in
+            # MCP_Server/server.py (lines ~112-150)
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_tempo", "fire_clip", "stop_clip",
@@ -1120,7 +1122,6 @@ class AbletonMCP(ControlSurface):
             target_time = max(0.0, float(time))
 
             # Pre-check: Look for existing cue point at target time
-            # set_or_delete_cue() toggles, so calling it when a cue exists would delete it
             existing_cue_point = None
             for cue_point in self._song.cue_points:
                 if abs(cue_point.time - target_time) < 0.001:
@@ -1139,40 +1140,49 @@ class AbletonMCP(ControlSurface):
                     "message": "Cue point already exists at this time; updated name" if name else "Cue point already exists at this time"
                 }
 
-            # Save current song time
+            # Save current song time to restore later
             original_time = self._song.current_song_time
 
-            # Move playhead to desired time
-            self._song.current_song_time = target_time
+            try:
+                # Move playhead to desired time
+                self._song.current_song_time = target_time
 
-            # Create cue point at current song time
-            self._song.set_or_delete_cue()
+                # Create cue point at current song time
+                self._song.set_or_delete_cue()
 
-            # Find the cue point we just created (should be at the specified time)
-            new_cue_point = None
-            for cue_point in self._song.cue_points:
-                if abs(cue_point.time - target_time) < 0.001:
-                    new_cue_point = cue_point
-                    break
+                # Verify the cue point was actually created
+                new_cue_point = None
+                for cue_point in self._song.cue_points:
+                    if abs(cue_point.time - target_time) < 0.001:
+                        new_cue_point = cue_point
+                        break
 
-            # Set the name if provided
-            if new_cue_point and name:
-                new_cue_point.name = name
+                if new_cue_point is None:
+                    self.log_message("Warning: set_or_delete_cue() called but cue point not found at time {0}".format(target_time))
+                    return {
+                        "created": False,
+                        "time": target_time,
+                        "message": "Cue point creation could not be verified"
+                    }
 
-            # Restore original song time
-            self._song.current_song_time = original_time
+                # Set the name if provided
+                if name:
+                    new_cue_point.name = name
 
-            return {
-                "created": True,
-                "time": target_time,
-                "name": name if name else (new_cue_point.name if new_cue_point else "")
-            }
+                return {
+                    "created": True,
+                    "time": target_time,
+                    "name": new_cue_point.name
+                }
+            finally:
+                # Always restore original song time
+                self._song.current_song_time = original_time
         except Exception as e:
             self.log_message("Error creating cue point: " + str(e))
             raise
 
     def _delete_cue_point(self, index):
-        """Delete a cue point by index"""
+        """Delete a cue point by index."""
         try:
             cue_points = list(self._song.cue_points)
             if index < 0 or index >= len(cue_points):
@@ -1182,17 +1192,24 @@ class AbletonMCP(ControlSurface):
             cue_name = cue_point.name
             cue_time = cue_point.time
 
-            # Jump to the cue point (selects it)
-            cue_point.jump()
+            # Save current playhead position to restore after deletion
+            original_time = self._song.current_song_time
 
-            # Delete the selected cue point
-            self._song.set_or_delete_cue()
+            try:
+                # Move playhead to cue point (required for set_or_delete_cue to target it)
+                cue_point.jump()
 
-            return {
-                "deleted": True,
-                "name": cue_name,
-                "time": cue_time
-            }
+                # Delete the cue point at current playhead position
+                self._song.set_or_delete_cue()
+
+                return {
+                    "deleted": True,
+                    "name": cue_name,
+                    "time": cue_time
+                }
+            finally:
+                # Restore original playhead position
+                self._song.current_song_time = original_time
         except Exception as e:
             self.log_message("Error deleting cue point: " + str(e))
             raise
@@ -1313,7 +1330,12 @@ class AbletonMCP(ControlSurface):
             raise
 
     def _get_arrangement_clips(self, track_index=None):
-        """Get clips from the arrangement view"""
+        """Get clips from the arrangement view.
+
+        Returns clip metadata including name, position, length, and type.
+        Note: Uses 'arrangement_clips' attribute which may not be available
+        in all Ableton versions.
+        """
         try:
             result = {
                 "tracks": [],
@@ -1330,17 +1352,35 @@ class AbletonMCP(ControlSurface):
 
             for idx, track in tracks_to_process:
                 track_clips = []
-                if hasattr(track, 'arrangement_clips'):
+                arrangement_clips_supported = hasattr(track, 'arrangement_clips')
+
+                if not arrangement_clips_supported:
+                    self.log_message("Warning: track '{0}' does not support arrangement_clips API".format(track.name))
+                elif track.arrangement_clips:
                     for clip in track.arrangement_clips:
                         clip_info = {
                             "name": clip.name,
-                            "start_time": clip.start_time if hasattr(clip, 'start_time') else 0.0,
-                            "end_time": clip.end_time if hasattr(clip, 'end_time') else 0.0,
                             "length": clip.length,
                             "is_midi_clip": clip.is_midi_clip,
                             "is_audio_clip": clip.is_audio_clip,
-                            "color": clip.color if hasattr(clip, 'color') else None,
                         }
+
+                        # Handle optional attributes with logging
+                        if hasattr(clip, 'start_time'):
+                            clip_info["start_time"] = clip.start_time
+                        else:
+                            clip_info["start_time"] = 0.0
+
+                        if hasattr(clip, 'end_time'):
+                            clip_info["end_time"] = clip.end_time
+                        else:
+                            clip_info["end_time"] = 0.0
+
+                        if hasattr(clip, 'color'):
+                            clip_info["color"] = clip.color
+                        else:
+                            clip_info["color"] = None
+
                         track_clips.append(clip_info)
 
                 result["tracks"].append({
@@ -1559,8 +1599,9 @@ class AbletonMCP(ControlSurface):
                         return item
 
             return None
-        except Exception as e:
-            self.log_message("Error finding browser item by URI: {0}".format(str(e)))
+        except (AttributeError, TypeError) as e:
+            # Expected errors during browser traversal (missing attributes, wrong types)
+            self.log_message("Browser traversal issue for URI {0}: {1}".format(uri, str(e)))
             return None
 
     # Helper methods
