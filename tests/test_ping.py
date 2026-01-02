@@ -192,6 +192,7 @@ class TestHealthCheckTimeout:
         import inspect
 
         from MCP_Server import server
+        from MCP_Server.strategies import DefaultTimingStrategy
 
         # Get the timeouts from source
         conn_source = inspect.getsource(server.get_ableton_connection)
@@ -199,6 +200,7 @@ class TestHealthCheckTimeout:
         # Ping timeout should be around 2.0
         assert "2.0" in conn_source or "settimeout(2" in conn_source
 
-        # Normal command timeout is higher (10-15 seconds)
-        send_source = inspect.getsource(server.AbletonConnection.send_command)
-        assert "15.0" in send_source or "10.0" in send_source
+        # Normal command timeout is configured in DefaultTimingStrategy
+        strategy = DefaultTimingStrategy()
+        assert strategy.get_timeout("create_midi_track") == 15.0  # modifying command
+        assert strategy.get_timeout("get_session_info") == 10.0  # read-only command

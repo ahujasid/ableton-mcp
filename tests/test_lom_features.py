@@ -720,17 +720,13 @@ class TestGetSceneInfo:
 
 
 class TestModifyingCommandsList:
-    """Tests for the is_modifying_command list (Task 16)."""
+    """Tests for the MODIFYING_COMMANDS set in strategies module."""
 
     def test_new_commands_in_modifying_list(self):
-        """Verify all new modifying commands are in the is_modifying_command list."""
-        import inspect
+        """Verify all new modifying commands are in the MODIFYING_COMMANDS set."""
+        from MCP_Server.strategies import MODIFYING_COMMANDS
 
-        from MCP_Server import server
-
-        source = inspect.getsource(server.AbletonConnection.send_command)
-
-        # All new modifying commands should be in the list
+        # All new modifying commands should be in the set
         new_modifying_commands = [
             "undo",
             "redo",
@@ -747,15 +743,11 @@ class TestModifyingCommandsList:
         ]
 
         for cmd in new_modifying_commands:
-            assert f'"{cmd}"' in source, f"Command '{cmd}' not in is_modifying_command list"
+            assert cmd in MODIFYING_COMMANDS, f"Command '{cmd}' not in MODIFYING_COMMANDS"
 
     def test_read_only_commands_not_in_modifying_list(self):
         """Verify read-only commands are not in the modifying list."""
-        import inspect
-
-        from MCP_Server import server
-
-        source = inspect.getsource(server.AbletonConnection.send_command)
+        from MCP_Server.strategies import MODIFYING_COMMANDS
 
         # These are read-only commands that should NOT modify state
         read_only_commands = [
@@ -766,22 +758,9 @@ class TestModifyingCommandsList:
             "ping",
         ]
 
-        # Get just the is_modifying_command list portion
-        # Find the line that defines is_modifying_command
-        lines = source.split("\n")
-        in_list = False
-        list_content = ""
-        for line in lines:
-            if "is_modifying_command" in line and "command_type in" in line:
-                in_list = True
-            if in_list:
-                list_content += line
-                if "]" in line:
-                    break
-
         for cmd in read_only_commands:
-            assert f'"{cmd}"' not in list_content, (
-                f"Read-only command '{cmd}' should not be in is_modifying_command list"
+            assert cmd not in MODIFYING_COMMANDS, (
+                f"Read-only command '{cmd}' should not be in MODIFYING_COMMANDS"
             )
 
 

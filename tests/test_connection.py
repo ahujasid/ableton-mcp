@@ -213,8 +213,10 @@ class TestModifyingCommands:
 
     def test_modifying_command_list(self):
         """Verify the list of modifying commands is complete."""
+        from MCP_Server.strategies import MODIFYING_COMMANDS
+
         # These commands should be treated as modifying commands
-        modifying_commands = [
+        expected_modifying_commands = [
             "create_midi_track",
             "create_audio_track",
             "set_track_name",
@@ -227,7 +229,7 @@ class TestModifyingCommands:
             "set_device_parameter",
             "start_playback",
             "stop_playback",
-            "load_instrument_or_effect",
+            "load_browser_item",
             "undo",
             "redo",
             "delete_track",
@@ -255,15 +257,8 @@ class TestModifyingCommands:
             "set_arrangement_overdub",
         ]
 
-        # Read the source to verify these are all handled
-        import inspect
-
-        from MCP_Server.server import AbletonConnection
-
-        source = inspect.getsource(AbletonConnection.send_command)
-
-        for cmd in modifying_commands:
-            assert cmd in source, f"Modifying command '{cmd}' not found in send_command"
+        for cmd in expected_modifying_commands:
+            assert cmd in MODIFYING_COMMANDS, f"Modifying command '{cmd}' not in MODIFYING_COMMANDS"
 
     def test_modifying_command_uses_longer_timeout(self, mock_tcp_server):
         """Test that modifying commands get longer timeout."""

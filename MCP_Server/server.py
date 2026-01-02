@@ -6,22 +6,23 @@ import socket
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
 
 from MCP_Server.decorators import ableton_tool
+from MCP_Server.strategies import (
+    CommandTimingStrategy,
+    get_timing_strategy_from_env,
+)
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("AbletonMCPServer")
-
-# Configurable delay for state-modifying commands (in seconds)
-COMMAND_DELAY = float(os.environ.get("ABLETON_MCP_COMMAND_DELAY", "0.1"))
 
 # MCP Server configuration
 SERVER_PORT = int(os.environ.get("ABLETON_MCP_SERVER_PORT", "9877"))
@@ -37,6 +38,7 @@ class AbletonConnection:
     host: str
     port: int
     sock: socket.socket = None
+    timing: CommandTimingStrategy = field(default_factory=get_timing_strategy_from_env)
 
     def connect(self) -> bool:
         """Connect to the Ableton Remote Script socket server"""
@@ -117,62 +119,20 @@ class AbletonConnection:
 
         command = {"type": command_type, "params": params or {}}
 
-        # Check if this is a state-modifying command
-        # IMPORTANT: Keep in sync with modifying_commands list in
-        # AbletonMCP_Remote_Script/__init__.py (lines ~254-267)
-        is_modifying_command = command_type in [
-            "create_midi_track",
-            "create_audio_track",
-            "set_track_name",
-            "create_clip",
-            "add_notes_to_clip",
-            "set_clip_name",
-            "set_tempo",
-            "fire_clip",
-            "stop_clip",
-            "set_device_parameter",
-            "start_playback",
-            "stop_playback",
-            "load_instrument_or_effect",
-            "undo",
-            "redo",
-            "delete_track",
-            "delete_clip",
-            "set_metronome",
-            "fire_scene",
-            "set_track_mute",
-            "set_track_solo",
-            "set_track_arm",
-            "set_track_volume",
-            "set_track_panning",
-            "set_song_time",
-            "set_loop_region",
-            "set_loop_enabled",
-            "continue_playing",
-            "jump_by_bars",
-            "jump_to_cue_point",
-            "create_cue_point",
-            "delete_cue_point",
-            "jump_to_next_cue_point",
-            "jump_to_prev_cue_point",
-            "duplicate_clip_to_arrangement",
-            "set_record_mode",
-            "set_arrangement_overdub",
-        ]
-
         try:
             logger.info(f"Sending command: {command_type} with params: {params}")
+
+            # Pre-command delay (configured via timing strategy)
+            pre_delay = self.timing.get_pre_delay(command_type)
+            if pre_delay > 0:
+                time.sleep(pre_delay)
 
             # Send the command
             self.sock.sendall(json.dumps(command).encode("utf-8"))
             logger.info("Command sent, waiting for response...")
 
-            # Optional delay for state-modifying commands (configurable via env var)
-            if COMMAND_DELAY > 0 and is_modifying_command:
-                time.sleep(COMMAND_DELAY)
-
-            # Set timeout based on command type
-            timeout = 15.0 if is_modifying_command else 10.0
+            # Set timeout based on command type (configured via timing strategy)
+            timeout = self.timing.get_timeout(command_type)
             self.sock.settimeout(timeout)
 
             # Receive the response
@@ -187,9 +147,10 @@ class AbletonConnection:
                 logger.error(f"Ableton error: {response.get('message')}")
                 raise Exception(response.get("message", "Unknown error from Ableton"))
 
-            # Optional post-response delay for state-modifying commands
-            if COMMAND_DELAY > 0 and is_modifying_command:
-                time.sleep(COMMAND_DELAY)
+            # Post-response delay (configured via timing strategy)
+            post_delay = self.timing.get_post_delay(command_type)
+            if post_delay > 0:
+                time.sleep(post_delay)
 
             return response.get("result", {})
         except TimeoutError as e:
