@@ -1,19 +1,7 @@
 """Tests for arrangement marker/cue point features."""
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
-
-@pytest.fixture
-def mock_ableton_connection():
-    """Create a mock Ableton connection."""
-    with patch("MCP_Server.server.get_ableton_connection") as mock_get_conn:
-        mock_conn = MagicMock()
-        mock_conn.send_command_async = AsyncMock()
-        mock_get_conn.return_value = mock_conn
-        yield mock_conn
+from unittest.mock import MagicMock
 
 
 class TestGetCuePoints:
