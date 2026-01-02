@@ -97,6 +97,42 @@ class TestCreateCuePoint:
         )
         assert "16.0" in result
 
+    async def test_updates_existing_cue_point(self, mock_ableton_connection):
+        """Test that create_cue_point updates existing cue point instead of toggling."""
+        from MCP_Server.server import create_cue_point
+
+        mock_ableton_connection.send_command_async.return_value = {
+            "created": False,
+            "updated": True,
+            "time": 32.0,
+            "name": "New Name",
+            "message": "Cue point already exists at this time; updated name",
+        }
+
+        result = await create_cue_point(MagicMock(), time=32.0, name="New Name")
+
+        mock_ableton_connection.send_command_async.assert_called_once_with(
+            "create_cue_point", {"time": 32.0, "name": "New Name"}
+        )
+        assert "already exists" in result
+        assert "updated name" in result
+
+    async def test_existing_cue_point_no_name_update(self, mock_ableton_connection):
+        """Test message when cue point exists but no name provided."""
+        from MCP_Server.server import create_cue_point
+
+        mock_ableton_connection.send_command_async.return_value = {
+            "created": False,
+            "updated": True,
+            "time": 32.0,
+            "name": "Existing",
+            "message": "Cue point already exists at this time",
+        }
+
+        result = await create_cue_point(MagicMock(), time=32.0)
+
+        assert "already exists" in result
+
 
 class TestDeleteCuePoint:
     """Tests for delete_cue_point tool."""

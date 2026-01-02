@@ -959,6 +959,9 @@ async def create_cue_point(ctx: Context, time: float, name: str = "") -> str:
     """
     Create a cue point (marker) at a specific time in the arrangement.
 
+    If a cue point already exists at the target time, it will not be deleted.
+    Instead, the name will be updated if a new name is provided.
+
     Parameters:
     - time: Position in beats where the cue point should be created
     - name: Optional name for the cue point
@@ -967,6 +970,14 @@ async def create_cue_point(ctx: Context, time: float, name: str = "") -> str:
         ableton = get_ableton_connection()
         result = await ableton.send_command_async("create_cue_point", {"time": time, "name": name})
         cue_name = result.get("name", "")
+
+        # Handle case where cue point already existed
+        if result.get("updated"):
+            if result.get("message"):
+                return result.get("message")
+            return f"Cue point already exists at beat {result.get('time')}"
+
+        # Normal creation case
         if cue_name:
             return f"Created cue point '{cue_name}' at beat {result.get('time')}"
         return f"Created cue point at beat {result.get('time')}"

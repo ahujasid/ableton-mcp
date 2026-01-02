@@ -1110,13 +1110,39 @@ class AbletonMCP(ControlSurface):
             raise
 
     def _create_cue_point(self, time, name=""):
-        """Create a cue point at a specific time"""
+        """Create a cue point at a specific time.
+
+        Note: The Ableton API's set_or_delete_cue() toggles cue points - if one
+        already exists at the target time, it would be deleted. This method
+        checks for existing cue points first to prevent accidental deletion.
+        """
         try:
+            target_time = max(0.0, float(time))
+
+            # Pre-check: Look for existing cue point at target time
+            # set_or_delete_cue() toggles, so calling it when a cue exists would delete it
+            existing_cue_point = None
+            for cue_point in self._song.cue_points:
+                if abs(cue_point.time - target_time) < 0.001:
+                    existing_cue_point = cue_point
+                    break
+
+            if existing_cue_point:
+                # Cue point already exists at this time - update name if provided
+                if name:
+                    existing_cue_point.name = name
+                return {
+                    "created": False,
+                    "updated": True,
+                    "time": target_time,
+                    "name": existing_cue_point.name,
+                    "message": "Cue point already exists at this time; updated name" if name else "Cue point already exists at this time"
+                }
+
             # Save current song time
             original_time = self._song.current_song_time
 
             # Move playhead to desired time
-            target_time = max(0.0, float(time))
             self._song.current_song_time = target_time
 
             # Create cue point at current song time
