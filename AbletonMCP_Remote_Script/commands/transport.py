@@ -18,10 +18,7 @@ class StartPlaybackCommand(ModifyingCommand):
     command_type = "start_playback"
 
     def execute(self, context: CommandContext, _params: Dict[str, Any]) -> Dict[str, Any]:
-        song = context.song
-        song.start_playing()
-
-        return {"playing": song.is_playing}
+        return context.facade.start_playback()
 
 
 @CommandRegistry.register
@@ -31,10 +28,7 @@ class StopPlaybackCommand(ModifyingCommand):
     command_type = "stop_playback"
 
     def execute(self, context: CommandContext, _params: Dict[str, Any]) -> Dict[str, Any]:
-        song = context.song
-        song.stop_playing()
-
-        return {"playing": song.is_playing}
+        return context.facade.stop_playback()
 
 
 @CommandRegistry.register
@@ -44,13 +38,7 @@ class ContinuePlayingCommand(ModifyingCommand):
     command_type = "continue_playing"
 
     def execute(self, context: CommandContext, _params: Dict[str, Any]) -> Dict[str, Any]:
-        song = context.song
-        song.continue_playing()
-
-        return {
-            "is_playing": song.is_playing,
-            "current_song_time": song.current_song_time,
-        }
+        return context.facade.continue_playing()
 
 
 @CommandRegistry.register
@@ -60,12 +48,8 @@ class SetTempoCommand(ModifyingCommand):
     command_type = "set_tempo"
 
     def execute(self, context: CommandContext, params: Dict[str, Any]) -> Dict[str, Any]:
-        song = context.song
         tempo = params.get("tempo", 120.0)
-
-        song.tempo = tempo
-
-        return {"tempo": song.tempo}
+        return context.facade.set_tempo(tempo)
 
 
 @CommandRegistry.register
@@ -75,12 +59,8 @@ class SetMetronomeCommand(ModifyingCommand):
     command_type = "set_metronome"
 
     def execute(self, context: CommandContext, params: Dict[str, Any]) -> Dict[str, Any]:
-        song = context.song
         enabled = params.get("enabled", True)
-
-        song.metronome = enabled
-
-        return {"metronome": song.metronome}
+        return context.facade.set_metronome(enabled)
 
 
 @CommandRegistry.register
@@ -90,20 +70,8 @@ class FireSceneCommand(ModifyingCommand):
     command_type = "fire_scene"
 
     def execute(self, context: CommandContext, params: Dict[str, Any]) -> Dict[str, Any]:
-        song = context.song
         scene_index = params.get("scene_index", 0)
-
-        if scene_index < 0 or scene_index >= len(song.scenes):
-            raise IndexError("Scene index out of range")
-
-        scene = song.scenes[scene_index]
-        scene.fire()
-
-        return {
-            "fired": True,
-            "scene_name": scene.name,
-            "scene_index": scene_index,
-        }
+        return context.facade.fire_scene(scene_index)
 
 
 @CommandRegistry.register
@@ -113,13 +81,7 @@ class UndoCommand(ModifyingCommand):
     command_type = "undo"
 
     def execute(self, context: CommandContext, _params: Dict[str, Any]) -> Dict[str, Any]:
-        song = context.song
-
-        if song.can_undo:
-            song.undo()
-            return {"undone": True}
-        else:
-            return {"undone": False, "message": "Nothing to undo"}
+        return context.facade.undo()
 
 
 @CommandRegistry.register
@@ -129,13 +91,7 @@ class RedoCommand(ModifyingCommand):
     command_type = "redo"
 
     def execute(self, context: CommandContext, _params: Dict[str, Any]) -> Dict[str, Any]:
-        song = context.song
-
-        if song.can_redo:
-            song.redo()
-            return {"redone": True}
-        else:
-            return {"redone": False, "message": "Nothing to redo"}
+        return context.facade.redo()
 
 
 @CommandRegistry.register
@@ -145,12 +101,8 @@ class SetRecordModeCommand(ModifyingCommand):
     command_type = "set_record_mode"
 
     def execute(self, context: CommandContext, params: Dict[str, Any]) -> Dict[str, Any]:
-        song = context.song
         enabled = params.get("enabled", False)
-
-        song.record_mode = bool(enabled)
-
-        return {"record_mode": song.record_mode}
+        return context.facade.set_record_mode(enabled)
 
 
 @CommandRegistry.register
@@ -160,9 +112,5 @@ class SetArrangementOverdubCommand(ModifyingCommand):
     command_type = "set_arrangement_overdub"
 
     def execute(self, context: CommandContext, params: Dict[str, Any]) -> Dict[str, Any]:
-        song = context.song
         enabled = params.get("enabled", False)
-
-        song.arrangement_overdub = bool(enabled)
-
-        return {"arrangement_overdub": song.arrangement_overdub}
+        return context.facade.set_arrangement_overdub(enabled)

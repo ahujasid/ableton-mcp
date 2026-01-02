@@ -854,7 +854,8 @@ class TestMCPToolsExist:
                 continue
 
             # Look backwards for @mcp.tool()
-            preceding = source[max(0, idx - 100) : idx]
+            # Increased from 100 to 300 to account for @ableton_tool decorator in between
+            preceding = source[max(0, idx - 300) : idx]
             assert "@mcp.tool()" in preceding, f"Function '{func}' missing @mcp.tool() decorator"
 
 
@@ -1038,32 +1039,30 @@ class TestVolumePanBoundaryClamping:
         assert result["panning"] == -1.0
 
     def test_volume_clamping_exists_in_remote_script(self):
-        """Verify volume clamping logic exists in Remote Script."""
-        tracks_path = os.path.join(
+        """Verify volume clamping logic exists in Remote Script facade."""
+        facade_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "commands",
-            "tracks.py",
+            "facade.py",
         )
 
-        with open(tracks_path) as f:
+        with open(facade_path) as f:
             source = f.read()
 
         # Should have clamping logic for volume (0.0 to 1.0)
         assert "max(0.0, min(1.0, volume))" in source
 
     def test_panning_clamping_exists_in_remote_script(self):
-        """Verify panning clamping logic exists in Remote Script."""
-        tracks_path = os.path.join(
+        """Verify panning clamping logic exists in Remote Script facade."""
+        facade_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "commands",
-            "tracks.py",
+            "facade.py",
         )
 
-        with open(tracks_path) as f:
+        with open(facade_path) as f:
             source = f.read()
 
         # Should have clamping logic for pan (-1.0 to 1.0)

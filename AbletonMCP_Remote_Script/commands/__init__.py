@@ -12,7 +12,10 @@ can be executed by the MCP server. Commands are organized into categories:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Optional, Type
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Type
+
+if TYPE_CHECKING:
+    from ..facade import LiveSessionFacade
 
 # Single source of truth for commands that modify Live's state
 # These commands must be scheduled on Ableton's main thread
@@ -106,6 +109,10 @@ class CommandContext:
 
     This encapsulates the dependencies that commands need, making them
     easier to test and keeping them decoupled from the AbletonMCP class.
+
+    The facade property provides a clean, typed interface to the LOM.
+    Commands can use either the facade (preferred) or direct song/application
+    access for operations not yet in the facade.
     """
 
     def __init__(
@@ -123,6 +130,20 @@ class CommandContext:
         self.show_message = show_message
         self.schedule_message = schedule_message
         self.browser_uri_cache = browser_uri_cache
+        self._facade: Optional["LiveSessionFacade"] = None
+
+    @property
+    def facade(self) -> "LiveSessionFacade":
+        """
+        Get the LiveSessionFacade for clean LOM access.
+
+        The facade is created lazily on first access.
+        """
+        if self._facade is None:
+            from ..facade import LiveSessionFacade
+
+            self._facade = LiveSessionFacade(self.song, self.application)
+        return self._facade
 
     def log(self, message: str) -> None:
         """Log a message to Ableton's log."""

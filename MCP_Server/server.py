@@ -12,6 +12,8 @@ from typing import Any
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
 
+from MCP_Server.decorators import ableton_tool
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -20,6 +22,14 @@ logger = logging.getLogger("AbletonMCPServer")
 
 # Configurable delay for state-modifying commands (in seconds)
 COMMAND_DELAY = float(os.environ.get("ABLETON_MCP_COMMAND_DELAY", "0.1"))
+
+# MCP Server configuration
+SERVER_PORT = int(os.environ.get("ABLETON_MCP_SERVER_PORT", "9877"))
+SERVER_HOST = os.environ.get("ABLETON_MCP_SERVER_HOST", "127.0.0.1")
+
+# Remote script configuration
+REMOTE_SCRIPT_HOST = os.environ.get("ABLETON_REMOTE_SCRIPT_HOST", "127.0.0.1")
+REMOTE_SCRIPT_PORT = int(os.environ.get("ABLETON_REMOTE_SCRIPT_PORT", "9899"))
 
 
 @dataclass
@@ -272,8 +282,8 @@ def get_ableton_connection():
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
-                logger.info(f"Connecting to Ableton (attempt {attempt}/{max_attempts})...")
-                _ableton_connection = AbletonConnection(host="localhost", port=9877)
+                logger.info(f"Connecting to Ableton at {REMOTE_SCRIPT_HOST}:{REMOTE_SCRIPT_PORT} (attempt {attempt}/{max_attempts})...")
+                _ableton_connection = AbletonConnection(host=REMOTE_SCRIPT_HOST, port=REMOTE_SCRIPT_PORT)
                 if _ableton_connection.connect():
                     logger.info("Created new persistent connection to Ableton")
 
@@ -314,18 +324,14 @@ def get_ableton_connection():
 
 
 @mcp.tool()
+@ableton_tool("get_session_info", error_prefix="Error getting session info")
 async def get_session_info(ctx: Context) -> str:
     """Get detailed information about the current Ableton session"""
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("get_session_info")
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        logger.error(f"Error getting session info from Ableton: {str(e)}")
-        return f"Error getting session info: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool("get_track_info", error_prefix="Error getting track info")
 async def get_track_info(ctx: Context, track_index: int) -> str:
     """
     Get detailed information about a specific track in Ableton.
@@ -333,16 +339,15 @@ async def get_track_info(ctx: Context, track_index: int) -> str:
     Parameters:
     - track_index: The index of the track to get information about
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("get_track_info", {"track_index": track_index})
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        logger.error(f"Error getting track info from Ableton: {str(e)}")
-        return f"Error getting track info: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "create_midi_track",
+    format_result=lambda r: f"Created new MIDI track: {r.get('name', 'unknown')}",
+    error_prefix="Error creating MIDI track",
+)
 async def create_midi_track(ctx: Context, index: int = -1) -> str:
     """
     Create a new MIDI track in the Ableton session.
@@ -350,16 +355,15 @@ async def create_midi_track(ctx: Context, index: int = -1) -> str:
     Parameters:
     - index: The index to insert the track at (-1 = end of list)
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("create_midi_track", {"index": index})
-        return f"Created new MIDI track: {result.get('name', 'unknown')}"
-    except Exception as e:
-        logger.error(f"Error creating MIDI track: {str(e)}")
-        return f"Error creating MIDI track: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_track_name",
+    format_result=lambda r: f"Renamed track to: {r.get('name', 'unknown')}",
+    error_prefix="Error setting track name",
+)
 async def set_track_name(ctx: Context, track_index: int, name: str) -> str:
     """
     Set the name of a track.
@@ -368,18 +372,15 @@ async def set_track_name(ctx: Context, track_index: int, name: str) -> str:
     - track_index: The index of the track to rename
     - name: The new name for the track
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async(
-            "set_track_name", {"track_index": track_index, "name": name}
-        )
-        return f"Renamed track to: {result.get('name', name)}"
-    except Exception as e:
-        logger.error(f"Error setting track name: {str(e)}")
-        return f"Error setting track name: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "create_clip",
+    format_result=lambda r: f"Created new clip at track {r.get('track_index', '?')}, slot {r.get('clip_index', '?')} with length {r.get('length', '?')} beats",
+    error_prefix="Error creating clip",
+)
 async def create_clip(ctx: Context, track_index: int, clip_index: int, length: float = 4.0) -> str:
     """
     Create a new MIDI clip in the specified track and clip slot.
@@ -389,20 +390,15 @@ async def create_clip(ctx: Context, track_index: int, clip_index: int, length: f
     - clip_index: The index of the clip slot to create the clip in
     - length: The length of the clip in beats (default: 4.0)
     """
-    try:
-        ableton = get_ableton_connection()
-        await ableton.send_command_async(
-            "create_clip", {"track_index": track_index, "clip_index": clip_index, "length": length}
-        )
-        return (
-            f"Created new clip at track {track_index}, slot {clip_index} with length {length} beats"
-        )
-    except Exception as e:
-        logger.error(f"Error creating clip: {str(e)}")
-        return f"Error creating clip: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "add_notes_to_clip",
+    format_result=lambda r: f"Added {r.get('note_count', '?')} notes to clip",
+    error_prefix="Error adding notes to clip",
+)
 async def add_notes_to_clip(
     ctx: Context, track_index: int, clip_index: int, notes: list[dict[str, int | float | bool]]
 ) -> str:
@@ -414,19 +410,15 @@ async def add_notes_to_clip(
     - clip_index: The index of the clip slot containing the clip
     - notes: List of note dictionaries, each with pitch, start_time, duration, velocity, and mute
     """
-    try:
-        ableton = get_ableton_connection()
-        await ableton.send_command_async(
-            "add_notes_to_clip",
-            {"track_index": track_index, "clip_index": clip_index, "notes": notes},
-        )
-        return f"Added {len(notes)} notes to clip at track {track_index}, slot {clip_index}"
-    except Exception as e:
-        logger.error(f"Error adding notes to clip: {str(e)}")
-        return f"Error adding notes to clip: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_clip_name",
+    format_result=lambda r: f"Renamed clip to '{r.get('name', 'unknown')}'",
+    error_prefix="Error setting clip name",
+)
 async def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) -> str:
     """
     Set the name of a clip.
@@ -436,18 +428,15 @@ async def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: s
     - clip_index: The index of the clip slot containing the clip
     - name: The new name for the clip
     """
-    try:
-        ableton = get_ableton_connection()
-        await ableton.send_command_async(
-            "set_clip_name", {"track_index": track_index, "clip_index": clip_index, "name": name}
-        )
-        return f"Renamed clip at track {track_index}, slot {clip_index} to '{name}'"
-    except Exception as e:
-        logger.error(f"Error setting clip name: {str(e)}")
-        return f"Error setting clip name: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_tempo",
+    format_result=lambda r: f"Set tempo to {r.get('tempo', '?')} BPM",
+    error_prefix="Error setting tempo",
+)
 async def set_tempo(ctx: Context, tempo: float) -> str:
     """
     Set the tempo of the Ableton session.
@@ -455,16 +444,24 @@ async def set_tempo(ctx: Context, tempo: float) -> str:
     Parameters:
     - tempo: The new tempo in BPM
     """
-    try:
-        ableton = get_ableton_connection()
-        await ableton.send_command_async("set_tempo", {"tempo": tempo})
-        return f"Set tempo to {tempo} BPM"
-    except Exception as e:
-        logger.error(f"Error setting tempo: {str(e)}")
-        return f"Error setting tempo: {str(e)}"
+    pass
+
+
+def _format_load_instrument(r: dict) -> str:
+    """Format load instrument result."""
+    track_index = r.get("track_index", "?")
+    uri = r.get("uri", "unknown")
+    if r.get("loaded", False):
+        new_devices = r.get("new_devices", [])
+        if new_devices:
+            return f"Loaded instrument with URI '{uri}' on track {track_index}. New devices: {', '.join(new_devices)}"
+        devices = r.get("devices_after", [])
+        return f"Loaded instrument with URI '{uri}' on track {track_index}. Devices on track: {', '.join(devices)}"
+    return f"Failed to load instrument with URI '{uri}'"
 
 
 @mcp.tool()
+@ableton_tool(error_prefix="Error loading instrument by URI")
 async def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
     """
     Load an instrument or effect onto a track using its URI.
@@ -473,28 +470,21 @@ async def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) ->
     - track_index: The index of the track to load the instrument on
     - uri: The URI of the instrument or effect to load (e.g., 'query:Synths#Instrument%20Rack:Bass:FileId_5116')
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async(
-            "load_browser_item", {"track_index": track_index, "item_uri": uri}
-        )
-
-        # Check if the instrument was loaded successfully
-        if result.get("loaded", False):
-            new_devices = result.get("new_devices", [])
-            if new_devices:
-                return f"Loaded instrument with URI '{uri}' on track {track_index}. New devices: {', '.join(new_devices)}"
-            else:
-                devices = result.get("devices_after", [])
-                return f"Loaded instrument with URI '{uri}' on track {track_index}. Devices on track: {', '.join(devices)}"
-        else:
-            return f"Failed to load instrument with URI '{uri}'"
-    except Exception as e:
-        logger.error(f"Error loading instrument by URI: {str(e)}")
-        return f"Error loading instrument by URI: {str(e)}"
+    ableton = get_ableton_connection()
+    result = await ableton.send_command_async(
+        "load_browser_item", {"track_index": track_index, "item_uri": uri}
+    )
+    result["track_index"] = track_index
+    result["uri"] = uri
+    return _format_load_instrument(result)
 
 
 @mcp.tool()
+@ableton_tool(
+    "fire_clip",
+    format_result=lambda r: f"Started playing clip at track {r.get('track_index', '?')}, slot {r.get('clip_index', '?')}",
+    error_prefix="Error firing clip",
+)
 async def fire_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     """
     Start playing a clip.
@@ -503,18 +493,15 @@ async def fire_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
     """
-    try:
-        ableton = get_ableton_connection()
-        await ableton.send_command_async(
-            "fire_clip", {"track_index": track_index, "clip_index": clip_index}
-        )
-        return f"Started playing clip at track {track_index}, slot {clip_index}"
-    except Exception as e:
-        logger.error(f"Error firing clip: {str(e)}")
-        return f"Error firing clip: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "stop_clip",
+    format_result=lambda r: f"Stopped clip at track {r.get('track_index', '?')}, slot {r.get('clip_index', '?')}",
+    error_prefix="Error stopping clip",
+)
 async def stop_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     """
     Stop playing a clip.
@@ -523,72 +510,51 @@ async def stop_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
     """
-    try:
-        ableton = get_ableton_connection()
-        await ableton.send_command_async(
-            "stop_clip", {"track_index": track_index, "clip_index": clip_index}
-        )
-        return f"Stopped clip at track {track_index}, slot {clip_index}"
-    except Exception as e:
-        logger.error(f"Error stopping clip: {str(e)}")
-        return f"Error stopping clip: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool("start_playback", format_result=lambda _: "Started playback", error_prefix="Error starting playback")
 async def start_playback(ctx: Context) -> str:
     """Start playing the Ableton session."""
-    try:
-        ableton = get_ableton_connection()
-        await ableton.send_command_async("start_playback")
-        return "Started playback"
-    except Exception as e:
-        logger.error(f"Error starting playback: {str(e)}")
-        return f"Error starting playback: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool("stop_playback", format_result=lambda _: "Stopped playback", error_prefix="Error stopping playback")
 async def stop_playback(ctx: Context) -> str:
     """Stop playing the Ableton session."""
-    try:
-        ableton = get_ableton_connection()
-        await ableton.send_command_async("stop_playback")
-        return "Stopped playback"
-    except Exception as e:
-        logger.error(f"Error stopping playback: {str(e)}")
-        return f"Error stopping playback: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "undo",
+    format_result=lambda r: "Undid last action" if r.get("undone") else r.get("message", "Nothing to undo"),
+    error_prefix="Error undoing",
+)
 async def undo(ctx: Context) -> str:
     """Undo the last action in Ableton."""
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("undo")
-        if result.get("undone"):
-            return "Undid last action"
-        else:
-            return result.get("message", "Nothing to undo")
-    except Exception as e:
-        logger.error(f"Error undoing: {str(e)}")
-        return f"Error undoing: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "redo",
+    format_result=lambda r: "Redid last action" if r.get("redone") else r.get("message", "Nothing to redo"),
+    error_prefix="Error redoing",
+)
 async def redo(ctx: Context) -> str:
     """Redo the last undone action in Ableton."""
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("redo")
-        if result.get("redone"):
-            return "Redid last action"
-        else:
-            return result.get("message", "Nothing to redo")
-    except Exception as e:
-        logger.error(f"Error redoing: {str(e)}")
-        return f"Error redoing: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "delete_track",
+    format_result=lambda r: f"Deleted track: {r.get('track_name', 'unknown')}",
+    error_prefix="Error deleting track",
+)
 async def delete_track(ctx: Context, track_index: int) -> str:
     """
     Delete a track from the Ableton session.
@@ -596,16 +562,15 @@ async def delete_track(ctx: Context, track_index: int) -> str:
     Parameters:
     - track_index: The index of the track to delete
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("delete_track", {"track_index": track_index})
-        return f"Deleted track: {result.get('track_name', 'unknown')}"
-    except Exception as e:
-        logger.error(f"Error deleting track: {str(e)}")
-        return f"Error deleting track: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "create_audio_track",
+    format_result=lambda r: f"Created new audio track: {r.get('name', 'unknown')}",
+    error_prefix="Error creating audio track",
+)
 async def create_audio_track(ctx: Context, index: int = -1) -> str:
     """
     Create a new audio track in the Ableton session.
@@ -613,16 +578,15 @@ async def create_audio_track(ctx: Context, index: int = -1) -> str:
     Parameters:
     - index: The index to insert the track at (-1 = end of list)
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("create_audio_track", {"index": index})
-        return f"Created new audio track: {result.get('name', 'unknown')}"
-    except Exception as e:
-        logger.error(f"Error creating audio track: {str(e)}")
-        return f"Error creating audio track: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "delete_clip",
+    format_result=lambda r: f"Deleted clip: {r.get('clip_name', 'unknown')}",
+    error_prefix="Error deleting clip",
+)
 async def delete_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     """
     Delete a clip from a clip slot.
@@ -631,18 +595,15 @@ async def delete_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async(
-            "delete_clip", {"track_index": track_index, "clip_index": clip_index}
-        )
-        return f"Deleted clip: {result.get('clip_name', 'unknown')}"
-    except Exception as e:
-        logger.error(f"Error deleting clip: {str(e)}")
-        return f"Error deleting clip: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_metronome",
+    format_result=lambda r: f"Metronome {'enabled' if r.get('metronome') else 'disabled'}",
+    error_prefix="Error setting metronome",
+)
 async def set_metronome(ctx: Context, enabled: bool) -> str:
     """
     Enable or disable the metronome.
@@ -650,17 +611,15 @@ async def set_metronome(ctx: Context, enabled: bool) -> str:
     Parameters:
     - enabled: True to enable, False to disable
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("set_metronome", {"enabled": enabled})
-        state = "enabled" if result.get("metronome") else "disabled"
-        return f"Metronome {state}"
-    except Exception as e:
-        logger.error(f"Error setting metronome: {str(e)}")
-        return f"Error setting metronome: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "fire_scene",
+    format_result=lambda r: f"Fired scene: {r.get('scene_name', 'unknown')}",
+    error_prefix="Error firing scene",
+)
 async def fire_scene(ctx: Context, scene_index: int) -> str:
     """
     Fire a scene (trigger all clips in a row).
@@ -668,17 +627,15 @@ async def fire_scene(ctx: Context, scene_index: int) -> str:
     Parameters:
     - scene_index: The index of the scene to fire
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("fire_scene", {"scene_index": scene_index})
-        scene_name = result.get("scene_name", f"Scene {scene_index}")
-        return f"Fired scene: {scene_name}"
-    except Exception as e:
-        logger.error(f"Error firing scene: {str(e)}")
-        return f"Error firing scene: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_track_mute",
+    format_result=lambda r: f"Track '{r.get('track_name')}' {'muted' if r.get('mute') else 'unmuted'}",
+    error_prefix="Error setting track mute",
+)
 async def set_track_mute(ctx: Context, track_index: int, muted: bool) -> str:
     """
     Mute or unmute a track.
@@ -687,19 +644,15 @@ async def set_track_mute(ctx: Context, track_index: int, muted: bool) -> str:
     - track_index: The index of the track
     - muted: True to mute, False to unmute
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async(
-            "set_track_mute", {"track_index": track_index, "muted": muted}
-        )
-        state = "muted" if result.get("mute") else "unmuted"
-        return f"Track '{result.get('track_name')}' {state}"
-    except Exception as e:
-        logger.error(f"Error setting track mute: {str(e)}")
-        return f"Error setting track mute: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_track_solo",
+    format_result=lambda r: f"Track '{r.get('track_name')}' {'soloed' if r.get('solo') else 'unsoloed'}",
+    error_prefix="Error setting track solo",
+)
 async def set_track_solo(ctx: Context, track_index: int, solo: bool) -> str:
     """
     Solo or unsolo a track.
@@ -708,19 +661,15 @@ async def set_track_solo(ctx: Context, track_index: int, solo: bool) -> str:
     - track_index: The index of the track
     - solo: True to solo, False to unsolo
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async(
-            "set_track_solo", {"track_index": track_index, "solo": solo}
-        )
-        state = "soloed" if result.get("solo") else "unsoloed"
-        return f"Track '{result.get('track_name')}' {state}"
-    except Exception as e:
-        logger.error(f"Error setting track solo: {str(e)}")
-        return f"Error setting track solo: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_track_arm",
+    format_result=lambda r: r.get("message") if "message" in r else f"Track '{r.get('track_name')}' {'armed' if r.get('arm') else 'disarmed'}",
+    error_prefix="Error setting track arm",
+)
 async def set_track_arm(ctx: Context, track_index: int, armed: bool) -> str:
     """
     Arm or disarm a track for recording.
@@ -729,21 +678,15 @@ async def set_track_arm(ctx: Context, track_index: int, armed: bool) -> str:
     - track_index: The index of the track
     - armed: True to arm, False to disarm
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async(
-            "set_track_arm", {"track_index": track_index, "armed": armed}
-        )
-        if "message" in result:
-            return result["message"]
-        state = "armed" if result.get("arm") else "disarmed"
-        return f"Track '{result.get('track_name')}' {state}"
-    except Exception as e:
-        logger.error(f"Error setting track arm: {str(e)}")
-        return f"Error setting track arm: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_track_volume",
+    format_result=lambda r: f"Track '{r.get('track_name')}' volume set to {r.get('volume', 0):.2f}",
+    error_prefix="Error setting track volume",
+)
 async def set_track_volume(ctx: Context, track_index: int, volume: float) -> str:
     """
     Set track volume.
@@ -752,18 +695,23 @@ async def set_track_volume(ctx: Context, track_index: int, volume: float) -> str
     - track_index: The index of the track
     - volume: Volume level from 0.0 (silent) to 1.0 (full)
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async(
-            "set_track_volume", {"track_index": track_index, "volume": volume}
-        )
-        return f"Track '{result.get('track_name')}' volume set to {result.get('volume'):.2f}"
-    except Exception as e:
-        logger.error(f"Error setting track volume: {str(e)}")
-        return f"Error setting track volume: {str(e)}"
+    pass
+
+
+def _format_panning(r: dict) -> str:
+    """Format panning result for human readability."""
+    pan_val = r.get("panning", 0)
+    if pan_val < -0.01:
+        pos = f"{abs(pan_val):.0%} left"
+    elif pan_val > 0.01:
+        pos = f"{pan_val:.0%} right"
+    else:
+        pos = "center"
+    return f"Track '{r.get('track_name')}' panned to {pos}"
 
 
 @mcp.tool()
+@ableton_tool("set_track_panning", format_result=_format_panning, error_prefix="Error setting track panning")
 async def set_track_panning(ctx: Context, track_index: int, pan: float) -> str:
     """
     Set track panning.
@@ -772,25 +720,11 @@ async def set_track_panning(ctx: Context, track_index: int, pan: float) -> str:
     - track_index: The index of the track
     - pan: Panning from -1.0 (left) to 1.0 (right), 0.0 is center
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async(
-            "set_track_panning", {"track_index": track_index, "pan": pan}
-        )
-        pan_val = result.get("panning", 0)
-        if pan_val < -0.01:
-            pos = f"{abs(pan_val):.0%} left"
-        elif pan_val > 0.01:
-            pos = f"{pan_val:.0%} right"
-        else:
-            pos = "center"
-        return f"Track '{result.get('track_name')}' panned to {pos}"
-    except Exception as e:
-        logger.error(f"Error setting track panning: {str(e)}")
-        return f"Error setting track panning: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool("get_notes_from_clip", error_prefix="Error getting notes from clip")
 async def get_notes_from_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     """
     Get all MIDI notes from a clip.
@@ -799,18 +733,11 @@ async def get_notes_from_clip(ctx: Context, track_index: int, clip_index: int) -
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async(
-            "get_notes_from_clip", {"track_index": track_index, "clip_index": clip_index}
-        )
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        logger.error(f"Error getting notes from clip: {str(e)}")
-        return f"Error getting notes from clip: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool("get_scene_info", error_prefix="Error getting scene info")
 async def get_scene_info(ctx: Context, scene_index: int) -> str:
     """
     Get information about a scene.
@@ -818,28 +745,22 @@ async def get_scene_info(ctx: Context, scene_index: int) -> str:
     Parameters:
     - scene_index: The index of the scene
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("get_scene_info", {"scene_index": scene_index})
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        logger.error(f"Error getting scene info: {str(e)}")
-        return f"Error getting scene info: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool("get_arrangement_info", error_prefix="Error getting arrangement info")
 async def get_arrangement_info(ctx: Context) -> str:
     """Get arrangement view information including playhead position, loop settings, and transport state."""
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("get_arrangement_info")
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        logger.error(f"Error getting arrangement info: {str(e)}")
-        return f"Error getting arrangement info: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_song_time",
+    format_result=lambda r: f"Moved playhead to beat {r.get('current_song_time', 0)}",
+    error_prefix="Error setting song time",
+)
 async def set_song_time(ctx: Context, time: float) -> str:
     """
     Set the song playhead position.
@@ -847,17 +768,15 @@ async def set_song_time(ctx: Context, time: float) -> str:
     Parameters:
     - time: Position in beats (e.g., 32.0 = start of bar 9 in 4/4 time, counting bars from 1)
     """
-    try:
-        ableton = get_ableton_connection()
-        await ableton.send_command_async("set_song_time", {"time": time})
-        # Use input value - command succeeded if no exception was raised
-        return f"Moved playhead to beat {time}"
-    except Exception as e:
-        logger.error(f"Error setting song time: {str(e)}")
-        return f"Error setting song time: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_loop_region",
+    format_result=lambda r: f"Set loop region: start={r.get('loop_start')}, length={r.get('loop_length')}",
+    error_prefix="Error setting loop region",
+)
 async def set_loop_region(ctx: Context, start: float, length: float) -> str:
     """
     Set the arrangement loop region.
@@ -866,20 +785,15 @@ async def set_loop_region(ctx: Context, start: float, length: float) -> str:
     - start: Loop start position in beats
     - length: Loop length in beats
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async(
-            "set_loop_region", {"start": start, "length": length}
-        )
-        return (
-            f"Set loop region: start={result.get('loop_start')}, length={result.get('loop_length')}"
-        )
-    except Exception as e:
-        logger.error(f"Error setting loop region: {str(e)}")
-        return f"Error setting loop region: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_loop_enabled",
+    format_result=lambda r: f"Arrangement loop {'enabled' if r.get('loop_enabled') else 'disabled'}",
+    error_prefix="Error setting loop enabled",
+)
 async def set_loop_enabled(ctx: Context, enabled: bool) -> str:
     """
     Enable or disable the arrangement loop.
@@ -887,30 +801,29 @@ async def set_loop_enabled(ctx: Context, enabled: bool) -> str:
     Parameters:
     - enabled: True to enable loop, False to disable
     """
-    try:
-        ableton = get_ableton_connection()
-        await ableton.send_command_async("set_loop_enabled", {"enabled": enabled})
-        # Use input value - command succeeded if no exception was raised
-        state = "enabled" if enabled else "disabled"
-        return f"Arrangement loop {state}"
-    except Exception as e:
-        logger.error(f"Error setting loop enabled: {str(e)}")
-        return f"Error setting loop enabled: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "continue_playing",
+    format_result=lambda r: f"Continuing playback from beat {r.get('current_song_time', 0)}",
+    error_prefix="Error continuing playback",
+)
 async def continue_playing(ctx: Context) -> str:
     """Continue playing from the current playhead position (no quantization)."""
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("continue_playing")
-        return f"Continuing playback from beat {result.get('current_song_time', 0)}"
-    except Exception as e:
-        logger.error(f"Error continuing playback: {str(e)}")
-        return f"Error continuing playback: {str(e)}"
+    pass
+
+
+def _format_jump_by_bars(r: dict) -> str:
+    """Format jump by bars result."""
+    bars = r.get("bars_jumped", 0)
+    direction = "forward" if bars > 0 else "backward"
+    return f"Jumped {abs(bars)} bars {direction} to beat {r.get('current_song_time', 0)}"
 
 
 @mcp.tool()
+@ableton_tool("jump_by_bars", format_result=_format_jump_by_bars, error_prefix="Error jumping by bars")
 async def jump_by_bars(ctx: Context, bars: int) -> str:
     """
     Jump the playhead forward or backward by a number of bars.
@@ -918,29 +831,22 @@ async def jump_by_bars(ctx: Context, bars: int) -> str:
     Parameters:
     - bars: Number of bars to jump (positive = forward, negative = backward)
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("jump_by_bars", {"bars": bars})
-        direction = "forward" if bars > 0 else "backward"
-        return f"Jumped {abs(bars)} bars {direction} to beat {result.get('current_song_time', 0)}"
-    except Exception as e:
-        logger.error(f"Error jumping by bars: {str(e)}")
-        return f"Error jumping by bars: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool("get_cue_points", error_prefix="Error getting cue points")
 async def get_cue_points(ctx: Context) -> str:
     """Get all cue points (markers) in the arrangement."""
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("get_cue_points")
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        logger.error(f"Error getting cue points: {str(e)}")
-        return f"Error getting cue points: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "jump_to_cue_point",
+    format_result=lambda r: f"Jumped to '{r.get('jumped_to')}' at beat {r.get('time')}",
+    error_prefix="Error jumping to cue point",
+)
 async def jump_to_cue_point(ctx: Context, index: int) -> str:
     """
     Jump to a cue point by its index.
@@ -948,16 +854,11 @@ async def jump_to_cue_point(ctx: Context, index: int) -> str:
     Parameters:
     - index: The index of the cue point to jump to
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("jump_to_cue_point", {"index": index})
-        return f"Jumped to '{result.get('jumped_to')}' at beat {result.get('time')}"
-    except Exception as e:
-        logger.error(f"Error jumping to cue point: {str(e)}")
-        return f"Error jumping to cue point: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(error_prefix="Error creating cue point")
 async def create_cue_point(ctx: Context, time: float, name: str = "") -> str:
     """
     Create a cue point (marker) at a specific time in the arrangement.
@@ -969,46 +870,42 @@ async def create_cue_point(ctx: Context, time: float, name: str = "") -> str:
     - time: Position in beats where the cue point should be created
     - name: Optional name for the cue point
     """
-    try:
-        ableton = get_ableton_connection()
+    ableton = get_ableton_connection()
+    # First, check if cue point already exists at target time
+    cue_points = await ableton.send_command_async("get_cue_points", {})
+    existing_cue = None
+    for cp in cue_points.get("cue_points", []):
+        if abs(cp.get("time", -1) - time) < 0.001:
+            existing_cue = cp
+            break
 
-        # First, check if cue point already exists at target time
-        cue_points = await ableton.send_command_async("get_cue_points", {})
-        existing_cue = None
-        for cp in cue_points.get("cue_points", []):
-            if abs(cp.get("time", -1) - time) < 0.001:
-                existing_cue = cp
-                break
-
-        if existing_cue:
-            # Cue point already exists - just update name if provided
-            if name:
-                await ableton.send_command_async("set_cue_point_name", {"time": time, "name": name})
-                return f"Cue point already exists at beat {time}; updated name to '{name}'"
-            return f"Cue point already exists at beat {time}"
-
-        # Step 1: Move playhead to target position
-        await ableton.send_command_async("set_song_time", {"time": time})
-
-        # Step 2: Brief delay to ensure position is set
-        await anyio.sleep(0.05)
-
-        # Step 3: Toggle cue point at current playhead position
-        result = await ableton.send_command_async("toggle_cue_at_playhead", {})
-
-        # Step 4: Set name if provided
-        if name and result.get("action") == "created":
-            await anyio.sleep(0.02)
+    if existing_cue:
+        # Cue point already exists - just update name if provided
+        if name:
             await ableton.send_command_async("set_cue_point_name", {"time": time, "name": name})
-            return f"Created cue point '{name}' at beat {time}"
+            return f"Cue point already exists at beat {time}; updated name to '{name}'"
+        return f"Cue point already exists at beat {time}"
 
-        return f"Created cue point at beat {time}"
-    except Exception as e:
-        logger.error(f"Error creating cue point: {str(e)}")
-        return f"Error creating cue point: {str(e)}"
+    # Step 1: Move playhead to target position
+    await ableton.send_command_async("set_song_time", {"time": time})
+
+    # Step 2: Brief delay to ensure position is set
+    await anyio.sleep(0.05)
+
+    # Step 3: Toggle cue point at current playhead position
+    result = await ableton.send_command_async("toggle_cue_at_playhead", {})
+
+    # Step 4: Set name if provided
+    if name and result.get("action") == "created":
+        await anyio.sleep(0.02)
+        await ableton.send_command_async("set_cue_point_name", {"time": time, "name": name})
+        return f"Created cue point '{name}' at beat {time}"
+
+    return f"Created cue point at beat {time}"
 
 
 @mcp.tool()
+@ableton_tool(error_prefix="Error deleting cue point")
 async def delete_cue_point(ctx: Context, index: int) -> str:
     """
     Delete a cue point by its index.
@@ -1016,64 +913,61 @@ async def delete_cue_point(ctx: Context, index: int) -> str:
     Parameters:
     - index: The index of the cue point to delete
     """
-    try:
-        ableton = get_ableton_connection()
+    ableton = get_ableton_connection()
+    # First, get the cue point info to find its time position
+    cue_points = await ableton.send_command_async("get_cue_points", {})
+    cue_list = cue_points.get("cue_points", [])
 
-        # First, get the cue point info to find its time position
-        cue_points = await ableton.send_command_async("get_cue_points", {})
-        cue_list = cue_points.get("cue_points", [])
+    if index < 0 or index >= len(cue_list):
+        return f"Error: Cue point index {index} out of range (0-{len(cue_list) - 1})"
 
-        if index < 0 or index >= len(cue_list):
-            return f"Error: Cue point index {index} out of range (0-{len(cue_list) - 1})"
+    cue_to_delete = cue_list[index]
+    cue_time = cue_to_delete.get("time")
+    cue_name = cue_to_delete.get("name", "")
 
-        cue_to_delete = cue_list[index]
-        cue_time = cue_to_delete.get("time")
-        cue_name = cue_to_delete.get("name", "")
+    # Step 1: Move playhead to cue point position
+    await ableton.send_command_async("set_song_time", {"time": cue_time})
 
-        # Step 1: Move playhead to cue point position
-        await ableton.send_command_async("set_song_time", {"time": cue_time})
+    # Step 2: Brief delay to ensure position is set
+    await anyio.sleep(0.05)
 
-        # Step 2: Brief delay to ensure position is set
-        await anyio.sleep(0.05)
+    # Step 3: Toggle cue point at current playhead position (should delete it)
+    await ableton.send_command_async("toggle_cue_at_playhead", {})
 
-        # Step 3: Toggle cue point at current playhead position (should delete it)
-        await ableton.send_command_async("toggle_cue_at_playhead", {})
+    return f"Deleted cue point '{cue_name}' at beat {cue_time}"
 
-        return f"Deleted cue point '{cue_name}' at beat {cue_time}"
-    except Exception as e:
-        logger.error(f"Error deleting cue point: {str(e)}")
-        return f"Error deleting cue point: {str(e)}"
+
+def _format_cue_jump(r: dict, fallback_msg: str) -> str:
+    """Format cue point jump result."""
+    if r.get("jumped"):
+        return f"Jumped to '{r.get('name')}' at beat {r.get('time')}"
+    return r.get("message", fallback_msg)
 
 
 @mcp.tool()
+@ableton_tool(
+    "jump_to_next_cue_point",
+    format_result=lambda r: _format_cue_jump(r, "No next cue point found"),
+    error_prefix="Error jumping to next cue point",
+)
 async def jump_to_next_cue_point(ctx: Context) -> str:
     """Jump to the next cue point after the current playhead position."""
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("jump_to_next_cue_point")
-        if result.get("jumped"):
-            return f"Jumped to '{result.get('name')}' at beat {result.get('time')}"
-        return result.get("message", "No next cue point found")
-    except Exception as e:
-        logger.error(f"Error jumping to next cue point: {str(e)}")
-        return f"Error jumping to next cue point: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "jump_to_prev_cue_point",
+    format_result=lambda r: _format_cue_jump(r, "No previous cue point found"),
+    error_prefix="Error jumping to previous cue point",
+)
 async def jump_to_prev_cue_point(ctx: Context) -> str:
     """Jump to the previous cue point before the current playhead position."""
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("jump_to_prev_cue_point")
-        if result.get("jumped"):
-            return f"Jumped to '{result.get('name')}' at beat {result.get('time')}"
-        return result.get("message", "No previous cue point found")
-    except Exception as e:
-        logger.error(f"Error jumping to previous cue point: {str(e)}")
-        return f"Error jumping to previous cue point: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(error_prefix="Error getting arrangement clips")
 async def get_arrangement_clips(ctx: Context, track_index: int | None = None) -> str:
     """
     Get clips from the arrangement view.
@@ -1081,19 +975,28 @@ async def get_arrangement_clips(ctx: Context, track_index: int | None = None) ->
     Parameters:
     - track_index: Optional track index. If None, returns clips from all tracks.
     """
-    try:
-        ableton = get_ableton_connection()
-        params = {}
-        if track_index is not None:
-            params["track_index"] = track_index
-        result = await ableton.send_command_async("get_arrangement_clips", params)
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        logger.error(f"Error getting arrangement clips: {str(e)}")
-        return f"Error getting arrangement clips: {str(e)}"
+    ableton = get_ableton_connection()
+    params = {}
+    if track_index is not None:
+        params["track_index"] = track_index
+    result = await ableton.send_command_async("get_arrangement_clips", params)
+    return json.dumps(result, indent=2)
+
+
+def _format_duplicate_clip(r: dict) -> str:
+    """Format duplicate clip to arrangement result."""
+    return (
+        f"Duplicated '{r.get('clip_name')}' to arrangement at beat "
+        f"{r.get('destination_time')} on track '{r.get('track_name')}'"
+    )
 
 
 @mcp.tool()
+@ableton_tool(
+    "duplicate_clip_to_arrangement",
+    format_result=_format_duplicate_clip,
+    error_prefix="Error duplicating clip to arrangement",
+)
 async def duplicate_clip_to_arrangement(
     ctx: Context, track_index: int, clip_index: int, time: float
 ) -> str:
@@ -1105,22 +1008,15 @@ async def duplicate_clip_to_arrangement(
     - clip_index: The index of the clip slot containing the clip
     - time: The destination time in beats in the arrangement
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async(
-            "duplicate_clip_to_arrangement",
-            {"track_index": track_index, "clip_index": clip_index, "time": time},
-        )
-        return (
-            f"Duplicated '{result.get('clip_name')}' to arrangement at beat "
-            f"{result.get('destination_time')} on track '{result.get('track_name')}'"
-        )
-    except Exception as e:
-        logger.error(f"Error duplicating clip to arrangement: {str(e)}")
-        return f"Error duplicating clip to arrangement: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_record_mode",
+    format_result=lambda r: f"Record mode {'enabled' if r.get('record_mode') else 'disabled'}",
+    error_prefix="Error setting record mode",
+)
 async def set_record_mode(ctx: Context, enabled: bool) -> str:
     """
     Enable or disable global record mode.
@@ -1128,17 +1024,15 @@ async def set_record_mode(ctx: Context, enabled: bool) -> str:
     Parameters:
     - enabled: True to enable recording, False to disable
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("set_record_mode", {"enabled": enabled})
-        state = "enabled" if result.get("record_mode") else "disabled"
-        return f"Record mode {state}"
-    except Exception as e:
-        logger.error(f"Error setting record mode: {str(e)}")
-        return f"Error setting record mode: {str(e)}"
+    pass
 
 
 @mcp.tool()
+@ableton_tool(
+    "set_arrangement_overdub",
+    format_result=lambda r: f"Arrangement overdub {'enabled' if r.get('arrangement_overdub') else 'disabled'}",
+    error_prefix="Error setting arrangement overdub",
+)
 async def set_arrangement_overdub(ctx: Context, enabled: bool) -> str:
     """
     Enable or disable arrangement overdub mode.
@@ -1146,17 +1040,34 @@ async def set_arrangement_overdub(ctx: Context, enabled: bool) -> str:
     Parameters:
     - enabled: True to enable overdub, False to disable
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("set_arrangement_overdub", {"enabled": enabled})
-        state = "enabled" if result.get("arrangement_overdub") else "disabled"
-        return f"Arrangement overdub {state}"
-    except Exception as e:
-        logger.error(f"Error setting arrangement overdub: {str(e)}")
-        return f"Error setting arrangement overdub: {str(e)}"
+    pass
+
+
+def _format_browser_tree_item(item: dict, indent: int = 0) -> str:
+    """Format a single browser tree item with its children."""
+    output = ""
+    if item:
+        prefix = "  " * indent
+        name = item.get("name", "Unknown")
+        path = item.get("path", "")
+        has_more = item.get("has_more", False)
+
+        # Add this item
+        output += f"{prefix}• {name}"
+        if path:
+            output += f" (path: {path})"
+        if has_more:
+            output += " [...]"
+        output += "\n"
+
+        # Add children
+        for child in item.get("children", []):
+            output += _format_browser_tree_item(child, indent + 1)
+    return output
 
 
 @mcp.tool()
+@ableton_tool(error_prefix="Error getting browser tree")
 async def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
     """
     Get a hierarchical tree of browser categories from Ableton.
@@ -1164,67 +1075,35 @@ async def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
     Parameters:
     - category_type: Type of categories to get ('all', 'instruments', 'sounds', 'drums', 'audio_effects', 'midi_effects')
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async(
-            "get_browser_tree", {"category_type": category_type}
+    ableton = get_ableton_connection()
+    result = await ableton.send_command_async(
+        "get_browser_tree", {"category_type": category_type}
+    )
+
+    # Check if we got any categories
+    if "available_categories" in result and len(result.get("categories", [])) == 0:
+        available_cats = result.get("available_categories", [])
+        return (
+            f"No categories found for '{category_type}'. "
+            f"Available browser categories: {', '.join(available_cats)}"
         )
 
-        # Check if we got any categories
-        if "available_categories" in result and len(result.get("categories", [])) == 0:
-            available_cats = result.get("available_categories", [])
-            return (
-                f"No categories found for '{category_type}'. "
-                f"Available browser categories: {', '.join(available_cats)}"
-            )
+    # Format the tree in a more readable way
+    total_folders = result.get("total_folders", 0)
+    formatted_output = (
+        f"Browser tree for '{category_type}' (showing {total_folders} folders):\n\n"
+    )
 
-        # Format the tree in a more readable way
-        total_folders = result.get("total_folders", 0)
-        formatted_output = (
-            f"Browser tree for '{category_type}' (showing {total_folders} folders):\n\n"
-        )
+    # Format each category
+    for category in result.get("categories", []):
+        formatted_output += _format_browser_tree_item(category)
+        formatted_output += "\n"
 
-        def format_tree(item, indent=0):
-            output = ""
-            if item:
-                prefix = "  " * indent
-                name = item.get("name", "Unknown")
-                path = item.get("path", "")
-                has_more = item.get("has_more", False)
-
-                # Add this item
-                output += f"{prefix}• {name}"
-                if path:
-                    output += f" (path: {path})"
-                if has_more:
-                    output += " [...]"
-                output += "\n"
-
-                # Add children
-                for child in item.get("children", []):
-                    output += format_tree(child, indent + 1)
-            return output
-
-        # Format each category
-        for category in result.get("categories", []):
-            formatted_output += format_tree(category)
-            formatted_output += "\n"
-
-        return formatted_output
-    except Exception as e:
-        error_msg = str(e)
-        if "Browser is not available" in error_msg:
-            logger.error(f"Browser is not available in Ableton: {error_msg}")
-            return "Error: The Ableton browser is not available. Make sure Ableton Live is fully loaded and try again."
-        elif "Could not access Live application" in error_msg:
-            logger.error(f"Could not access Live application: {error_msg}")
-            return "Error: Could not access the Ableton Live application. Make sure Ableton Live is running and the Remote Script is loaded."
-        else:
-            logger.error(f"Error getting browser tree: {error_msg}")
-            return f"Error getting browser tree: {error_msg}"
+    return formatted_output
 
 
 @mcp.tool()
+@ableton_tool(error_prefix="Error getting browser items at path")
 async def get_browser_items_at_path(ctx: Context, path: str) -> str:
     """
     Get browser items at a specific path in Ableton's browser.
@@ -1233,40 +1112,23 @@ async def get_browser_items_at_path(ctx: Context, path: str) -> str:
     - path: Path in the format "category/folder/subfolder"
             where category is one of the available browser categories in Ableton
     """
-    try:
-        ableton = get_ableton_connection()
-        result = await ableton.send_command_async("get_browser_items_at_path", {"path": path})
+    ableton = get_ableton_connection()
+    result = await ableton.send_command_async("get_browser_items_at_path", {"path": path})
 
-        # Check if there was an error with available categories
-        if "error" in result and "available_categories" in result:
-            error = result.get("error", "")
-            available_cats = result.get("available_categories", [])
-            return f"Error: {error}\nAvailable browser categories: {', '.join(available_cats)}"
+    # Check if there was an error with available categories
+    if "error" in result and "available_categories" in result:
+        error = result.get("error", "")
+        available_cats = result.get("available_categories", [])
+        return f"Error: {error}\nAvailable browser categories: {', '.join(available_cats)}"
 
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        error_msg = str(e)
-        if "Browser is not available" in error_msg:
-            logger.error(f"Browser is not available in Ableton: {error_msg}")
-            return "Error: The Ableton browser is not available. Make sure Ableton Live is fully loaded and try again."
-        elif "Could not access Live application" in error_msg:
-            logger.error(f"Could not access Live application: {error_msg}")
-            return "Error: Could not access the Ableton Live application. Make sure Ableton Live is running and the Remote Script is loaded."
-        elif "Unknown or unavailable category" in error_msg:
-            logger.error(f"Invalid browser category: {error_msg}")
-            return (
-                f"Error: {error_msg}. Please check the available categories using get_browser_tree."
-            )
-        elif "Path part" in error_msg and "not found" in error_msg:
-            logger.error(f"Path not found: {error_msg}")
-            return f"Error: {error_msg}. Please check the path and try again."
-        else:
-            logger.error(f"Error getting browser items at path: {error_msg}")
-            return f"Error getting browser items at path: {error_msg}"
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
-async def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:
+@ableton_tool(error_prefix="Error loading drum kit")
+async def load_drum_kit(
+    ctx: Context, track_index: int, rack_uri: str, kit_path: str
+) -> str:
     """
     Load a drum rack and then load a specific drum kit into it.
 
@@ -1275,52 +1137,47 @@ async def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path:
     - rack_uri: The URI of the drum rack to load (e.g., 'Drums/Drum Rack')
     - kit_path: Path to the drum kit inside the browser (e.g., 'drums/acoustic/kit1')
     """
-    try:
-        ableton = get_ableton_connection()
+    ableton = get_ableton_connection()
+    # Step 1: Load the drum rack
+    result = await ableton.send_command_async(
+        "load_browser_item", {"track_index": track_index, "item_uri": rack_uri}
+    )
 
-        # Step 1: Load the drum rack
-        result = await ableton.send_command_async(
-            "load_browser_item", {"track_index": track_index, "item_uri": rack_uri}
+    if not result.get("loaded", False):
+        return (
+            f"Failed to load drum rack with URI '{rack_uri}'. "
+            f"Use get_browser_tree('drums') to find valid drum rack URIs."
         )
 
-        if not result.get("loaded", False):
-            return (
-                f"Failed to load drum rack with URI '{rack_uri}'. "
-                f"Use get_browser_tree('drums') to find valid drum rack URIs."
-            )
+    # Step 2: Get the drum kit items at the specified path
+    kit_result = await ableton.send_command_async(
+        "get_browser_items_at_path", {"path": kit_path}
+    )
 
-        # Step 2: Get the drum kit items at the specified path
-        kit_result = await ableton.send_command_async(
-            "get_browser_items_at_path", {"path": kit_path}
+    if "error" in kit_result:
+        return (
+            f"Loaded drum rack but failed to find drum kit at path '{kit_path}': "
+            f"{kit_result.get('error')}. Use get_browser_items_at_path() to explore available paths."
         )
 
-        if "error" in kit_result:
-            return (
-                f"Loaded drum rack but failed to find drum kit at path '{kit_path}': "
-                f"{kit_result.get('error')}. Use get_browser_items_at_path() to explore available paths."
-            )
+    # Step 3: Find a loadable drum kit
+    kit_items = kit_result.get("items", [])
+    loadable_kits = [item for item in kit_items if item.get("is_loadable", False)]
 
-        # Step 3: Find a loadable drum kit
-        kit_items = kit_result.get("items", [])
-        loadable_kits = [item for item in kit_items if item.get("is_loadable", False)]
-
-        if not loadable_kits:
-            available_items = [item.get("name", "unknown") for item in kit_items[:5]]
-            return (
-                f"Loaded drum rack but no loadable drum kits found at '{kit_path}'. "
-                f"Found {len(kit_items)} items: {', '.join(available_items)}{'...' if len(kit_items) > 5 else ''}"
-            )
-
-        # Step 4: Load the first loadable kit
-        kit_uri = loadable_kits[0].get("uri")
-        await ableton.send_command_async(
-            "load_browser_item", {"track_index": track_index, "item_uri": kit_uri}
+    if not loadable_kits:
+        available_items = [item.get("name", "unknown") for item in kit_items[:5]]
+        return (
+            f"Loaded drum rack but no loadable drum kits found at '{kit_path}'. "
+            f"Found {len(kit_items)} items: {', '.join(available_items)}{'...' if len(kit_items) > 5 else ''}"
         )
 
-        return f"Loaded drum rack and kit '{loadable_kits[0].get('name')}' on track {track_index}"
-    except Exception as e:
-        logger.error(f"Error loading drum kit: {str(e)}")
-        return f"Error loading drum kit: {str(e)}"
+    # Step 4: Load the first loadable kit
+    kit_uri = loadable_kits[0].get("uri")
+    await ableton.send_command_async(
+        "load_browser_item", {"track_index": track_index, "item_uri": kit_uri}
+    )
+
+    return f"Loaded drum rack and kit '{loadable_kits[0].get('name')}' on track {track_index}"
 
 
 # Main execution

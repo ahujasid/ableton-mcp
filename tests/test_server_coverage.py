@@ -579,7 +579,7 @@ class TestMCPToolSuccessPaths:
         """Test add_notes_to_clip success."""
         from MCP_Server.server import add_notes_to_clip
 
-        mock_ableton_connection.send_command_async.return_value = {}
+        mock_ableton_connection.send_command_async.return_value = {"note_count": 1}
 
         result = await add_notes_to_clip(MagicMock(), track_index=0, clip_index=0, notes=[{"pitch": 60}])
         assert "Added 1 notes" in result
@@ -589,7 +589,7 @@ class TestMCPToolSuccessPaths:
         """Test set_clip_name success."""
         from MCP_Server.server import set_clip_name
 
-        mock_ableton_connection.send_command_async.return_value = {}
+        mock_ableton_connection.send_command_async.return_value = {"name": "Clip Name"}
 
         result = await set_clip_name(MagicMock(), track_index=0, clip_index=0, name="Clip Name")
         assert "Clip Name" in result
@@ -599,7 +599,7 @@ class TestMCPToolSuccessPaths:
         """Test set_tempo success."""
         from MCP_Server.server import set_tempo
 
-        mock_ableton_connection.send_command_async.return_value = {}
+        mock_ableton_connection.send_command_async.return_value = {"tempo": 140.0}
 
         result = await set_tempo(MagicMock(), tempo=140.0)
         assert "140" in result
