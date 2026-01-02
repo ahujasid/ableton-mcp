@@ -110,34 +110,35 @@ class TestPingCommandInRemoteScript:
 
     def test_ping_handler_exists(self):
         """Verify ping command is handled in Remote Script."""
-        # Read the Remote Script source
-        remote_script_path = os.path.join(
+        session_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "session.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(session_path) as f:
             source = f.read()
 
-        # Should have ping handler
-        assert 'command_type == "ping"' in source
+        assert 'command_type = "ping"' in source, "ping command should be registered"
 
     def test_ping_returns_status_ok(self):
         """Verify ping returns correct response format."""
-        remote_script_path = os.path.join(
+        session_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "session.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(session_path) as f:
             source = f.read()
 
-        # Should return {"status": "ok"}
-        assert '"status": "ok"' in source or "'status': 'ok'" in source
+        # Verify PingCommand class exists and returns status ok
+        assert "class PingCommand" in source
+        assert '{"status": "ok"}' in source
 
 
 class TestConnectionErrorHandling:

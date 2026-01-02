@@ -78,33 +78,35 @@ class TestUndoRedoCommands:
 
     def test_undo_handler_exists_in_remote_script(self):
         """Verify undo command is handled in Remote Script."""
-        remote_script_path = os.path.join(
+        transport_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "transport.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(transport_path) as f:
             source = f.read()
 
-        assert 'command_type == "undo"' in source
-        assert "_undo" in source
+        assert 'command_type = "undo"' in source, "undo command should be registered"
+        assert "class UndoCommand" in source
 
     def test_redo_handler_exists_in_remote_script(self):
         """Verify redo command is handled in Remote Script."""
-        remote_script_path = os.path.join(
+        transport_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "transport.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(transport_path) as f:
             source = f.read()
 
-        assert 'command_type == "redo"' in source
-        assert "_redo" in source
+        assert 'command_type = "redo"' in source, "redo command should be registered"
+        assert "class RedoCommand" in source
 
 
 class TestDeleteTrackCommand:
@@ -142,18 +144,18 @@ class TestDeleteTrackCommand:
 
     def test_delete_track_handler_exists(self):
         """Verify delete_track is handled in Remote Script."""
-        remote_script_path = os.path.join(
+        tracks_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "tracks.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(tracks_path) as f:
             source = f.read()
 
-        assert 'command_type == "delete_track"' in source
-        assert "_delete_track" in source
+        assert 'command_type = "delete_track"' in source, "delete_track command should be registered"
 
 
 class TestCreateAudioTrackCommand:
@@ -191,18 +193,18 @@ class TestCreateAudioTrackCommand:
 
     def test_create_audio_track_handler_exists(self):
         """Verify create_audio_track is handled in Remote Script."""
-        remote_script_path = os.path.join(
+        tracks_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "tracks.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(tracks_path) as f:
             source = f.read()
 
-        assert 'command_type == "create_audio_track"' in source
-        assert "_create_audio_track" in source
+        assert 'command_type = "create_audio_track"' in source, "create_audio_track should be registered"
 
 
 class TestDeleteClipCommand:
@@ -228,18 +230,18 @@ class TestDeleteClipCommand:
 
     def test_delete_clip_handler_exists(self):
         """Verify delete_clip is handled in Remote Script."""
-        remote_script_path = os.path.join(
+        clips_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "clips.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(clips_path) as f:
             source = f.read()
 
-        assert 'command_type == "delete_clip"' in source
-        assert "_delete_clip" in source
+        assert 'command_type = "delete_clip"' in source, "delete_clip command should be registered"
 
 
 class TestSetMetronomeCommand:
@@ -275,18 +277,18 @@ class TestSetMetronomeCommand:
 
     def test_set_metronome_handler_exists(self):
         """Verify set_metronome is handled in Remote Script."""
-        remote_script_path = os.path.join(
+        transport_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "transport.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(transport_path) as f:
             source = f.read()
 
-        assert 'command_type == "set_metronome"' in source
-        assert "_set_metronome" in source
+        assert 'command_type = "set_metronome"' in source, "set_metronome command should be registered"
 
 
 class TestFireSceneCommand:
@@ -313,18 +315,18 @@ class TestFireSceneCommand:
 
     def test_fire_scene_handler_exists(self):
         """Verify fire_scene is handled in Remote Script."""
-        remote_script_path = os.path.join(
+        transport_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "transport.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(transport_path) as f:
             source = f.read()
 
-        assert 'command_type == "fire_scene"' in source
-        assert "_fire_scene" in source
+        assert 'command_type = "fire_scene"' in source, "fire_scene command should be registered"
 
 
 class TestTrackMuteSoloArmSetters:
@@ -441,19 +443,20 @@ class TestTrackMuteSoloArmSetters:
 
     def test_mute_solo_arm_handlers_exist(self):
         """Verify mute/solo/arm handlers exist in Remote Script."""
-        remote_script_path = os.path.join(
+        tracks_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "tracks.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(tracks_path) as f:
             source = f.read()
 
-        assert "_set_track_mute" in source
-        assert "_set_track_solo" in source
-        assert "_set_track_arm" in source
+        assert 'command_type = "set_track_mute"' in source, "set_track_mute should be registered"
+        assert 'command_type = "set_track_solo"' in source, "set_track_solo should be registered"
+        assert 'command_type = "set_track_arm"' in source, "set_track_arm should be registered"
 
 
 class TestTrackVolumePanSetters:
@@ -534,18 +537,19 @@ class TestTrackVolumePanSetters:
 
     def test_volume_pan_handlers_exist(self):
         """Verify volume/pan handlers exist in Remote Script."""
-        remote_script_path = os.path.join(
+        tracks_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "tracks.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(tracks_path) as f:
             source = f.read()
 
-        assert "_set_track_volume" in source
-        assert "_set_track_panning" in source
+        assert 'command_type = "set_track_volume"' in source, "set_track_volume should be registered"
+        assert 'command_type = "set_track_panning"' in source, "set_track_panning should be registered"
 
 
 class TestGetNotesFromClip:
@@ -618,18 +622,18 @@ class TestGetNotesFromClip:
 
     def test_get_notes_handler_exists(self):
         """Verify get_notes_from_clip is handled in Remote Script."""
-        remote_script_path = os.path.join(
+        session_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "session.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(session_path) as f:
             source = f.read()
 
-        assert 'command_type == "get_notes_from_clip"' in source
-        assert "_get_notes_from_clip" in source
+        assert 'command_type = "get_notes_from_clip"' in source, "get_notes_from_clip should be registered"
 
 
 class TestGetSceneInfo:
@@ -701,18 +705,18 @@ class TestGetSceneInfo:
 
     def test_get_scene_info_handler_exists(self):
         """Verify get_scene_info is handled in Remote Script."""
-        remote_script_path = os.path.join(
+        session_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "session.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(session_path) as f:
             source = f.read()
 
-        assert 'command_type == "get_scene_info"' in source
-        assert "_get_scene_info" in source
+        assert 'command_type = "get_scene_info"' in source, "get_scene_info should be registered"
 
 
 class TestModifyingCommandsList:
@@ -1035,14 +1039,15 @@ class TestVolumePanBoundaryClamping:
 
     def test_volume_clamping_exists_in_remote_script(self):
         """Verify volume clamping logic exists in Remote Script."""
-        remote_script_path = os.path.join(
+        tracks_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "tracks.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(tracks_path) as f:
             source = f.read()
 
         # Should have clamping logic for volume (0.0 to 1.0)
@@ -1050,14 +1055,15 @@ class TestVolumePanBoundaryClamping:
 
     def test_panning_clamping_exists_in_remote_script(self):
         """Verify panning clamping logic exists in Remote Script."""
-        remote_script_path = os.path.join(
+        tracks_path = os.path.join(
             os.path.dirname(__file__),
             "..",
             "AbletonMCP_Remote_Script",
-            "__init__.py",
+            "commands",
+            "tracks.py",
         )
 
-        with open(remote_script_path) as f:
+        with open(tracks_path) as f:
             source = f.read()
 
         # Should have clamping logic for pan (-1.0 to 1.0)

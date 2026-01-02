@@ -1,33 +1,43 @@
-# AbletonMCP/init.py
-from __future__ import absolute_import, print_function, unicode_literals
+"""
+AbletonMCP Remote Script for Ableton Live.
+
+This Remote Script connects Ableton Live to Claude AI through the Model Context
+Protocol (MCP). It creates a TCP socket server that receives commands from the
+MCP server and executes them within Ableton's Python runtime.
+
+Architecture:
+    Claude AI <-> MCP Server <-> TCP Socket (port 9877) <-> This Script <-> Ableton Live
+
+Commands are JSON objects with 'type' and 'params' fields. Responses contain
+'status' and 'result' or 'message'. State-modifying commands are automatically
+scheduled on Ableton's main thread via schedule_message.
+"""
 
 import json
+import queue
 import socket
 import threading
-import time
 import traceback
 
 from _Framework.ControlSurface import ControlSurface
 
-# Change queue import for Python 2
-try:
-    import Queue as queue  # Python 2
-except ImportError:
-    import queue  # Python 3
+from .commands import CommandContext, CommandRegistry
 
 # Constants for socket communication
 DEFAULT_PORT = 9877
 HOST = "localhost"
 
+
 def create_instance(c_instance):
-    """Create and return the AbletonMCP script instance"""
+    """Create and return the AbletonMCP script instance."""
     return AbletonMCP(c_instance)
 
+
 class AbletonMCP(ControlSurface):
-    """AbletonMCP Remote Script for Ableton Live"""
+    """AbletonMCP Remote Script for Ableton Live."""
 
     def __init__(self, c_instance):
-        """Initialize the control surface"""
+        """Initialize the control surface."""
         ControlSurface.__init__(self, c_instance)
         self.log_message("AbletonMCP Remote Script initializing...")
 
@@ -43,19 +53,16 @@ class AbletonMCP(ControlSurface):
         # Cache for browser URIs to avoid repeated tree traversal
         self._browser_uri_cache = {}
 
-        # Queue for pending cue point operations to handle parallel requests
-        self._pending_cue_ops = []
-
         # Start the socket server
         self.start_server()
 
         self.log_message("AbletonMCP initialized")
 
         # Show a message in Ableton
-        self.show_message("AbletonMCP: Listening for commands on port " + str(DEFAULT_PORT))
+        self.show_message(f"AbletonMCP: Listening for commands on port {DEFAULT_PORT}")
 
     def disconnect(self):
-        """Called when Ableton closes or the control surface is removed"""
+        """Called when Ableton closes or the control surface is removed."""
         self.log_message("AbletonMCP disconnecting...")
         self.running = False
 
@@ -64,9 +71,9 @@ class AbletonMCP(ControlSurface):
             try:
                 self.server.close()
             except socket.error as e:
-                self.log_message("Error closing server socket: {0}".format(str(e)))
+                self.log_message(f"Error closing server socket: {e}")
             except Exception as e:
-                self.log_message("Unexpected error closing server: {0}".format(str(e)))
+                self.log_message(f"Unexpected error closing server: {e}")
 
         # Wait for the server thread to exit
         if self.server_thread and self.server_thread.is_alive():
@@ -75,14 +82,13 @@ class AbletonMCP(ControlSurface):
         # Clean up any client threads
         for client_thread in self.client_threads[:]:
             if client_thread.is_alive():
-                # We don't join them as they might be stuck
                 self.log_message("Client thread still alive during disconnect")
 
         ControlSurface.disconnect(self)
         self.log_message("AbletonMCP disconnected")
 
     def start_server(self):
-        """Start the socket server in a separate thread"""
+        """Start the socket server in a separate thread."""
         try:
             self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -94,26 +100,23 @@ class AbletonMCP(ControlSurface):
             self.server_thread.daemon = True
             self.server_thread.start()
 
-            self.log_message("Server started on port " + str(DEFAULT_PORT))
+            self.log_message(f"Server started on port {DEFAULT_PORT}")
         except Exception as e:
-            self.log_message("Error starting server: " + str(e))
-            self.show_message("AbletonMCP: Error starting server - " + str(e))
+            self.log_message(f"Error starting server: {e}")
+            self.show_message(f"AbletonMCP: Error starting server - {e}")
 
     def _server_thread(self):
-        """Server thread implementation - handles client connections"""
+        """Server thread implementation - handles client connections."""
         try:
             self.log_message("Server thread started")
-            # Set a timeout to allow regular checking of running flag
             self.server.settimeout(1.0)
 
             while self.running:
                 try:
-                    # Accept connections with timeout
                     client, address = self.server.accept()
-                    self.log_message("Connection accepted from " + str(address))
+                    self.log_message(f"Connection accepted from {address}")
                     self.show_message("AbletonMCP: Client connected")
 
-                    # Handle client in a separate thread
                     client_thread = threading.Thread(
                         target=self._handle_client,
                         args=(client,)
@@ -121,308 +124,134 @@ class AbletonMCP(ControlSurface):
                     client_thread.daemon = True
                     client_thread.start()
 
-                    # Keep track of client threads
                     self.client_threads.append(client_thread)
-
-                    # Clean up finished client threads
                     self.client_threads = [t for t in self.client_threads if t.is_alive()]
 
                 except socket.timeout:
-                    # No connection yet, just continue
                     continue
                 except Exception as e:
-                    if self.running:  # Only log if still running
-                        self.log_message("Server accept error: " + str(e))
+                    if self.running:
+                        self.log_message(f"Server accept error: {e}")
+                    import time
                     time.sleep(0.5)
 
             self.log_message("Server thread stopped")
         except Exception as e:
-            self.log_message("Server thread error: " + str(e))
+            self.log_message(f"Server thread error: {e}")
 
     def _handle_client(self, client):
-        """Handle communication with a connected client"""
+        """Handle communication with a connected client."""
         self.log_message("Client handler started")
-        client.settimeout(None)  # No timeout for client socket
-        buffer = ''  # Changed from b'' to '' for Python 2
+        client.settimeout(None)
+        buffer = ""
 
         try:
             while self.running:
                 try:
-                    # Receive data
                     data = client.recv(8192)
 
                     if not data:
-                        # Client disconnected
                         self.log_message("Client disconnected")
                         break
 
-                    # Accumulate data in buffer with explicit encoding/decoding
-                    try:
-                        # Python 3: data is bytes, decode to string
-                        buffer += data.decode('utf-8')
-                    except AttributeError:
-                        # Python 2: data is already string
-                        buffer += data
+                    buffer += data.decode("utf-8")
 
                     try:
-                        # Try to parse command from buffer
-                        command = json.loads(buffer)  # Removed decode('utf-8')
-                        buffer = ''  # Clear buffer after successful parse
+                        command = json.loads(buffer)
+                        buffer = ""
 
-                        self.log_message("Received command: " + str(command.get("type", "unknown")))
+                        self.log_message(f"Received command: {command.get('type', 'unknown')}")
 
-                        # Process the command and get response
                         response = self._process_command(command)
 
-                        # Send the response with explicit encoding
-                        try:
-                            # Python 3: encode string to bytes
-                            client.sendall(json.dumps(response).encode('utf-8'))
-                        except AttributeError:
-                            # Python 2: string is already bytes
-                            client.sendall(json.dumps(response))
+                        client.sendall(json.dumps(response).encode("utf-8"))
                     except ValueError:
-                        # Incomplete data, wait for more
+                        # Incomplete JSON, wait for more data
                         continue
 
                 except Exception as e:
-                    self.log_message("Error handling client data: " + str(e))
+                    self.log_message(f"Error handling client data: {e}")
                     self.log_message(traceback.format_exc())
 
-                    # Send error response if possible
                     error_response = {
                         "status": "error",
-                        "message": str(e)
+                        "message": str(e),
                     }
                     try:
-                        # Python 3: encode string to bytes
-                        client.sendall(json.dumps(error_response).encode('utf-8'))
-                    except AttributeError:
-                        # Python 2: string is already bytes
-                        client.sendall(json.dumps(error_response))
+                        client.sendall(json.dumps(error_response).encode("utf-8"))
                     except Exception as send_error:
-                        # If we can't send the error, the connection is probably dead
-                        self.log_message("Failed to send error response: {0}".format(str(send_error)))
+                        self.log_message(f"Failed to send error response: {send_error}")
                         break
 
-                    # For serious errors, break the loop
                     if not isinstance(e, ValueError):
                         break
         except Exception as e:
-            self.log_message("Error in client handler: " + str(e))
+            self.log_message(f"Error in client handler: {e}")
         finally:
             try:
                 client.close()
             except socket.error as e:
-                self.log_message("Error closing client socket: {0}".format(str(e)))
+                self.log_message(f"Error closing client socket: {e}")
             except Exception as e:
-                self.log_message("Unexpected error closing client: {0}".format(str(e)))
+                self.log_message(f"Unexpected error closing client: {e}")
             self.log_message("Client handler stopped")
 
+    def _create_command_context(self) -> CommandContext:
+        """Create a CommandContext for executing commands."""
+        return CommandContext(
+            song=self._song,
+            application=self.application(),
+            log_message=self.log_message,
+            show_message=self.show_message,
+            schedule_message=self.schedule_message,
+            browser_uri_cache=self._browser_uri_cache,
+        )
+
     def _process_command(self, command):
-        """Process a command from the client and return a response"""
+        """Process a command from the client and return a response."""
         command_type = command.get("type", "")
         params = command.get("params", {})
 
-        # Initialize response
         response = {
             "status": "success",
-            "result": {}
+            "result": {},
         }
 
         try:
-            # Route the command to the appropriate handler
-            if command_type == "ping":
-                response["result"] = {"status": "ok"}
-            elif command_type == "get_session_info":
-                response["result"] = self._get_session_info()
-            elif command_type == "get_track_info":
-                track_index = params.get("track_index", 0)
-                response["result"] = self._get_track_info(track_index)
-            elif command_type == "get_notes_from_clip":
-                track_index = params.get("track_index", 0)
-                clip_index = params.get("clip_index", 0)
-                response["result"] = self._get_notes_from_clip(track_index, clip_index)
-            elif command_type == "get_scene_info":
-                scene_index = params.get("scene_index", 0)
-                response["result"] = self._get_scene_info(scene_index)
-            elif command_type == "get_arrangement_info":
-                response["result"] = self._get_arrangement_info()
-            elif command_type == "get_cue_points":
-                response["result"] = self._get_cue_points()
-            elif command_type == "get_arrangement_clips":
-                track_index = params.get("track_index", None)
-                response["result"] = self._get_arrangement_clips(track_index)
-            # Commands that modify Live's state should be scheduled on the main thread
-            # IMPORTANT: Keep in sync with is_modifying_command list in
-            # MCP_Server/server.py (lines ~112-150)
-            elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
-                                 "create_clip", "add_notes_to_clip", "set_clip_name",
-                                 "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item",
-                                 "undo", "redo", "delete_track", "delete_clip",
-                                 "set_metronome", "fire_scene",
-                                 "set_track_mute", "set_track_solo", "set_track_arm",
-                                 "set_track_volume", "set_track_panning",
-                                 "set_song_time", "set_loop_region", "set_loop_enabled",
-                                 "continue_playing", "jump_by_bars", "jump_to_cue_point",
-                                 "create_cue_point", "delete_cue_point",
-                                 "toggle_cue_at_playhead", "set_cue_point_name",
-                                 "jump_to_next_cue_point", "jump_to_prev_cue_point",
-                                 "duplicate_clip_to_arrangement",
-                                 "set_record_mode", "set_arrangement_overdub"]:
-                # Use a thread-safe approach with a response queue
+            # Look up the command in the registry
+            command_class = CommandRegistry.get(command_type)
+
+            if command_class is None:
+                response["status"] = "error"
+                response["message"] = f"Unknown command: {command_type}"
+                return response
+
+            # Create command instance
+            cmd = command_class()
+
+            # Create context for command execution
+            context = self._create_command_context()
+
+            # Check if command requires main thread execution
+            if cmd.requires_main_thread:
+                # Execute on main thread via queue
                 response_queue = queue.Queue()
 
-                # Define a function to execute on the main thread
                 def main_thread_task():
                     try:
-                        result = None
-                        if command_type == "create_midi_track":
-                            index = params.get("index", -1)
-                            result = self._create_midi_track(index)
-                        elif command_type == "set_track_name":
-                            track_index = params.get("track_index", 0)
-                            name = params.get("name", "")
-                            result = self._set_track_name(track_index, name)
-                        elif command_type == "create_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            length = params.get("length", 4.0)
-                            result = self._create_clip(track_index, clip_index, length)
-                        elif command_type == "add_notes_to_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            notes = params.get("notes", [])
-                            result = self._add_notes_to_clip(track_index, clip_index, notes)
-                        elif command_type == "set_clip_name":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            name = params.get("name", "")
-                            result = self._set_clip_name(track_index, clip_index, name)
-                        elif command_type == "set_tempo":
-                            tempo = params.get("tempo", 120.0)
-                            result = self._set_tempo(tempo)
-                        elif command_type == "fire_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            result = self._fire_clip(track_index, clip_index)
-                        elif command_type == "stop_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            result = self._stop_clip(track_index, clip_index)
-                        elif command_type == "start_playback":
-                            result = self._start_playback()
-                        elif command_type == "stop_playback":
-                            result = self._stop_playback()
-                        elif command_type == "load_browser_item":
-                            track_index = params.get("track_index", 0)
-                            item_uri = params.get("item_uri", "")
-                            result = self._load_browser_item(track_index, item_uri)
-                        elif command_type == "undo":
-                            result = self._undo()
-                        elif command_type == "redo":
-                            result = self._redo()
-                        elif command_type == "delete_track":
-                            track_index = params.get("track_index", 0)
-                            result = self._delete_track(track_index)
-                        elif command_type == "create_audio_track":
-                            index = params.get("index", -1)
-                            result = self._create_audio_track(index)
-                        elif command_type == "delete_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            result = self._delete_clip(track_index, clip_index)
-                        elif command_type == "set_metronome":
-                            enabled = params.get("enabled", True)
-                            result = self._set_metronome(enabled)
-                        elif command_type == "fire_scene":
-                            scene_index = params.get("scene_index", 0)
-                            result = self._fire_scene(scene_index)
-                        elif command_type == "set_track_mute":
-                            track_index = params.get("track_index", 0)
-                            muted = params.get("muted", False)
-                            result = self._set_track_mute(track_index, muted)
-                        elif command_type == "set_track_solo":
-                            track_index = params.get("track_index", 0)
-                            solo = params.get("solo", False)
-                            result = self._set_track_solo(track_index, solo)
-                        elif command_type == "set_track_arm":
-                            track_index = params.get("track_index", 0)
-                            armed = params.get("armed", False)
-                            result = self._set_track_arm(track_index, armed)
-                        elif command_type == "set_track_volume":
-                            track_index = params.get("track_index", 0)
-                            volume = params.get("volume", 0.85)
-                            result = self._set_track_volume(track_index, volume)
-                        elif command_type == "set_track_panning":
-                            track_index = params.get("track_index", 0)
-                            pan = params.get("pan", 0.0)
-                            result = self._set_track_panning(track_index, pan)
-                        elif command_type == "set_song_time":
-                            time = params.get("time", 0.0)
-                            result = self._set_song_time(time)
-                        elif command_type == "set_loop_region":
-                            start = params.get("start", 0.0)
-                            length = params.get("length", 4.0)
-                            result = self._set_loop_region(start, length)
-                        elif command_type == "set_loop_enabled":
-                            enabled = params.get("enabled", True)
-                            result = self._set_loop_enabled(enabled)
-                        elif command_type == "continue_playing":
-                            result = self._continue_playing()
-                        elif command_type == "jump_by_bars":
-                            bars = params.get("bars", 1)
-                            result = self._jump_by_bars(bars)
-                        elif command_type == "jump_to_cue_point":
-                            index = params.get("index", 0)
-                            result = self._jump_to_cue_point(index)
-                        elif command_type == "create_cue_point":
-                            time = params.get("time", 0.0)
-                            name = params.get("name", "")
-                            result = self._create_cue_point(time, name)
-                        elif command_type == "toggle_cue_at_playhead":
-                            result = self._toggle_cue_at_playhead()
-                        elif command_type == "set_cue_point_name":
-                            time = params.get("time", 0.0)
-                            name = params.get("name", "")
-                            result = self._set_cue_point_name(time, name)
-                        elif command_type == "delete_cue_point":
-                            index = params.get("index", 0)
-                            result = self._delete_cue_point(index)
-                        elif command_type == "jump_to_next_cue_point":
-                            result = self._jump_to_next_cue_point()
-                        elif command_type == "jump_to_prev_cue_point":
-                            result = self._jump_to_prev_cue_point()
-                        elif command_type == "duplicate_clip_to_arrangement":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            time = params.get("time", 0.0)
-                            result = self._duplicate_clip_to_arrangement(
-                                track_index, clip_index, time
-                            )
-                        elif command_type == "set_record_mode":
-                            enabled = params.get("enabled", False)
-                            result = self._set_record_mode(enabled)
-                        elif command_type == "set_arrangement_overdub":
-                            enabled = params.get("enabled", False)
-                            result = self._set_arrangement_overdub(enabled)
-
-                        # Put the result in the queue
+                        result = cmd.execute(context, params)
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
-                        self.log_message("Error in main thread task: " + str(e))
+                        self.log_message(f"Error in main thread task: {e}")
                         self.log_message(traceback.format_exc())
                         response_queue.put({"status": "error", "message": str(e)})
 
-                # Schedule the task to run on the main thread
                 try:
                     self.schedule_message(0, main_thread_task)
                 except AssertionError:
-                    # If we're already on the main thread, execute directly
+                    # Already on main thread
                     main_thread_task()
 
-                # Wait for the response with a timeout
                 try:
                     task_response = response_queue.get(timeout=10.0)
                     if task_response.get("status") == "error":
@@ -433,1701 +262,14 @@ class AbletonMCP(ControlSurface):
                 except queue.Empty:
                     response["status"] = "error"
                     response["message"] = "Timeout waiting for operation to complete"
-            elif command_type == "get_browser_item":
-                uri = params.get("uri", None)
-                path = params.get("path", None)
-                response["result"] = self._get_browser_item(uri, path)
-            elif command_type == "get_browser_categories":
-                category_type = params.get("category_type", "all")
-                response["result"] = self._get_browser_categories(category_type)
-            elif command_type == "get_browser_items":
-                path = params.get("path", "")
-                item_type = params.get("item_type", "all")
-                response["result"] = self._get_browser_items(path, item_type)
-            # Add the new browser commands
-            elif command_type == "get_browser_tree":
-                category_type = params.get("category_type", "all")
-                response["result"] = self.get_browser_tree(category_type)
-            elif command_type == "get_browser_items_at_path":
-                path = params.get("path", "")
-                response["result"] = self.get_browser_items_at_path(path)
             else:
-                response["status"] = "error"
-                response["message"] = "Unknown command: " + command_type
+                # Execute directly (read-only commands)
+                response["result"] = cmd.execute(context, params)
+
         except Exception as e:
-            self.log_message("Error processing command: " + str(e))
+            self.log_message(f"Error processing command: {e}")
             self.log_message(traceback.format_exc())
             response["status"] = "error"
             response["message"] = str(e)
 
         return response
-
-    # Command implementations
-
-    def _get_session_info(self):
-        """Get information about the current session"""
-        try:
-            result = {
-                "tempo": self._song.tempo,
-                "signature_numerator": self._song.signature_numerator,
-                "signature_denominator": self._song.signature_denominator,
-                "track_count": len(self._song.tracks),
-                "return_track_count": len(self._song.return_tracks),
-                "master_track": {
-                    "name": "Master",
-                    "volume": self._song.master_track.mixer_device.volume.value,
-                    "panning": self._song.master_track.mixer_device.panning.value
-                }
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error getting session info: " + str(e))
-            raise
-
-    def _get_track_info(self, track_index):
-        """Get information about a track"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track = self._song.tracks[track_index]
-
-            # Get clip slots
-            clip_slots = []
-            for slot_index, slot in enumerate(track.clip_slots):
-                clip_info = None
-                if slot.has_clip:
-                    clip = slot.clip
-                    clip_info = {
-                        "name": clip.name,
-                        "length": clip.length,
-                        "is_playing": clip.is_playing,
-                        "is_recording": clip.is_recording
-                    }
-
-                clip_slots.append({
-                    "index": slot_index,
-                    "has_clip": slot.has_clip,
-                    "clip": clip_info
-                })
-
-            # Get devices
-            devices = []
-            for device_index, device in enumerate(track.devices):
-                devices.append({
-                    "index": device_index,
-                    "name": device.name,
-                    "class_name": device.class_name,
-                    "type": self._get_device_type(device)
-                })
-
-            result = {
-                "index": track_index,
-                "name": track.name,
-                "is_audio_track": track.has_audio_input,
-                "is_midi_track": track.has_midi_input,
-                "mute": track.mute,
-                "solo": track.solo,
-                "arm": track.arm,
-                "volume": track.mixer_device.volume.value,
-                "panning": track.mixer_device.panning.value,
-                "clip_slots": clip_slots,
-                "devices": devices
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error getting track info: " + str(e))
-            raise
-
-    def _create_midi_track(self, index):
-        """Create a new MIDI track at the specified index"""
-        try:
-            # Create the track
-            self._song.create_midi_track(index)
-
-            # Get the new track
-            new_track_index = len(self._song.tracks) - 1 if index == -1 else index
-            new_track = self._song.tracks[new_track_index]
-
-            result = {
-                "index": new_track_index,
-                "name": new_track.name
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error creating MIDI track: " + str(e))
-            raise
-
-
-    def _set_track_name(self, track_index, name):
-        """Set the name of a track"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            # Set the name
-            track = self._song.tracks[track_index]
-            track.name = name
-
-            result = {
-                "name": track.name
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error setting track name: " + str(e))
-            raise
-
-    def _create_clip(self, track_index, clip_index, length):
-        """Create a new MIDI clip in the specified track and clip slot"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track = self._song.tracks[track_index]
-
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-
-            clip_slot = track.clip_slots[clip_index]
-
-            # Check if the clip slot already has a clip
-            if clip_slot.has_clip:
-                raise Exception("Clip slot already has a clip")
-
-            # Create the clip
-            clip_slot.create_clip(length)
-
-            result = {
-                "name": clip_slot.clip.name,
-                "length": clip_slot.clip.length
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error creating clip: " + str(e))
-            raise
-
-    def _add_notes_to_clip(self, track_index, clip_index, notes):
-        """Add MIDI notes to a clip"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track = self._song.tracks[track_index]
-
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-
-            clip_slot = track.clip_slots[clip_index]
-
-            if not clip_slot.has_clip:
-                raise Exception("No clip in slot")
-
-            clip = clip_slot.clip
-
-            # Convert note data to Live's format
-            live_notes = []
-            for note in notes:
-                pitch = note.get("pitch", 60)
-                start_time = note.get("start_time", 0.0)
-                duration = note.get("duration", 0.25)
-                velocity = note.get("velocity", 100)
-                mute = note.get("mute", False)
-
-                live_notes.append((pitch, start_time, duration, velocity, mute))
-
-            # Add the notes
-            clip.set_notes(tuple(live_notes))
-
-            result = {
-                "note_count": len(notes)
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error adding notes to clip: " + str(e))
-            raise
-
-    def _set_clip_name(self, track_index, clip_index, name):
-        """Set the name of a clip"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track = self._song.tracks[track_index]
-
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-
-            clip_slot = track.clip_slots[clip_index]
-
-            if not clip_slot.has_clip:
-                raise Exception("No clip in slot")
-
-            clip = clip_slot.clip
-            clip.name = name
-
-            result = {
-                "name": clip.name
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error setting clip name: " + str(e))
-            raise
-
-    def _set_tempo(self, tempo):
-        """Set the tempo of the session"""
-        try:
-            self._song.tempo = tempo
-
-            result = {
-                "tempo": self._song.tempo
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error setting tempo: " + str(e))
-            raise
-
-    def _fire_clip(self, track_index, clip_index):
-        """Fire a clip"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track = self._song.tracks[track_index]
-
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-
-            clip_slot = track.clip_slots[clip_index]
-
-            if not clip_slot.has_clip:
-                raise Exception("No clip in slot")
-
-            clip_slot.fire()
-
-            result = {
-                "fired": True
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error firing clip: " + str(e))
-            raise
-
-    def _stop_clip(self, track_index, clip_index):
-        """Stop a clip"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track = self._song.tracks[track_index]
-
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-
-            clip_slot = track.clip_slots[clip_index]
-
-            clip_slot.stop()
-
-            result = {
-                "stopped": True
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error stopping clip: " + str(e))
-            raise
-
-
-    def _start_playback(self):
-        """Start playing the session"""
-        try:
-            self._song.start_playing()
-
-            result = {
-                "playing": self._song.is_playing
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error starting playback: " + str(e))
-            raise
-
-    def _stop_playback(self):
-        """Stop playing the session"""
-        try:
-            self._song.stop_playing()
-
-            result = {
-                "playing": self._song.is_playing
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error stopping playback: " + str(e))
-            raise
-
-    def _undo(self):
-        """Undo the last action"""
-        try:
-            if self._song.can_undo:
-                self._song.undo()
-                return {"undone": True}
-            else:
-                return {"undone": False, "message": "Nothing to undo"}
-        except Exception as e:
-            self.log_message("Error in undo: " + str(e))
-            raise
-
-    def _redo(self):
-        """Redo the last undone action"""
-        try:
-            if self._song.can_redo:
-                self._song.redo()
-                return {"redone": True}
-            else:
-                return {"redone": False, "message": "Nothing to redo"}
-        except Exception as e:
-            self.log_message("Error in redo: " + str(e))
-            raise
-
-    def _delete_track(self, track_index):
-        """Delete a track at the specified index"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track_name = self._song.tracks[track_index].name
-            self._song.delete_track(track_index)
-
-            return {"deleted": True, "track_name": track_name}
-        except Exception as e:
-            self.log_message("Error deleting track: " + str(e))
-            raise
-
-    def _create_audio_track(self, index):
-        """Create a new audio track at the specified index"""
-        try:
-            self._song.create_audio_track(index)
-
-            new_track_index = len(self._song.tracks) - 1 if index == -1 else index
-            new_track = self._song.tracks[new_track_index]
-
-            return {
-                "index": new_track_index,
-                "name": new_track.name
-            }
-        except Exception as e:
-            self.log_message("Error creating audio track: " + str(e))
-            raise
-
-    def _delete_clip(self, track_index, clip_index):
-        """Delete a clip from a clip slot"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track = self._song.tracks[track_index]
-
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-
-            clip_slot = track.clip_slots[clip_index]
-
-            if not clip_slot.has_clip:
-                raise Exception("No clip in slot")
-
-            clip_name = clip_slot.clip.name
-            clip_slot.delete_clip()
-
-            return {"deleted": True, "clip_name": clip_name}
-        except Exception as e:
-            self.log_message("Error deleting clip: " + str(e))
-            raise
-
-    def _set_metronome(self, enabled):
-        """Enable or disable the metronome"""
-        try:
-            self._song.metronome = enabled
-            return {"metronome": self._song.metronome}
-        except Exception as e:
-            self.log_message("Error setting metronome: " + str(e))
-            raise
-
-    def _fire_scene(self, scene_index):
-        """Fire a scene (trigger all clips in a row)"""
-        try:
-            if scene_index < 0 or scene_index >= len(self._song.scenes):
-                raise IndexError("Scene index out of range")
-
-            scene = self._song.scenes[scene_index]
-            scene.fire()
-
-            return {"fired": True, "scene_name": scene.name, "scene_index": scene_index}
-        except Exception as e:
-            self.log_message("Error firing scene: " + str(e))
-            raise
-
-    def _set_track_mute(self, track_index, muted):
-        """Set track mute state"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
-            track.mute = muted
-            return {"mute": track.mute, "track_name": track.name}
-        except Exception as e:
-            self.log_message("Error setting track mute: " + str(e))
-            raise
-
-    def _set_track_solo(self, track_index, solo):
-        """Set track solo state"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
-            track.solo = solo
-            return {"solo": track.solo, "track_name": track.name}
-        except Exception as e:
-            self.log_message("Error setting track solo: " + str(e))
-            raise
-
-    def _set_track_arm(self, track_index, armed):
-        """Set track arm state"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
-            if track.can_be_armed:
-                track.arm = armed
-                return {"arm": track.arm, "track_name": track.name}
-            else:
-                return {"arm": False, "track_name": track.name, "message": "Track cannot be armed"}
-        except Exception as e:
-            self.log_message("Error setting track arm: " + str(e))
-            raise
-
-    def _set_track_volume(self, track_index, volume):
-        """Set track volume (0.0 to 1.0)"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
-            # Clamp volume to valid range
-            volume = max(0.0, min(1.0, volume))
-            track.mixer_device.volume.value = volume
-            return {"volume": track.mixer_device.volume.value, "track_name": track.name}
-        except Exception as e:
-            self.log_message("Error setting track volume: " + str(e))
-            raise
-
-    def _set_track_panning(self, track_index, pan):
-        """Set track panning (-1.0 to 1.0)"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
-            # Clamp pan to valid range
-            pan = max(-1.0, min(1.0, pan))
-            track.mixer_device.panning.value = pan
-            return {"panning": track.mixer_device.panning.value, "track_name": track.name}
-        except Exception as e:
-            self.log_message("Error setting track panning: " + str(e))
-            raise
-
-    def _get_notes_from_clip(self, track_index, clip_index):
-        """Get all notes from a clip"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track = self._song.tracks[track_index]
-
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-
-            clip_slot = track.clip_slots[clip_index]
-
-            if not clip_slot.has_clip:
-                raise Exception("No clip in slot")
-
-            clip = clip_slot.clip
-
-            # Get notes from the entire clip
-            # get_notes(start_time, start_pitch, time_span, pitch_span)
-            notes_tuple = clip.get_notes(0.0, 0, clip.length, 128)
-
-            notes = []
-            for note in notes_tuple:
-                notes.append({
-                    "pitch": note[0],
-                    "start_time": note[1],
-                    "duration": note[2],
-                    "velocity": note[3],
-                    "mute": note[4]
-                })
-
-            return {
-                "clip_name": clip.name,
-                "clip_length": clip.length,
-                "note_count": len(notes),
-                "notes": notes
-            }
-        except Exception as e:
-            self.log_message("Error getting notes from clip: " + str(e))
-            raise
-
-    def _get_scene_info(self, scene_index):
-        """Get information about a scene"""
-        try:
-            if scene_index < 0 or scene_index >= len(self._song.scenes):
-                raise IndexError("Scene index out of range")
-
-            scene = self._song.scenes[scene_index]
-
-            # Count clips in this scene
-            clip_count = 0
-            clips = []
-            for track_index, track in enumerate(self._song.tracks):
-                if scene_index < len(track.clip_slots):
-                    slot = track.clip_slots[scene_index]
-                    if slot.has_clip:
-                        clip_count += 1
-                        clips.append({
-                            "track_index": track_index,
-                            "track_name": track.name,
-                            "clip_name": slot.clip.name
-                        })
-
-            return {
-                "index": scene_index,
-                "name": scene.name,
-                "tempo": scene.tempo if hasattr(scene, 'tempo') else None,
-                "color": scene.color if hasattr(scene, 'color') else None,
-                "clip_count": clip_count,
-                "clips": clips
-            }
-        except Exception as e:
-            self.log_message("Error getting scene info: " + str(e))
-            raise
-
-    def _get_arrangement_info(self):
-        """Get arrangement view information"""
-        try:
-            result = {
-                "current_song_time": self._song.current_song_time,
-                "loop_start": self._song.loop_start,
-                "loop_length": self._song.loop_length,
-                "loop_enabled": self._song.loop,
-                "is_playing": self._song.is_playing,
-                "record_mode": self._song.record_mode,
-                "arrangement_overdub": self._song.arrangement_overdub,
-                "signature_numerator": self._song.signature_numerator,
-                "signature_denominator": self._song.signature_denominator
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error getting arrangement info: " + str(e))
-            raise
-
-    def _set_song_time(self, time):
-        """Set the song playhead position"""
-        try:
-            self._song.current_song_time = max(0.0, float(time))
-            return {
-                "current_song_time": self._song.current_song_time
-            }
-        except Exception as e:
-            self.log_message("Error setting song time: " + str(e))
-            raise
-
-    def _set_loop_region(self, start, length):
-        """Set the arrangement loop region"""
-        try:
-            self._song.loop_start = max(0.0, float(start))
-            self._song.loop_length = max(0.0, float(length))
-            return {
-                "loop_start": self._song.loop_start,
-                "loop_length": self._song.loop_length
-            }
-        except Exception as e:
-            self.log_message("Error setting loop region: " + str(e))
-            raise
-
-    def _set_loop_enabled(self, enabled):
-        """Enable or disable the arrangement loop"""
-        try:
-            self._song.loop = bool(enabled)
-            return {
-                "loop_enabled": self._song.loop
-            }
-        except Exception as e:
-            self.log_message("Error setting loop enabled: " + str(e))
-            raise
-
-    def _continue_playing(self):
-        """Continue playing from current position"""
-        try:
-            self._song.continue_playing()
-            return {
-                "is_playing": self._song.is_playing,
-                "current_song_time": self._song.current_song_time
-            }
-        except Exception as e:
-            self.log_message("Error continuing playback: " + str(e))
-            raise
-
-    def _jump_by_bars(self, bars):
-        """Jump playhead forward or backward by N bars"""
-        try:
-            beats_per_bar = self._song.signature_numerator
-            jump_beats = bars * beats_per_bar
-            new_time = max(0.0, self._song.current_song_time + jump_beats)
-            self._song.current_song_time = new_time
-            return {
-                "current_song_time": self._song.current_song_time,
-                "bars_jumped": bars
-            }
-        except Exception as e:
-            self.log_message("Error jumping by bars: " + str(e))
-            raise
-
-    def _get_cue_points(self):
-        """Get all cue points in the arrangement"""
-        try:
-            cue_points = []
-            for i, cue_point in enumerate(self._song.cue_points):
-                cue_points.append({
-                    "index": i,
-                    "name": cue_point.name,
-                    "time": cue_point.time
-                })
-            return {
-                "cue_points": cue_points,
-                "count": len(cue_points)
-            }
-        except Exception as e:
-            self.log_message("Error getting cue points: " + str(e))
-            raise
-
-    def _jump_to_cue_point(self, index):
-        """Jump to a cue point by index"""
-        try:
-            cue_points = list(self._song.cue_points)
-            if index < 0 or index >= len(cue_points):
-                raise IndexError("Cue point index out of range")
-            cue_point = cue_points[index]
-            cue_point.jump()
-            return {
-                "jumped_to": cue_point.name,
-                "time": cue_point.time
-            }
-        except Exception as e:
-            self.log_message("Error jumping to cue point: " + str(e))
-            raise
-
-    def _create_cue_point(self, time, name=""):
-        """Create a cue point at a specific time.
-
-        Note: The Ableton API's set_or_delete_cue() toggles cue points - if one
-        already exists at the target time, it would be deleted. This method
-        checks for existing cue points first to prevent accidental deletion.
-        """
-        try:
-            target_time = max(0.0, float(time))
-
-            # Pre-check: Look for existing cue point at target time
-            existing_cue_point = None
-            for cue_point in self._song.cue_points:
-                if abs(cue_point.time - target_time) < 0.001:
-                    existing_cue_point = cue_point
-                    break
-
-            if existing_cue_point:
-                # Cue point already exists at this time - update name if provided
-                if name:
-                    existing_cue_point.name = name
-                return {
-                    "created": False,
-                    "updated": True,
-                    "time": target_time,
-                    "name": existing_cue_point.name,
-                    "message": "Cue point already exists at this time; updated name" if name else "Cue point already exists at this time"
-                }
-
-            # Schedule both position set AND toggle on Ableton's main thread
-            # The socket handler thread may not be able to call set_or_delete_cue correctly
-            self._pending_cue_create = {"time": target_time, "name": name}
-            self.schedule_message(0, self._do_create_cue)
-            self.log_message("CUE CREATE: Scheduled for time {0}".format(target_time))
-
-            return {
-                "created": True,
-                "time": target_time,
-                "name": name if name else "",
-                "message": "Cue point creation scheduled"
-            }
-        except Exception as e:
-            self.log_message("Error creating cue point: " + str(e))
-            raise
-
-    def _toggle_cue_at_playhead(self):
-        """Toggle a cue point at the current playhead position.
-
-        This is a simple wrapper that just calls set_or_delete_cue().
-        The MCP server should move the playhead first before calling this.
-        """
-        try:
-            current_time = self._song.current_song_time
-            self.log_message("TOGGLE CUE: At playhead position {0}".format(current_time))
-
-            # Check if cue point exists at current position
-            existing = None
-            for cp in self._song.cue_points:
-                if abs(cp.time - current_time) < 0.001:
-                    existing = cp
-                    break
-
-            # Toggle
-            self._song.set_or_delete_cue()
-
-            if existing:
-                return {
-                    "toggled": True,
-                    "action": "deleted",
-                    "time": current_time,
-                    "message": "Deleted cue point at current position"
-                }
-            else:
-                return {
-                    "toggled": True,
-                    "action": "created",
-                    "time": current_time,
-                    "message": "Created cue point at current position"
-                }
-        except Exception as e:
-            self.log_message("Error toggling cue point: " + str(e))
-            raise
-
-    def _set_cue_point_name(self, time, name):
-        """Set the name of a cue point at a specific time."""
-        try:
-            target_time = float(time)
-            for cp in self._song.cue_points:
-                if abs(cp.time - target_time) < 0.001:
-                    cp.name = name
-                    return {
-                        "success": True,
-                        "time": target_time,
-                        "name": name,
-                        "message": "Cue point renamed"
-                    }
-            return {
-                "success": False,
-                "time": target_time,
-                "message": "No cue point found at this time"
-            }
-        except Exception as e:
-            self.log_message("Error setting cue point name: " + str(e))
-            raise
-
-    def _do_create_cue(self):
-        """Step 1: Set position on Ableton's main thread, then schedule toggle."""
-        try:
-            params = getattr(self, '_pending_cue_create', None)
-            if not params:
-                self.log_message("CUE CREATE STEP1: No params!")
-                return
-
-            target_time = params["time"]
-
-            # Set position on main thread
-            self._song.current_song_time = target_time
-            self.log_message("CUE CREATE STEP1: Position set to {0}, actual={1}".format(
-                target_time, self._song.current_song_time))
-
-            # Schedule toggle for next frame to give Ableton time to process
-            self.schedule_message(1, self._do_create_cue_toggle)
-
-        except Exception as e:
-            self.log_message("CUE CREATE STEP1 ERROR: " + str(e))
-
-    def _do_create_cue_toggle(self):
-        """Step 2: Toggle cue point after position has been set."""
-        try:
-            params = getattr(self, '_pending_cue_create', None)
-            if not params:
-                self.log_message("CUE CREATE STEP2: No params!")
-                return
-
-            target_time = params["time"]
-            name = params.get("name", "")
-
-            # Verify position
-            actual_pos = self._song.current_song_time
-            self.log_message("CUE CREATE STEP2: Position is {0}, target was {1}".format(
-                actual_pos, target_time))
-
-            # Toggle cue point
-            self._song.set_or_delete_cue()
-            self.log_message("CUE CREATE STEP2: Toggled")
-
-            # Set name if provided
-            if name:
-                for cp in self._song.cue_points:
-                    if abs(cp.time - target_time) < 0.001:
-                        cp.name = name
-                        self.log_message("CUE CREATE STEP2: Named '{0}'".format(name))
-                        break
-
-            self._pending_cue_create = None
-        except Exception as e:
-            self.log_message("CUE CREATE STEP2 ERROR: " + str(e))
-
-    def _process_cue_queue(self):
-        """Process the next item in the cue point operations queue.
-
-        Uses a two-step process to ensure position is set before toggling:
-        1. This callback sets the position and stores the pending action
-        2. _execute_cue_action callback executes the cue toggle
-        """
-        try:
-            if not self._pending_cue_ops:
-                self.log_message("CUE QUEUE: Empty, nothing to process")
-                return
-
-            # Pop the first operation
-            op = self._pending_cue_ops.pop(0)
-            action = op.get("action")
-            target_time = op.get("time")
-
-            self.log_message("CUE QUEUE: Processing {0} at {1}, remaining={2}".format(
-                action, target_time, len(self._pending_cue_ops)))
-
-            if action == "create":
-                # Check if cue point already exists (may have been created by earlier op)
-                exists = False
-                for cp in self._song.cue_points:
-                    if abs(cp.time - target_time) < 0.001:
-                        exists = True
-                        # Update name if needed
-                        if op.get("name"):
-                            cp.name = op["name"]
-                        self.log_message("CUE QUEUE: Already exists at {0}".format(target_time))
-                        break
-
-                if exists:
-                    # Skip to next item in queue
-                    if self._pending_cue_ops:
-                        self.schedule_message(1, self._process_cue_queue)
-                    return
-
-            elif action == "delete":
-                # Verify cue point still exists at target time
-                found = False
-                for cp in self._song.cue_points:
-                    if abs(cp.time - target_time) < 0.001:
-                        found = True
-                        break
-
-                if not found:
-                    self.log_message("CUE QUEUE: No cue point at {0} to delete".format(target_time))
-                    # Skip to next item in queue
-                    if self._pending_cue_ops:
-                        self.schedule_message(1, self._process_cue_queue)
-                    return
-
-            # Step 1: Set position
-            self._song.current_song_time = target_time
-            self.log_message("CUE QUEUE: Position set to {0}".format(target_time))
-
-            # Store pending action for step 2
-            self._cue_pending_action = op
-
-            # Step 2: Schedule the toggle action for next frame
-            self.schedule_message(1, self._execute_cue_action)
-
-        except Exception as e:
-            self.log_message("CUE QUEUE ERROR: " + str(e))
-            # Continue processing queue on error
-            if self._pending_cue_ops:
-                self.schedule_message(1, self._process_cue_queue)
-
-    def _execute_cue_action(self):
-        """Execute the pending cue action (step 2 of two-step process)."""
-        try:
-            op = getattr(self, '_cue_pending_action', None)
-            if not op:
-                self.log_message("CUE ACTION: No pending action")
-                return
-
-            action = op.get("action")
-            target_time = op.get("time")
-
-            # Verify position is correct
-            current_pos = self._song.current_song_time
-            if abs(current_pos - target_time) > 0.1:
-                self.log_message("CUE ACTION: Position drift! Expected {0}, got {1}".format(
-                    target_time, current_pos))
-                # Re-set position and retry
-                self._song.current_song_time = target_time
-                self.schedule_message(1, self._execute_cue_action)
-                return
-
-            # Execute the toggle
-            self._song.set_or_delete_cue()
-            self.log_message("CUE ACTION: Toggled at {0}".format(target_time))
-
-            # Set name if this was a create action
-            if action == "create":
-                cue_name = op.get("name", "")
-                if cue_name:
-                    for cp in self._song.cue_points:
-                        if abs(cp.time - target_time) < 0.001:
-                            cp.name = cue_name
-                            self.log_message("CUE ACTION: Named '{0}'".format(cue_name))
-                            break
-
-            # Clear pending action
-            self._cue_pending_action = None
-
-            # Process next item in queue
-            if self._pending_cue_ops:
-                self.schedule_message(1, self._process_cue_queue)
-
-        except Exception as e:
-            self.log_message("CUE ACTION ERROR: " + str(e))
-            self._cue_pending_action = None
-            # Continue processing queue on error
-            if self._pending_cue_ops:
-                self.schedule_message(1, self._process_cue_queue)
-
-    def _delete_cue_point(self, index):
-        """Delete a cue point by index."""
-        try:
-            cue_points = list(self._song.cue_points)
-            if index < 0 or index >= len(cue_points):
-                raise IndexError("Cue point index out of range")
-
-            cue_point = cue_points[index]
-            cue_name = cue_point.name
-            cue_time = cue_point.time
-
-            # Schedule both position set AND toggle on Ableton's main thread
-            self._pending_cue_delete = {"time": cue_time, "name": cue_name}
-            self.schedule_message(0, self._do_delete_cue)
-            self.log_message("CUE DELETE: Scheduled for time {0}".format(cue_time))
-
-            return {
-                "deleted": True,
-                "name": cue_name,
-                "time": cue_time,
-                "message": "Cue point deletion scheduled"
-            }
-        except Exception as e:
-            self.log_message("Error deleting cue point: " + str(e))
-            raise
-
-    def _do_delete_cue(self):
-        """Step 1: Set position on Ableton's main thread, then schedule toggle."""
-        try:
-            params = getattr(self, '_pending_cue_delete', None)
-            if not params:
-                self.log_message("CUE DELETE STEP1: No params!")
-                return
-
-            target_time = params["time"]
-
-            # Set position on main thread
-            self._song.current_song_time = target_time
-            self.log_message("CUE DELETE STEP1: Position set to {0}, actual={1}".format(
-                target_time, self._song.current_song_time))
-
-            # Schedule toggle for next frame
-            self.schedule_message(1, self._do_delete_cue_toggle)
-
-        except Exception as e:
-            self.log_message("CUE DELETE STEP1 ERROR: " + str(e))
-
-    def _do_delete_cue_toggle(self):
-        """Step 2: Toggle cue point after position has been set."""
-        try:
-            params = getattr(self, '_pending_cue_delete', None)
-            if not params:
-                self.log_message("CUE DELETE STEP2: No params!")
-                return
-
-            target_time = params["time"]
-
-            # Verify position
-            actual_pos = self._song.current_song_time
-            self.log_message("CUE DELETE STEP2: Position is {0}, target was {1}".format(
-                actual_pos, target_time))
-
-            # Toggle cue point (should delete)
-            self._song.set_or_delete_cue()
-            self.log_message("CUE DELETE STEP2: Toggled")
-
-            self._pending_cue_delete = None
-        except Exception as e:
-            self.log_message("CUE DELETE STEP2 ERROR: " + str(e))
-
-    def _jump_to_next_cue_point(self):
-        """Jump to the next cue point after current song time"""
-        try:
-            current_time = self._song.current_song_time
-            cue_points = list(self._song.cue_points)
-
-            # Sort by time and find the first one after current time
-            sorted_cues = sorted(cue_points, key=lambda c: c.time)
-            next_cue = None
-            for cue in sorted_cues:
-                if cue.time > current_time + 0.001:  # Small tolerance
-                    next_cue = cue
-                    break
-
-            if next_cue is None:
-                return {
-                    "jumped": False,
-                    "message": "No cue point after current position"
-                }
-
-            next_cue.jump()
-            return {
-                "jumped": True,
-                "name": next_cue.name,
-                "time": next_cue.time
-            }
-        except Exception as e:
-            self.log_message("Error jumping to next cue point: " + str(e))
-            raise
-
-    def _jump_to_prev_cue_point(self):
-        """Jump to the previous cue point before current song time"""
-        try:
-            current_time = self._song.current_song_time
-            cue_points = list(self._song.cue_points)
-
-            # Sort by time descending and find the first one before current time
-            sorted_cues = sorted(cue_points, key=lambda c: c.time, reverse=True)
-            prev_cue = None
-            for cue in sorted_cues:
-                if cue.time < current_time - 0.001:  # Small tolerance
-                    prev_cue = cue
-                    break
-
-            if prev_cue is None:
-                return {
-                    "jumped": False,
-                    "message": "No cue point before current position"
-                }
-
-            prev_cue.jump()
-            return {
-                "jumped": True,
-                "name": prev_cue.name,
-                "time": prev_cue.time
-            }
-        except Exception as e:
-            self.log_message("Error jumping to previous cue point: " + str(e))
-            raise
-
-    def _set_record_mode(self, enabled):
-        """Enable or disable global record mode"""
-        try:
-            self._song.record_mode = bool(enabled)
-            return {
-                "record_mode": self._song.record_mode
-            }
-        except Exception as e:
-            self.log_message("Error setting record mode: " + str(e))
-            raise
-
-    def _set_arrangement_overdub(self, enabled):
-        """Enable or disable arrangement overdub"""
-        try:
-            self._song.arrangement_overdub = bool(enabled)
-            return {
-                "arrangement_overdub": self._song.arrangement_overdub
-            }
-        except Exception as e:
-            self.log_message("Error setting arrangement overdub: " + str(e))
-            raise
-
-    def _duplicate_clip_to_arrangement(self, track_index, clip_index, time):
-        """Duplicate a session clip to the arrangement at a specific time"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track = self._song.tracks[track_index]
-
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-
-            clip_slot = track.clip_slots[clip_index]
-
-            if not clip_slot.has_clip:
-                raise Exception("No clip in slot")
-
-            clip_name = clip_slot.clip.name
-            clip_length = clip_slot.clip.length
-
-            # Duplicate the clip to the arrangement
-            track.duplicate_clip_to_arrangement(clip_index, float(time))
-
-            return {
-                "duplicated": True,
-                "clip_name": clip_name,
-                "destination_time": time,
-                "clip_length": clip_length,
-                "track_name": track.name
-            }
-        except Exception as e:
-            self.log_message("Error duplicating clip to arrangement: " + str(e))
-            raise
-
-    def _get_arrangement_clips(self, track_index=None):
-        """Get clips from the arrangement view.
-
-        Returns clip metadata including name, position, length, and type.
-        Note: Uses 'arrangement_clips' attribute which may not be available
-        in all Ableton versions.
-        """
-        try:
-            result = {
-                "tracks": [],
-                "total_clips": 0
-            }
-
-            # Determine which tracks to process
-            if track_index is not None:
-                if track_index < 0 or track_index >= len(self._song.tracks):
-                    raise IndexError("Track index out of range")
-                tracks_to_process = [(track_index, self._song.tracks[track_index])]
-            else:
-                tracks_to_process = list(enumerate(self._song.tracks))
-
-            for idx, track in tracks_to_process:
-                track_clips = []
-                arrangement_clips_supported = hasattr(track, 'arrangement_clips')
-
-                if not arrangement_clips_supported:
-                    self.log_message("Warning: track '{0}' does not support arrangement_clips API".format(track.name))
-                elif track.arrangement_clips:
-                    for clip in track.arrangement_clips:
-                        clip_info = {
-                            "name": clip.name,
-                            "length": clip.length,
-                            "is_midi_clip": clip.is_midi_clip,
-                            "is_audio_clip": clip.is_audio_clip,
-                        }
-
-                        # Handle optional attributes with logging
-                        if hasattr(clip, 'start_time'):
-                            clip_info["start_time"] = clip.start_time
-                        else:
-                            clip_info["start_time"] = 0.0
-
-                        if hasattr(clip, 'end_time'):
-                            clip_info["end_time"] = clip.end_time
-                        else:
-                            clip_info["end_time"] = 0.0
-
-                        if hasattr(clip, 'color'):
-                            clip_info["color"] = clip.color
-                        else:
-                            clip_info["color"] = None
-
-                        track_clips.append(clip_info)
-
-                result["tracks"].append({
-                    "track_index": idx,
-                    "track_name": track.name,
-                    "clips": track_clips,
-                    "clip_count": len(track_clips)
-                })
-                result["total_clips"] += len(track_clips)
-
-            return result
-        except Exception as e:
-            self.log_message("Error getting arrangement clips: " + str(e))
-            raise
-
-    def _get_browser_item(self, uri, path):
-        """Get a browser item by URI or path"""
-        try:
-            # Access the application's browser instance instead of creating a new one
-            app = self.application()
-            if not app:
-                raise RuntimeError("Could not access Live application")
-
-            result = {
-                "uri": uri,
-                "path": path,
-                "found": False
-            }
-
-            # Try to find by URI first if provided
-            if uri:
-                item = self._find_browser_item_by_uri(app.browser, uri)
-                if item:
-                    result["found"] = True
-                    result["item"] = {
-                        "name": item.name,
-                        "is_folder": item.is_folder,
-                        "is_device": item.is_device,
-                        "is_loadable": item.is_loadable,
-                        "uri": item.uri
-                    }
-                    return result
-
-            # If URI not provided or not found, try by path
-            if path:
-                # Parse the path and navigate to the specified item
-                path_parts = path.split("/")
-
-                # Determine the root based on the first part
-                current_item = None
-                if path_parts[0].lower() == "nstruments":
-                    current_item = app.browser.instruments
-                elif path_parts[0].lower() == "sounds":
-                    current_item = app.browser.sounds
-                elif path_parts[0].lower() == "drums":
-                    current_item = app.browser.drums
-                elif path_parts[0].lower() == "audio_effects":
-                    current_item = app.browser.audio_effects
-                elif path_parts[0].lower() == "midi_effects":
-                    current_item = app.browser.midi_effects
-                else:
-                    # Default to instruments if not specified
-                    current_item = app.browser.instruments
-                    # Don't skip the first part in this case
-                    path_parts = ["instruments"] + path_parts
-
-                # Navigate through the path
-                for i in range(1, len(path_parts)):
-                    part = path_parts[i]
-                    if not part:  # Skip empty parts
-                        continue
-
-                    found = False
-                    for child in current_item.children:
-                        if child.name.lower() == part.lower():
-                            current_item = child
-                            found = True
-                            break
-
-                    if not found:
-                        result["error"] = "Path part '{0}' not found".format(part)
-                        return result
-
-                # Found the item
-                result["found"] = True
-                result["item"] = {
-                    "name": current_item.name,
-                    "is_folder": current_item.is_folder,
-                    "is_device": current_item.is_device,
-                    "is_loadable": current_item.is_loadable,
-                    "uri": current_item.uri
-                }
-
-            return result
-        except Exception as e:
-            self.log_message("Error getting browser item: " + str(e))
-            self.log_message(traceback.format_exc())
-            raise
-
-
-
-    def _load_browser_item(self, track_index, item_uri):
-        """Load a browser item onto a track by its URI"""
-        try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track = self._song.tracks[track_index]
-
-            # Access the application's browser instance instead of creating a new one
-            app = self.application()
-
-            # Find the browser item by URI
-            item = self._find_browser_item_by_uri(app.browser, item_uri)
-
-            if not item:
-                raise ValueError("Browser item with URI '{0}' not found".format(item_uri))
-
-            # Select the track
-            self._song.view.selected_track = track
-
-            # Load the item
-            app.browser.load_item(item)
-
-            result = {
-                "loaded": True,
-                "item_name": item.name,
-                "track_name": track.name,
-                "uri": item_uri
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error loading browser item: {0}".format(str(e)))
-            self.log_message(traceback.format_exc())
-            raise
-
-    def _populate_browser_cache(self, browser_or_item, max_depth=10, current_depth=0):
-        """Populate the URI cache from browser tree"""
-        try:
-            if current_depth >= max_depth:
-                return
-
-            # Add this item to cache if it has a URI
-            if hasattr(browser_or_item, 'uri') and browser_or_item.uri:
-                self._browser_uri_cache[browser_or_item.uri] = browser_or_item
-
-            # Check if this is a browser with root categories
-            if hasattr(browser_or_item, 'instruments'):
-                categories = [
-                    browser_or_item.instruments,
-                    browser_or_item.sounds,
-                    browser_or_item.drums,
-                    browser_or_item.audio_effects,
-                    browser_or_item.midi_effects
-                ]
-                for category in categories:
-                    self._populate_browser_cache(category, max_depth, current_depth + 1)
-                return
-
-            # Recurse into children
-            if hasattr(browser_or_item, 'children') and browser_or_item.children:
-                for child in browser_or_item.children:
-                    self._populate_browser_cache(child, max_depth, current_depth + 1)
-        except Exception as e:
-            self.log_message("Error populating browser cache: {0}".format(str(e)))
-
-    def _clear_browser_cache(self):
-        """Clear the browser URI cache"""
-        self._browser_uri_cache = {}
-        self.log_message("Browser URI cache cleared")
-
-    def _find_browser_item_by_uri(self, browser_or_item, uri, max_depth=10, current_depth=0):
-        """Find a browser item by its URI, using cache for O(1) lookup"""
-        try:
-            # Check cache first
-            if uri in self._browser_uri_cache:
-                return self._browser_uri_cache[uri]
-
-            # Cache miss - populate cache if empty
-            if not self._browser_uri_cache and hasattr(browser_or_item, 'instruments'):
-                self.log_message("Populating browser URI cache...")
-                self._populate_browser_cache(browser_or_item)
-                self.log_message("Browser cache populated with {0} items".format(len(self._browser_uri_cache)))
-
-                # Try cache again
-                if uri in self._browser_uri_cache:
-                    return self._browser_uri_cache[uri]
-
-            # Fall back to original traversal for items not in cache
-            if hasattr(browser_or_item, 'uri') and browser_or_item.uri == uri:
-                return browser_or_item
-
-            if current_depth >= max_depth:
-                return None
-
-            if hasattr(browser_or_item, 'instruments'):
-                categories = [
-                    browser_or_item.instruments,
-                    browser_or_item.sounds,
-                    browser_or_item.drums,
-                    browser_or_item.audio_effects,
-                    browser_or_item.midi_effects
-                ]
-                for category in categories:
-                    item = self._find_browser_item_by_uri(category, uri, max_depth, current_depth + 1)
-                    if item:
-                        self._browser_uri_cache[uri] = item  # Cache the find
-                        return item
-                return None
-
-            if hasattr(browser_or_item, 'children') and browser_or_item.children:
-                for child in browser_or_item.children:
-                    item = self._find_browser_item_by_uri(child, uri, max_depth, current_depth + 1)
-                    if item:
-                        self._browser_uri_cache[uri] = item  # Cache the find
-                        return item
-
-            return None
-        except (AttributeError, TypeError) as e:
-            # Expected errors during browser traversal (missing attributes, wrong types)
-            self.log_message("Browser traversal issue for URI {0}: {1}".format(uri, str(e)))
-            return None
-
-    # Helper methods
-
-    def _get_device_type(self, device):
-        """Get the type of a device"""
-        try:
-            # Simple heuristic - in a real implementation you'd look at the device class
-            if device.can_have_drum_pads:
-                return "drum_machine"
-            elif device.can_have_chains:
-                return "rack"
-            elif "instrument" in device.class_display_name.lower():
-                return "instrument"
-            elif "audio_effect" in device.class_name.lower():
-                return "audio_effect"
-            elif "midi_effect" in device.class_name.lower():
-                return "midi_effect"
-            else:
-                return "unknown"
-        except Exception as e:
-            self.log_message("Error determining device type: {0}".format(str(e)))
-            return "unknown"
-
-    def get_browser_tree(self, category_type="all"):
-        """
-        Get a simplified tree of browser categories.
-        
-        Args:
-            category_type: Type of categories to get ('all', 'instruments', 'sounds', etc.)
-            
-        Returns:
-            Dictionary with the browser tree structure
-        """
-        try:
-            # Access the application's browser instance instead of creating a new one
-            app = self.application()
-            if not app:
-                raise RuntimeError("Could not access Live application")
-
-            # Check if browser is available
-            if not hasattr(app, 'browser') or app.browser is None:
-                raise RuntimeError("Browser is not available in the Live application")
-
-            # Log available browser attributes to help diagnose issues
-            browser_attrs = [attr for attr in dir(app.browser) if not attr.startswith('_')]
-            self.log_message("Available browser attributes: {0}".format(browser_attrs))
-
-            result = {
-                "type": category_type,
-                "categories": [],
-                "available_categories": browser_attrs,
-                "failed_categories": []
-            }
-
-            # Helper function to process a browser item and its children
-            def process_item(item, depth=0):
-                if not item:
-                    return None
-
-                result = {
-                    "name": item.name if hasattr(item, 'name') else "Unknown",
-                    "is_folder": hasattr(item, 'children') and bool(item.children),
-                    "is_device": hasattr(item, 'is_device') and item.is_device,
-                    "is_loadable": hasattr(item, 'is_loadable') and item.is_loadable,
-                    "uri": item.uri if hasattr(item, 'uri') else None,
-                    "children": []
-                }
-
-
-                return result
-
-            # Process based on category type and available attributes
-            if (category_type == "all" or category_type == "instruments") and hasattr(app.browser, 'instruments'):
-                try:
-                    instruments = process_item(app.browser.instruments)
-                    if instruments:
-                        instruments["name"] = "Instruments"  # Ensure consistent naming
-                        result["categories"].append(instruments)
-                except Exception as e:
-                    self.log_message("Error processing instruments: {0}".format(str(e)))
-                    result["failed_categories"].append("instruments")
-
-            if (category_type == "all" or category_type == "sounds") and hasattr(app.browser, 'sounds'):
-                try:
-                    sounds = process_item(app.browser.sounds)
-                    if sounds:
-                        sounds["name"] = "Sounds"  # Ensure consistent naming
-                        result["categories"].append(sounds)
-                except Exception as e:
-                    self.log_message("Error processing sounds: {0}".format(str(e)))
-                    result["failed_categories"].append("sounds")
-
-            if (category_type == "all" or category_type == "drums") and hasattr(app.browser, 'drums'):
-                try:
-                    drums = process_item(app.browser.drums)
-                    if drums:
-                        drums["name"] = "Drums"  # Ensure consistent naming
-                        result["categories"].append(drums)
-                except Exception as e:
-                    self.log_message("Error processing drums: {0}".format(str(e)))
-                    result["failed_categories"].append("drums")
-
-            if (category_type == "all" or category_type == "audio_effects") and hasattr(app.browser, 'audio_effects'):
-                try:
-                    audio_effects = process_item(app.browser.audio_effects)
-                    if audio_effects:
-                        audio_effects["name"] = "Audio Effects"  # Ensure consistent naming
-                        result["categories"].append(audio_effects)
-                except Exception as e:
-                    self.log_message("Error processing audio_effects: {0}".format(str(e)))
-                    result["failed_categories"].append("audio_effects")
-
-            if (category_type == "all" or category_type == "midi_effects") and hasattr(app.browser, 'midi_effects'):
-                try:
-                    midi_effects = process_item(app.browser.midi_effects)
-                    if midi_effects:
-                        midi_effects["name"] = "MIDI Effects"
-                        result["categories"].append(midi_effects)
-                except Exception as e:
-                    self.log_message("Error processing midi_effects: {0}".format(str(e)))
-                    result["failed_categories"].append("midi_effects")
-
-            # Try to process other potentially available categories
-            for attr in browser_attrs:
-                if attr not in ['instruments', 'sounds', 'drums', 'audio_effects', 'midi_effects'] and \
-                   (category_type == "all" or category_type == attr):
-                    try:
-                        item = getattr(app.browser, attr)
-                        if hasattr(item, 'children') or hasattr(item, 'name'):
-                            category = process_item(item)
-                            if category:
-                                category["name"] = attr.capitalize()
-                                result["categories"].append(category)
-                    except Exception as e:
-                        self.log_message("Error processing {0}: {1}".format(attr, str(e)))
-                        result["failed_categories"].append(attr)
-
-            self.log_message("Browser tree generated for {0} with {1} root categories".format(
-                category_type, len(result['categories'])))
-
-            # Add warning if some categories failed
-            if result["failed_categories"]:
-                result["warning"] = "Some categories failed to load: {0}".format(
-                    ", ".join(result["failed_categories"]))
-            return result
-
-        except Exception as e:
-            self.log_message("Error getting browser tree: {0}".format(str(e)))
-            self.log_message(traceback.format_exc())
-            raise
-
-    def get_browser_items_at_path(self, path):
-        """
-        Get browser items at a specific path.
-        
-        Args:
-            path: Path in the format "category/folder/subfolder"
-                 where category is one of: instruments, sounds, drums, audio_effects, midi_effects
-                 or any other available browser category
-                 
-        Returns:
-            Dictionary with items at the specified path
-        """
-        try:
-            # Access the application's browser instance instead of creating a new one
-            app = self.application()
-            if not app:
-                raise RuntimeError("Could not access Live application")
-
-            # Check if browser is available
-            if not hasattr(app, 'browser') or app.browser is None:
-                raise RuntimeError("Browser is not available in the Live application")
-
-            # Log available browser attributes to help diagnose issues
-            browser_attrs = [attr for attr in dir(app.browser) if not attr.startswith('_')]
-            self.log_message("Available browser attributes: {0}".format(browser_attrs))
-
-            # Parse the path
-            path_parts = path.split("/")
-            if not path_parts:
-                raise ValueError("Invalid path")
-
-            # Determine the root category
-            root_category = path_parts[0].lower()
-            current_item = None
-
-            # Check standard categories first
-            if root_category == "instruments" and hasattr(app.browser, 'instruments'):
-                current_item = app.browser.instruments
-            elif root_category == "sounds" and hasattr(app.browser, 'sounds'):
-                current_item = app.browser.sounds
-            elif root_category == "drums" and hasattr(app.browser, 'drums'):
-                current_item = app.browser.drums
-            elif root_category == "audio_effects" and hasattr(app.browser, 'audio_effects'):
-                current_item = app.browser.audio_effects
-            elif root_category == "midi_effects" and hasattr(app.browser, 'midi_effects'):
-                current_item = app.browser.midi_effects
-            else:
-                # Try to find the category in other browser attributes
-                found = False
-                for attr in browser_attrs:
-                    if attr.lower() == root_category:
-                        try:
-                            current_item = getattr(app.browser, attr)
-                            found = True
-                            break
-                        except Exception as e:
-                            self.log_message("Error accessing browser attribute {0}: {1}".format(attr, str(e)))
-
-                if not found:
-                    # If we still haven't found the category, return available categories
-                    return {
-                        "path": path,
-                        "error": "Unknown or unavailable category: {0}".format(root_category),
-                        "available_categories": browser_attrs,
-                        "items": []
-                    }
-
-            # Navigate through the path
-            for i in range(1, len(path_parts)):
-                part = path_parts[i]
-                if not part:  # Skip empty parts
-                    continue
-
-                if not hasattr(current_item, 'children'):
-                    return {
-                        "path": path,
-                        "error": "Item at '{0}' has no children".format('/'.join(path_parts[:i])),
-                        "items": []
-                    }
-
-                found = False
-                for child in current_item.children:
-                    if hasattr(child, 'name') and child.name.lower() == part.lower():
-                        current_item = child
-                        found = True
-                        break
-
-                if not found:
-                    return {
-                        "path": path,
-                        "error": "Path part '{0}' not found".format(part),
-                        "items": []
-                    }
-
-            # Get items at the current path
-            items = []
-            if hasattr(current_item, 'children'):
-                for child in current_item.children:
-                    item_info = {
-                        "name": child.name if hasattr(child, 'name') else "Unknown",
-                        "is_folder": hasattr(child, 'children') and bool(child.children),
-                        "is_device": hasattr(child, 'is_device') and child.is_device,
-                        "is_loadable": hasattr(child, 'is_loadable') and child.is_loadable,
-                        "uri": child.uri if hasattr(child, 'uri') else None
-                    }
-                    items.append(item_info)
-
-            result = {
-                "path": path,
-                "name": current_item.name if hasattr(current_item, 'name') else "Unknown",
-                "uri": current_item.uri if hasattr(current_item, 'uri') else None,
-                "is_folder": hasattr(current_item, 'children') and bool(current_item.children),
-                "is_device": hasattr(current_item, 'is_device') and current_item.is_device,
-                "is_loadable": hasattr(current_item, 'is_loadable') and current_item.is_loadable,
-                "items": items
-            }
-
-            self.log_message("Retrieved {0} items at path: {1}".format(len(items), path))
-            return result
-
-        except Exception as e:
-            self.log_message("Error getting browser items at path: {0}".format(str(e)))
-            self.log_message(traceback.format_exc())
-            raise
