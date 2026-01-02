@@ -10,3 +10,6 @@ wheels/
 .venv
 .DS_Store
 .worktrees/
+
+# Test coverage
+.coverage
