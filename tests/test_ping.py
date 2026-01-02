@@ -14,9 +14,7 @@ class TestPingCommand:
 
     def test_ping_command_returns_ok(self, mock_tcp_server):
         """Test that ping command returns success status."""
-        mock_tcp_server.set_response(
-            "ping", {"status": "success", "result": {"status": "ok"}}
-        )
+        mock_tcp_server.set_response("ping", {"status": "success", "result": {"status": "ok"}})
 
         from MCP_Server.server import AbletonConnection
 
@@ -29,9 +27,7 @@ class TestPingCommand:
         """Test that ping command is fast and lightweight."""
         import time
 
-        mock_tcp_server.set_response(
-            "ping", {"status": "success", "result": {"status": "ok"}}
-        )
+        mock_tcp_server.set_response("ping", {"status": "success", "result": {"status": "ok"}})
 
         from MCP_Server.server import AbletonConnection
 
@@ -62,9 +58,7 @@ class TestConnectionHealthCheck:
 
     def test_valid_connection_passes_ping(self, mock_tcp_server):
         """Test that valid connection passes ping health check."""
-        mock_tcp_server.set_response(
-            "ping", {"status": "success", "result": {"status": "ok"}}
-        )
+        mock_tcp_server.set_response("ping", {"status": "success", "result": {"status": "ok"}})
         mock_tcp_server.set_response(
             "get_session_info",
             {"status": "success", "result": {"tempo": 120.0}},
@@ -76,18 +70,20 @@ class TestConnectionHealthCheck:
 
         MCP_Server.server._ableton_connection = None
 
-        with patch.object(
-            AbletonConnection,
-            "__init__",
-            lambda self, host, port: setattr(self, "host", host)
-            or setattr(self, "port", port)
-            or setattr(self, "sock", None),
-        ), patch.object(
-            AbletonConnection, "connect", return_value=True
-        ) as mock_connect, patch.object(
-            AbletonConnection,
-            "send_command",
-            return_value={"tempo": 120.0},
+        with (
+            patch.object(
+                AbletonConnection,
+                "__init__",
+                lambda self, host, port: setattr(self, "host", host)
+                or setattr(self, "port", port)
+                or setattr(self, "sock", None),
+            ),
+            patch.object(AbletonConnection, "connect", return_value=True) as mock_connect,
+            patch.object(
+                AbletonConnection,
+                "send_command",
+                return_value={"tempo": 120.0},
+            ),
         ):
             try:
                 get_ableton_connection()

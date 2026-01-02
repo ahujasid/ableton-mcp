@@ -122,9 +122,7 @@ class TestBrowserCachePopulation:
         categories = ["instruments", "sounds", "drums", "audio_effects", "midi_effects"]
 
         for category in categories:
-            assert (
-                category in source
-            ), f"Cache should handle {category} category"
+            assert category in source, f"Cache should handle {category} category"
 
 
 class TestBrowserCacheClear:
@@ -157,10 +155,7 @@ class TestBrowserCacheClear:
             source = f.read()
 
         # Should reset to empty dict
-        assert (
-            "self._browser_uri_cache = {}" in source
-            or "_browser_uri_cache = {}" in source
-        )
+        assert "self._browser_uri_cache = {}" in source or "_browser_uri_cache = {}" in source
 
 
 class TestBrowserCacheEfficiency:

@@ -134,6 +134,19 @@ class AbletonConnection:
             "set_track_arm",
             "set_track_volume",
             "set_track_panning",
+            "set_song_time",
+            "set_loop_region",
+            "set_loop_enabled",
+            "continue_playing",
+            "jump_by_bars",
+            "jump_to_cue_point",
+            "create_cue_point",
+            "delete_cue_point",
+            "jump_to_next_cue_point",
+            "jump_to_prev_cue_point",
+            "duplicate_clip_to_arrangement",
+            "set_record_mode",
+            "set_arrangement_overdub",
         ]
 
         try:
@@ -811,6 +824,294 @@ async def get_scene_info(ctx: Context, scene_index: int) -> str:
     except Exception as e:
         logger.error(f"Error getting scene info: {str(e)}")
         return f"Error getting scene info: {str(e)}"
+
+
+@mcp.tool()
+async def get_arrangement_info(ctx: Context) -> str:
+    """Get arrangement view information including playhead position, loop settings, and transport state."""
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("get_arrangement_info")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting arrangement info: {str(e)}")
+        return f"Error getting arrangement info: {str(e)}"
+
+
+@mcp.tool()
+async def set_song_time(ctx: Context, time: float) -> str:
+    """
+    Set the song playhead position.
+
+    Parameters:
+    - time: Position in beats (e.g., 32.0 = bar 9 in 4/4 time)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("set_song_time", {"time": time})
+        return f"Moved playhead to beat {result.get('current_song_time', time)}"
+    except Exception as e:
+        logger.error(f"Error setting song time: {str(e)}")
+        return f"Error setting song time: {str(e)}"
+
+
+@mcp.tool()
+async def set_loop_region(ctx: Context, start: float, length: float) -> str:
+    """
+    Set the arrangement loop region.
+
+    Parameters:
+    - start: Loop start position in beats
+    - length: Loop length in beats
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async(
+            "set_loop_region", {"start": start, "length": length}
+        )
+        return (
+            f"Set loop region: start={result.get('loop_start')}, length={result.get('loop_length')}"
+        )
+    except Exception as e:
+        logger.error(f"Error setting loop region: {str(e)}")
+        return f"Error setting loop region: {str(e)}"
+
+
+@mcp.tool()
+async def set_loop_enabled(ctx: Context, enabled: bool) -> str:
+    """
+    Enable or disable the arrangement loop.
+
+    Parameters:
+    - enabled: True to enable loop, False to disable
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("set_loop_enabled", {"enabled": enabled})
+        state = "enabled" if result.get("loop_enabled") else "disabled"
+        return f"Arrangement loop {state}"
+    except Exception as e:
+        logger.error(f"Error setting loop enabled: {str(e)}")
+        return f"Error setting loop enabled: {str(e)}"
+
+
+@mcp.tool()
+async def continue_playing(ctx: Context) -> str:
+    """Continue playing from the current playhead position (no quantization)."""
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("continue_playing")
+        return f"Continuing playback from beat {result.get('current_song_time', 0)}"
+    except Exception as e:
+        logger.error(f"Error continuing playback: {str(e)}")
+        return f"Error continuing playback: {str(e)}"
+
+
+@mcp.tool()
+async def jump_by_bars(ctx: Context, bars: int) -> str:
+    """
+    Jump the playhead forward or backward by a number of bars.
+
+    Parameters:
+    - bars: Number of bars to jump (positive = forward, negative = backward)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("jump_by_bars", {"bars": bars})
+        direction = "forward" if bars > 0 else "backward"
+        return f"Jumped {abs(bars)} bars {direction} to beat {result.get('current_song_time', 0)}"
+    except Exception as e:
+        logger.error(f"Error jumping by bars: {str(e)}")
+        return f"Error jumping by bars: {str(e)}"
+
+
+@mcp.tool()
+async def get_cue_points(ctx: Context) -> str:
+    """Get all cue points (markers) in the arrangement."""
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("get_cue_points")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting cue points: {str(e)}")
+        return f"Error getting cue points: {str(e)}"
+
+
+@mcp.tool()
+async def jump_to_cue_point(ctx: Context, index: int) -> str:
+    """
+    Jump to a cue point by its index.
+
+    Parameters:
+    - index: The index of the cue point to jump to
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("jump_to_cue_point", {"index": index})
+        return f"Jumped to '{result.get('jumped_to')}' at beat {result.get('time')}"
+    except Exception as e:
+        logger.error(f"Error jumping to cue point: {str(e)}")
+        return f"Error jumping to cue point: {str(e)}"
+
+
+@mcp.tool()
+async def create_cue_point(ctx: Context, time: float, name: str = "") -> str:
+    """
+    Create a cue point (marker) at a specific time in the arrangement.
+
+    If a cue point already exists at the target time, it will not be deleted.
+    Instead, the name will be updated if a new name is provided.
+
+    Parameters:
+    - time: Position in beats where the cue point should be created
+    - name: Optional name for the cue point
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("create_cue_point", {"time": time, "name": name})
+        cue_name = result.get("name", "")
+
+        # Handle case where cue point already existed
+        if result.get("updated"):
+            if result.get("message"):
+                return result.get("message")
+            return f"Cue point already exists at beat {result.get('time')}"
+
+        # Normal creation case
+        if cue_name:
+            return f"Created cue point '{cue_name}' at beat {result.get('time')}"
+        return f"Created cue point at beat {result.get('time')}"
+    except Exception as e:
+        logger.error(f"Error creating cue point: {str(e)}")
+        return f"Error creating cue point: {str(e)}"
+
+
+@mcp.tool()
+async def delete_cue_point(ctx: Context, index: int) -> str:
+    """
+    Delete a cue point by its index.
+
+    Parameters:
+    - index: The index of the cue point to delete
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("delete_cue_point", {"index": index})
+        return f"Deleted cue point '{result.get('name')}' at beat {result.get('time')}"
+    except Exception as e:
+        logger.error(f"Error deleting cue point: {str(e)}")
+        return f"Error deleting cue point: {str(e)}"
+
+
+@mcp.tool()
+async def jump_to_next_cue_point(ctx: Context) -> str:
+    """Jump to the next cue point after the current playhead position."""
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("jump_to_next_cue_point")
+        if result.get("jumped"):
+            return f"Jumped to '{result.get('name')}' at beat {result.get('time')}"
+        return result.get("message", "No next cue point found")
+    except Exception as e:
+        logger.error(f"Error jumping to next cue point: {str(e)}")
+        return f"Error jumping to next cue point: {str(e)}"
+
+
+@mcp.tool()
+async def jump_to_prev_cue_point(ctx: Context) -> str:
+    """Jump to the previous cue point before the current playhead position."""
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("jump_to_prev_cue_point")
+        if result.get("jumped"):
+            return f"Jumped to '{result.get('name')}' at beat {result.get('time')}"
+        return result.get("message", "No previous cue point found")
+    except Exception as e:
+        logger.error(f"Error jumping to previous cue point: {str(e)}")
+        return f"Error jumping to previous cue point: {str(e)}"
+
+
+@mcp.tool()
+async def get_arrangement_clips(ctx: Context, track_index: int | None = None) -> str:
+    """
+    Get clips from the arrangement view.
+
+    Parameters:
+    - track_index: Optional track index. If None, returns clips from all tracks.
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {}
+        if track_index is not None:
+            params["track_index"] = track_index
+        result = await ableton.send_command_async("get_arrangement_clips", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting arrangement clips: {str(e)}")
+        return f"Error getting arrangement clips: {str(e)}"
+
+
+@mcp.tool()
+async def duplicate_clip_to_arrangement(
+    ctx: Context, track_index: int, clip_index: int, time: float
+) -> str:
+    """
+    Duplicate a session clip to the arrangement view at a specific time.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the clip slot containing the clip
+    - time: The destination time in beats in the arrangement
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async(
+            "duplicate_clip_to_arrangement",
+            {"track_index": track_index, "clip_index": clip_index, "time": time},
+        )
+        return (
+            f"Duplicated '{result.get('clip_name')}' to arrangement at beat "
+            f"{result.get('destination_time')} on track '{result.get('track_name')}'"
+        )
+    except Exception as e:
+        logger.error(f"Error duplicating clip to arrangement: {str(e)}")
+        return f"Error duplicating clip to arrangement: {str(e)}"
+
+
+@mcp.tool()
+async def set_record_mode(ctx: Context, enabled: bool) -> str:
+    """
+    Enable or disable global record mode.
+
+    Parameters:
+    - enabled: True to enable recording, False to disable
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("set_record_mode", {"enabled": enabled})
+        state = "enabled" if result.get("record_mode") else "disabled"
+        return f"Record mode {state}"
+    except Exception as e:
+        logger.error(f"Error setting record mode: {str(e)}")
+        return f"Error setting record mode: {str(e)}"
+
+
+@mcp.tool()
+async def set_arrangement_overdub(ctx: Context, enabled: bool) -> str:
+    """
+    Enable or disable arrangement overdub mode.
+
+    Parameters:
+    - enabled: True to enable overdub, False to disable
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = await ableton.send_command_async("set_arrangement_overdub", {"enabled": enabled})
+        state = "enabled" if result.get("arrangement_overdub") else "disabled"
+        return f"Arrangement overdub {state}"
+    except Exception as e:
+        logger.error(f"Error setting arrangement overdub: {str(e)}")
+        return f"Error setting arrangement overdub: {str(e)}"
 
 
 @mcp.tool()

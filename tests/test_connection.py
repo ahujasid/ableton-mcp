@@ -104,9 +104,7 @@ class TestAbletonConnectionSendCommand:
 
     def test_send_command_success(self, mock_tcp_server, mock_ableton_responses):
         """Test successful command send and response."""
-        mock_tcp_server.set_response(
-            "get_session_info", mock_ableton_responses["get_session_info"]
-        )
+        mock_tcp_server.set_response("get_session_info", mock_ableton_responses["get_session_info"])
 
         conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
         result = conn.send_command("get_session_info")
@@ -116,9 +114,7 @@ class TestAbletonConnectionSendCommand:
 
     def test_send_command_with_params(self, mock_tcp_server):
         """Test command with parameters."""
-        mock_tcp_server.set_response(
-            "set_tempo", {"status": "success", "result": {"tempo": 140.0}}
-        )
+        mock_tcp_server.set_response("set_tempo", {"status": "success", "result": {"tempo": 140.0}})
 
         conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
         result = conn.send_command("set_tempo", {"tempo": 140.0})
@@ -130,9 +126,7 @@ class TestAbletonConnectionSendCommand:
 
     def test_send_command_auto_reconnect(self, mock_tcp_server, mock_ableton_responses):
         """Test command auto-connects if not connected."""
-        mock_tcp_server.set_response(
-            "get_session_info", mock_ableton_responses["get_session_info"]
-        )
+        mock_tcp_server.set_response("get_session_info", mock_ableton_responses["get_session_info"])
 
         conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
         # Don't call connect() explicitly
@@ -161,9 +155,7 @@ class TestAbletonConnectionSendCommand:
         with pytest.raises(Exception) as exc_info:
             conn.send_command("get_session_info")
 
-        assert "Not connected" in str(exc_info.value) or "Connection" in str(
-            exc_info.value
-        )
+        assert "Not connected" in str(exc_info.value) or "Connection" in str(exc_info.value)
 
 
 class TestAbletonConnectionReceiveFullResponse:
@@ -213,9 +205,7 @@ class TestAbletonConnectionReceiveFullResponse:
         with pytest.raises(Exception) as exc_info:
             conn.receive_full_response(mock_sock)
 
-        assert "Connection closed" in str(exc_info.value) or "No data" in str(
-            exc_info.value
-        )
+        assert "Connection closed" in str(exc_info.value) or "No data" in str(exc_info.value)
 
 
 class TestModifyingCommands:

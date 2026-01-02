@@ -71,9 +71,7 @@ class TestCommandDelayBehavior:
 
             importlib.reload(MCP_Server.server)
 
-            conn = MCP_Server.server.AbletonConnection(
-                host="localhost", port=mock_tcp_server.port
-            )
+            conn = MCP_Server.server.AbletonConnection(host="localhost", port=mock_tcp_server.port)
 
             start_time = time.time()
             conn.send_command("create_midi_track", {"index": -1})
@@ -98,9 +96,7 @@ class TestCommandDelayBehavior:
 
             importlib.reload(MCP_Server.server)
 
-            conn = MCP_Server.server.AbletonConnection(
-                host="localhost", port=mock_tcp_server.port
-            )
+            conn = MCP_Server.server.AbletonConnection(host="localhost", port=mock_tcp_server.port)
 
             start_time = time.time()
             conn.send_command("get_session_info")
@@ -123,9 +119,7 @@ class TestCommandDelayBehavior:
 
             importlib.reload(MCP_Server.server)
 
-            conn = MCP_Server.server.AbletonConnection(
-                host="localhost", port=mock_tcp_server.port
-            )
+            conn = MCP_Server.server.AbletonConnection(host="localhost", port=mock_tcp_server.port)
 
             with patch("time.sleep") as mock_sleep:
                 conn.send_command("create_midi_track", {"index": -1})
