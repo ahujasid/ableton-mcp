@@ -39,9 +39,7 @@ class TestSendCommandAsync:
         """Test async command with parameters."""
         from MCP_Server.server import AbletonConnection
 
-        mock_tcp_server.set_response(
-            "set_tempo", {"status": "success", "result": {"tempo": 140.0}}
-        )
+        mock_tcp_server.set_response("set_tempo", {"status": "success", "result": {"tempo": 140.0}})
 
         conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
         result = await conn.send_command_async("set_tempo", {"tempo": 140.0})
@@ -67,9 +65,7 @@ class TestSendCommandAsync:
             "get_session_info",
             {"status": "success", "result": {"tempo": 120.0}},
         )
-        mock_tcp_server.set_response(
-            "ping", {"status": "success", "result": {"status": "ok"}}
-        )
+        mock_tcp_server.set_response("ping", {"status": "success", "result": {"status": "ok"}})
 
         conn = AbletonConnection(host="localhost", port=mock_tcp_server.port)
 
@@ -98,9 +94,7 @@ class TestAsyncToolEndpoints:
         for name, obj in inspect.getmembers(server):
             if inspect.iscoroutinefunction(obj):
                 # Check if it looks like a tool endpoint
-                if hasattr(obj, "__wrapped__") or "ctx" in str(
-                    inspect.signature(obj).parameters
-                ):
+                if hasattr(obj, "__wrapped__") or "ctx" in str(inspect.signature(obj).parameters):
                     async_tools.append(name)
 
         # Known tool endpoints that should be async
@@ -127,18 +121,14 @@ class TestAsyncToolEndpoints:
         for tool_name in expected_async_tools:
             tool_func = getattr(server, tool_name, None)
             if tool_func:
-                assert inspect.iscoroutinefunction(
-                    tool_func
-                ), f"{tool_name} should be async"
+                assert inspect.iscoroutinefunction(tool_func), f"{tool_name} should be async"
 
     @pytest.mark.asyncio
     async def test_get_session_info_uses_async(self, mock_tcp_server):
         """Test get_session_info tool uses async method."""
         from MCP_Server.server import AbletonConnection, get_session_info
 
-        mock_tcp_server.set_response(
-            "ping", {"status": "success", "result": {"status": "ok"}}
-        )
+        mock_tcp_server.set_response("ping", {"status": "success", "result": {"status": "ok"}})
         mock_tcp_server.set_response(
             "get_session_info",
             {

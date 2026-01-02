@@ -243,6 +243,13 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_scene_info":
                 scene_index = params.get("scene_index", 0)
                 response["result"] = self._get_scene_info(scene_index)
+            elif command_type == "get_arrangement_info":
+                response["result"] = self._get_arrangement_info()
+            elif command_type == "get_cue_points":
+                response["result"] = self._get_cue_points()
+            elif command_type == "get_arrangement_clips":
+                track_index = params.get("track_index", None)
+                response["result"] = self._get_arrangement_clips(track_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
@@ -251,7 +258,13 @@ class AbletonMCP(ControlSurface):
                                  "undo", "redo", "delete_track", "delete_clip",
                                  "set_metronome", "fire_scene",
                                  "set_track_mute", "set_track_solo", "set_track_arm",
-                                 "set_track_volume", "set_track_panning"]:
+                                 "set_track_volume", "set_track_panning",
+                                 "set_song_time", "set_loop_region", "set_loop_enabled",
+                                 "continue_playing", "jump_by_bars", "jump_to_cue_point",
+                                 "create_cue_point", "delete_cue_point",
+                                 "jump_to_next_cue_point", "jump_to_prev_cue_point",
+                                 "duplicate_clip_to_arrangement",
+                                 "set_record_mode", "set_arrangement_overdub"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
 
@@ -340,6 +353,48 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             pan = params.get("pan", 0.0)
                             result = self._set_track_panning(track_index, pan)
+                        elif command_type == "set_song_time":
+                            time = params.get("time", 0.0)
+                            result = self._set_song_time(time)
+                        elif command_type == "set_loop_region":
+                            start = params.get("start", 0.0)
+                            length = params.get("length", 4.0)
+                            result = self._set_loop_region(start, length)
+                        elif command_type == "set_loop_enabled":
+                            enabled = params.get("enabled", True)
+                            result = self._set_loop_enabled(enabled)
+                        elif command_type == "continue_playing":
+                            result = self._continue_playing()
+                        elif command_type == "jump_by_bars":
+                            bars = params.get("bars", 1)
+                            result = self._jump_by_bars(bars)
+                        elif command_type == "jump_to_cue_point":
+                            index = params.get("index", 0)
+                            result = self._jump_to_cue_point(index)
+                        elif command_type == "create_cue_point":
+                            time = params.get("time", 0.0)
+                            name = params.get("name", "")
+                            result = self._create_cue_point(time, name)
+                        elif command_type == "delete_cue_point":
+                            index = params.get("index", 0)
+                            result = self._delete_cue_point(index)
+                        elif command_type == "jump_to_next_cue_point":
+                            result = self._jump_to_next_cue_point()
+                        elif command_type == "jump_to_prev_cue_point":
+                            result = self._jump_to_prev_cue_point()
+                        elif command_type == "duplicate_clip_to_arrangement":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            time = params.get("time", 0.0)
+                            result = self._duplicate_clip_to_arrangement(
+                                track_index, clip_index, time
+                            )
+                        elif command_type == "set_record_mode":
+                            enabled = params.get("enabled", False)
+                            result = self._set_record_mode(enabled)
+                        elif command_type == "set_arrangement_overdub":
+                            enabled = params.get("enabled", False)
+                            result = self._set_arrangement_overdub(enabled)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -937,6 +992,342 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error getting scene info: " + str(e))
+            raise
+
+    def _get_arrangement_info(self):
+        """Get arrangement view information"""
+        try:
+            result = {
+                "current_song_time": self._song.current_song_time,
+                "loop_start": self._song.loop_start,
+                "loop_length": self._song.loop_length,
+                "loop_enabled": self._song.loop,
+                "is_playing": self._song.is_playing,
+                "record_mode": self._song.record_mode,
+                "arrangement_overdub": self._song.arrangement_overdub,
+                "signature_numerator": self._song.signature_numerator,
+                "signature_denominator": self._song.signature_denominator
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error getting arrangement info: " + str(e))
+            raise
+
+    def _set_song_time(self, time):
+        """Set the song playhead position"""
+        try:
+            self._song.current_song_time = max(0.0, float(time))
+            return {
+                "current_song_time": self._song.current_song_time
+            }
+        except Exception as e:
+            self.log_message("Error setting song time: " + str(e))
+            raise
+
+    def _set_loop_region(self, start, length):
+        """Set the arrangement loop region"""
+        try:
+            self._song.loop_start = max(0.0, float(start))
+            self._song.loop_length = max(0.0, float(length))
+            return {
+                "loop_start": self._song.loop_start,
+                "loop_length": self._song.loop_length
+            }
+        except Exception as e:
+            self.log_message("Error setting loop region: " + str(e))
+            raise
+
+    def _set_loop_enabled(self, enabled):
+        """Enable or disable the arrangement loop"""
+        try:
+            self._song.loop = bool(enabled)
+            return {
+                "loop_enabled": self._song.loop
+            }
+        except Exception as e:
+            self.log_message("Error setting loop enabled: " + str(e))
+            raise
+
+    def _continue_playing(self):
+        """Continue playing from current position"""
+        try:
+            self._song.continue_playing()
+            return {
+                "is_playing": self._song.is_playing,
+                "current_song_time": self._song.current_song_time
+            }
+        except Exception as e:
+            self.log_message("Error continuing playback: " + str(e))
+            raise
+
+    def _jump_by_bars(self, bars):
+        """Jump playhead forward or backward by N bars"""
+        try:
+            beats_per_bar = self._song.signature_numerator
+            jump_beats = bars * beats_per_bar
+            new_time = max(0.0, self._song.current_song_time + jump_beats)
+            self._song.current_song_time = new_time
+            return {
+                "current_song_time": self._song.current_song_time,
+                "bars_jumped": bars
+            }
+        except Exception as e:
+            self.log_message("Error jumping by bars: " + str(e))
+            raise
+
+    def _get_cue_points(self):
+        """Get all cue points in the arrangement"""
+        try:
+            cue_points = []
+            for i, cue_point in enumerate(self._song.cue_points):
+                cue_points.append({
+                    "index": i,
+                    "name": cue_point.name,
+                    "time": cue_point.time
+                })
+            return {
+                "cue_points": cue_points,
+                "count": len(cue_points)
+            }
+        except Exception as e:
+            self.log_message("Error getting cue points: " + str(e))
+            raise
+
+    def _jump_to_cue_point(self, index):
+        """Jump to a cue point by index"""
+        try:
+            cue_points = list(self._song.cue_points)
+            if index < 0 or index >= len(cue_points):
+                raise IndexError("Cue point index out of range")
+            cue_point = cue_points[index]
+            cue_point.jump()
+            return {
+                "jumped_to": cue_point.name,
+                "time": cue_point.time
+            }
+        except Exception as e:
+            self.log_message("Error jumping to cue point: " + str(e))
+            raise
+
+    def _create_cue_point(self, time, name=""):
+        """Create a cue point at a specific time"""
+        try:
+            # Save current song time
+            original_time = self._song.current_song_time
+
+            # Move playhead to desired time
+            target_time = max(0.0, float(time))
+            self._song.current_song_time = target_time
+
+            # Create cue point at current song time
+            self._song.set_or_delete_cue()
+
+            # Find the cue point we just created (should be at the specified time)
+            new_cue_point = None
+            for cue_point in self._song.cue_points:
+                if abs(cue_point.time - target_time) < 0.001:
+                    new_cue_point = cue_point
+                    break
+
+            # Set the name if provided
+            if new_cue_point and name:
+                new_cue_point.name = name
+
+            # Restore original song time
+            self._song.current_song_time = original_time
+
+            return {
+                "created": True,
+                "time": target_time,
+                "name": name if name else (new_cue_point.name if new_cue_point else "")
+            }
+        except Exception as e:
+            self.log_message("Error creating cue point: " + str(e))
+            raise
+
+    def _delete_cue_point(self, index):
+        """Delete a cue point by index"""
+        try:
+            cue_points = list(self._song.cue_points)
+            if index < 0 or index >= len(cue_points):
+                raise IndexError("Cue point index out of range")
+
+            cue_point = cue_points[index]
+            cue_name = cue_point.name
+            cue_time = cue_point.time
+
+            # Jump to the cue point (selects it)
+            cue_point.jump()
+
+            # Delete the selected cue point
+            self._song.set_or_delete_cue()
+
+            return {
+                "deleted": True,
+                "name": cue_name,
+                "time": cue_time
+            }
+        except Exception as e:
+            self.log_message("Error deleting cue point: " + str(e))
+            raise
+
+    def _jump_to_next_cue_point(self):
+        """Jump to the next cue point after current song time"""
+        try:
+            current_time = self._song.current_song_time
+            cue_points = list(self._song.cue_points)
+
+            # Sort by time and find the first one after current time
+            sorted_cues = sorted(cue_points, key=lambda c: c.time)
+            next_cue = None
+            for cue in sorted_cues:
+                if cue.time > current_time + 0.001:  # Small tolerance
+                    next_cue = cue
+                    break
+
+            if next_cue is None:
+                return {
+                    "jumped": False,
+                    "message": "No cue point after current position"
+                }
+
+            next_cue.jump()
+            return {
+                "jumped": True,
+                "name": next_cue.name,
+                "time": next_cue.time
+            }
+        except Exception as e:
+            self.log_message("Error jumping to next cue point: " + str(e))
+            raise
+
+    def _jump_to_prev_cue_point(self):
+        """Jump to the previous cue point before current song time"""
+        try:
+            current_time = self._song.current_song_time
+            cue_points = list(self._song.cue_points)
+
+            # Sort by time descending and find the first one before current time
+            sorted_cues = sorted(cue_points, key=lambda c: c.time, reverse=True)
+            prev_cue = None
+            for cue in sorted_cues:
+                if cue.time < current_time - 0.001:  # Small tolerance
+                    prev_cue = cue
+                    break
+
+            if prev_cue is None:
+                return {
+                    "jumped": False,
+                    "message": "No cue point before current position"
+                }
+
+            prev_cue.jump()
+            return {
+                "jumped": True,
+                "name": prev_cue.name,
+                "time": prev_cue.time
+            }
+        except Exception as e:
+            self.log_message("Error jumping to previous cue point: " + str(e))
+            raise
+
+    def _set_record_mode(self, enabled):
+        """Enable or disable global record mode"""
+        try:
+            self._song.record_mode = bool(enabled)
+            return {
+                "record_mode": self._song.record_mode
+            }
+        except Exception as e:
+            self.log_message("Error setting record mode: " + str(e))
+            raise
+
+    def _set_arrangement_overdub(self, enabled):
+        """Enable or disable arrangement overdub"""
+        try:
+            self._song.arrangement_overdub = bool(enabled)
+            return {
+                "arrangement_overdub": self._song.arrangement_overdub
+            }
+        except Exception as e:
+            self.log_message("Error setting arrangement overdub: " + str(e))
+            raise
+
+    def _duplicate_clip_to_arrangement(self, track_index, clip_index, time):
+        """Duplicate a session clip to the arrangement at a specific time"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip_name = clip_slot.clip.name
+            clip_length = clip_slot.clip.length
+
+            # Duplicate the clip to the arrangement
+            track.duplicate_clip_to_arrangement(clip_index, float(time))
+
+            return {
+                "duplicated": True,
+                "clip_name": clip_name,
+                "destination_time": time,
+                "clip_length": clip_length,
+                "track_name": track.name
+            }
+        except Exception as e:
+            self.log_message("Error duplicating clip to arrangement: " + str(e))
+            raise
+
+    def _get_arrangement_clips(self, track_index=None):
+        """Get clips from the arrangement view"""
+        try:
+            result = {
+                "tracks": [],
+                "total_clips": 0
+            }
+
+            # Determine which tracks to process
+            if track_index is not None:
+                if track_index < 0 or track_index >= len(self._song.tracks):
+                    raise IndexError("Track index out of range")
+                tracks_to_process = [(track_index, self._song.tracks[track_index])]
+            else:
+                tracks_to_process = list(enumerate(self._song.tracks))
+
+            for idx, track in tracks_to_process:
+                track_clips = []
+                if hasattr(track, 'arrangement_clips'):
+                    for clip in track.arrangement_clips:
+                        clip_info = {
+                            "name": clip.name,
+                            "start_time": clip.start_time if hasattr(clip, 'start_time') else 0.0,
+                            "end_time": clip.end_time if hasattr(clip, 'end_time') else 0.0,
+                            "length": clip.length,
+                            "is_midi_clip": clip.is_midi_clip,
+                            "is_audio_clip": clip.is_audio_clip,
+                            "color": clip.color if hasattr(clip, 'color') else None,
+                        }
+                        track_clips.append(clip_info)
+
+                result["tracks"].append({
+                    "track_index": idx,
+                    "track_name": track.name,
+                    "clips": track_clips,
+                    "clip_count": len(track_clips)
+                })
+                result["total_clips"] += len(track_clips)
+
+            return result
+        except Exception as e:
+            self.log_message("Error getting arrangement clips: " + str(e))
             raise
 
     def _get_browser_item(self, uri, path):
