@@ -11,8 +11,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 class TestCommandDelayConfiguration:
     """Test COMMAND_DELAY environment variable configuration."""
 
-    def test_default_delay_is_zero(self):
-        """Test that default COMMAND_DELAY is 0."""
+    def test_default_delay_value(self):
+        """Test that default COMMAND_DELAY is 0.1 seconds."""
         # Reload module to pick up env var
         with patch.dict(os.environ, {}, clear=True):
             # Remove the key if it exists
@@ -25,7 +25,8 @@ class TestCommandDelayConfiguration:
 
             importlib.reload(MCP_Server.server)
 
-            assert MCP_Server.server.COMMAND_DELAY == 0.0
+            # Default is 0.1 seconds for stability with state-modifying commands
+            assert MCP_Server.server.COMMAND_DELAY == 0.1
 
     def test_delay_from_env_var(self):
         """Test that COMMAND_DELAY reads from environment variable."""

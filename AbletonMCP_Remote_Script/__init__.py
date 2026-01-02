@@ -43,6 +43,9 @@ class AbletonMCP(ControlSurface):
         # Cache for browser URIs to avoid repeated tree traversal
         self._browser_uri_cache = {}
 
+        # Queue for pending cue point operations to handle parallel requests
+        self._pending_cue_ops = []
+
         # Start the socket server
         self.start_server()
 
@@ -264,6 +267,7 @@ class AbletonMCP(ControlSurface):
                                  "set_song_time", "set_loop_region", "set_loop_enabled",
                                  "continue_playing", "jump_by_bars", "jump_to_cue_point",
                                  "create_cue_point", "delete_cue_point",
+                                 "toggle_cue_at_playhead", "set_cue_point_name",
                                  "jump_to_next_cue_point", "jump_to_prev_cue_point",
                                  "duplicate_clip_to_arrangement",
                                  "set_record_mode", "set_arrangement_overdub"]:
@@ -377,6 +381,12 @@ class AbletonMCP(ControlSurface):
                             time = params.get("time", 0.0)
                             name = params.get("name", "")
                             result = self._create_cue_point(time, name)
+                        elif command_type == "toggle_cue_at_playhead":
+                            result = self._toggle_cue_at_playhead()
+                        elif command_type == "set_cue_point_name":
+                            time = params.get("time", 0.0)
+                            name = params.get("name", "")
+                            result = self._set_cue_point_name(time, name)
                         elif command_type == "delete_cue_point":
                             index = params.get("index", 0)
                             result = self._delete_cue_point(index)
@@ -1140,46 +1150,252 @@ class AbletonMCP(ControlSurface):
                     "message": "Cue point already exists at this time; updated name" if name else "Cue point already exists at this time"
                 }
 
-            # Save current song time to restore later
-            original_time = self._song.current_song_time
+            # Schedule both position set AND toggle on Ableton's main thread
+            # The socket handler thread may not be able to call set_or_delete_cue correctly
+            self._pending_cue_create = {"time": target_time, "name": name}
+            self.schedule_message(0, self._do_create_cue)
+            self.log_message("CUE CREATE: Scheduled for time {0}".format(target_time))
 
-            try:
-                # Move playhead to desired time
-                self._song.current_song_time = target_time
-
-                # Create cue point at current song time
-                self._song.set_or_delete_cue()
-
-                # Verify the cue point was actually created
-                new_cue_point = None
-                for cue_point in self._song.cue_points:
-                    if abs(cue_point.time - target_time) < 0.001:
-                        new_cue_point = cue_point
-                        break
-
-                if new_cue_point is None:
-                    self.log_message("Warning: set_or_delete_cue() called but cue point not found at time {0}".format(target_time))
-                    return {
-                        "created": False,
-                        "time": target_time,
-                        "message": "Cue point creation could not be verified"
-                    }
-
-                # Set the name if provided
-                if name:
-                    new_cue_point.name = name
-
-                return {
-                    "created": True,
-                    "time": target_time,
-                    "name": new_cue_point.name
-                }
-            finally:
-                # Always restore original song time
-                self._song.current_song_time = original_time
+            return {
+                "created": True,
+                "time": target_time,
+                "name": name if name else "",
+                "message": "Cue point creation scheduled"
+            }
         except Exception as e:
             self.log_message("Error creating cue point: " + str(e))
             raise
+
+    def _toggle_cue_at_playhead(self):
+        """Toggle a cue point at the current playhead position.
+
+        This is a simple wrapper that just calls set_or_delete_cue().
+        The MCP server should move the playhead first before calling this.
+        """
+        try:
+            current_time = self._song.current_song_time
+            self.log_message("TOGGLE CUE: At playhead position {0}".format(current_time))
+
+            # Check if cue point exists at current position
+            existing = None
+            for cp in self._song.cue_points:
+                if abs(cp.time - current_time) < 0.001:
+                    existing = cp
+                    break
+
+            # Toggle
+            self._song.set_or_delete_cue()
+
+            if existing:
+                return {
+                    "toggled": True,
+                    "action": "deleted",
+                    "time": current_time,
+                    "message": "Deleted cue point at current position"
+                }
+            else:
+                return {
+                    "toggled": True,
+                    "action": "created",
+                    "time": current_time,
+                    "message": "Created cue point at current position"
+                }
+        except Exception as e:
+            self.log_message("Error toggling cue point: " + str(e))
+            raise
+
+    def _set_cue_point_name(self, time, name):
+        """Set the name of a cue point at a specific time."""
+        try:
+            target_time = float(time)
+            for cp in self._song.cue_points:
+                if abs(cp.time - target_time) < 0.001:
+                    cp.name = name
+                    return {
+                        "success": True,
+                        "time": target_time,
+                        "name": name,
+                        "message": "Cue point renamed"
+                    }
+            return {
+                "success": False,
+                "time": target_time,
+                "message": "No cue point found at this time"
+            }
+        except Exception as e:
+            self.log_message("Error setting cue point name: " + str(e))
+            raise
+
+    def _do_create_cue(self):
+        """Step 1: Set position on Ableton's main thread, then schedule toggle."""
+        try:
+            params = getattr(self, '_pending_cue_create', None)
+            if not params:
+                self.log_message("CUE CREATE STEP1: No params!")
+                return
+
+            target_time = params["time"]
+
+            # Set position on main thread
+            self._song.current_song_time = target_time
+            self.log_message("CUE CREATE STEP1: Position set to {0}, actual={1}".format(
+                target_time, self._song.current_song_time))
+
+            # Schedule toggle for next frame to give Ableton time to process
+            self.schedule_message(1, self._do_create_cue_toggle)
+
+        except Exception as e:
+            self.log_message("CUE CREATE STEP1 ERROR: " + str(e))
+
+    def _do_create_cue_toggle(self):
+        """Step 2: Toggle cue point after position has been set."""
+        try:
+            params = getattr(self, '_pending_cue_create', None)
+            if not params:
+                self.log_message("CUE CREATE STEP2: No params!")
+                return
+
+            target_time = params["time"]
+            name = params.get("name", "")
+
+            # Verify position
+            actual_pos = self._song.current_song_time
+            self.log_message("CUE CREATE STEP2: Position is {0}, target was {1}".format(
+                actual_pos, target_time))
+
+            # Toggle cue point
+            self._song.set_or_delete_cue()
+            self.log_message("CUE CREATE STEP2: Toggled")
+
+            # Set name if provided
+            if name:
+                for cp in self._song.cue_points:
+                    if abs(cp.time - target_time) < 0.001:
+                        cp.name = name
+                        self.log_message("CUE CREATE STEP2: Named '{0}'".format(name))
+                        break
+
+            self._pending_cue_create = None
+        except Exception as e:
+            self.log_message("CUE CREATE STEP2 ERROR: " + str(e))
+
+    def _process_cue_queue(self):
+        """Process the next item in the cue point operations queue.
+
+        Uses a two-step process to ensure position is set before toggling:
+        1. This callback sets the position and stores the pending action
+        2. _execute_cue_action callback executes the cue toggle
+        """
+        try:
+            if not self._pending_cue_ops:
+                self.log_message("CUE QUEUE: Empty, nothing to process")
+                return
+
+            # Pop the first operation
+            op = self._pending_cue_ops.pop(0)
+            action = op.get("action")
+            target_time = op.get("time")
+
+            self.log_message("CUE QUEUE: Processing {0} at {1}, remaining={2}".format(
+                action, target_time, len(self._pending_cue_ops)))
+
+            if action == "create":
+                # Check if cue point already exists (may have been created by earlier op)
+                exists = False
+                for cp in self._song.cue_points:
+                    if abs(cp.time - target_time) < 0.001:
+                        exists = True
+                        # Update name if needed
+                        if op.get("name"):
+                            cp.name = op["name"]
+                        self.log_message("CUE QUEUE: Already exists at {0}".format(target_time))
+                        break
+
+                if exists:
+                    # Skip to next item in queue
+                    if self._pending_cue_ops:
+                        self.schedule_message(1, self._process_cue_queue)
+                    return
+
+            elif action == "delete":
+                # Verify cue point still exists at target time
+                found = False
+                for cp in self._song.cue_points:
+                    if abs(cp.time - target_time) < 0.001:
+                        found = True
+                        break
+
+                if not found:
+                    self.log_message("CUE QUEUE: No cue point at {0} to delete".format(target_time))
+                    # Skip to next item in queue
+                    if self._pending_cue_ops:
+                        self.schedule_message(1, self._process_cue_queue)
+                    return
+
+            # Step 1: Set position
+            self._song.current_song_time = target_time
+            self.log_message("CUE QUEUE: Position set to {0}".format(target_time))
+
+            # Store pending action for step 2
+            self._cue_pending_action = op
+
+            # Step 2: Schedule the toggle action for next frame
+            self.schedule_message(1, self._execute_cue_action)
+
+        except Exception as e:
+            self.log_message("CUE QUEUE ERROR: " + str(e))
+            # Continue processing queue on error
+            if self._pending_cue_ops:
+                self.schedule_message(1, self._process_cue_queue)
+
+    def _execute_cue_action(self):
+        """Execute the pending cue action (step 2 of two-step process)."""
+        try:
+            op = getattr(self, '_cue_pending_action', None)
+            if not op:
+                self.log_message("CUE ACTION: No pending action")
+                return
+
+            action = op.get("action")
+            target_time = op.get("time")
+
+            # Verify position is correct
+            current_pos = self._song.current_song_time
+            if abs(current_pos - target_time) > 0.1:
+                self.log_message("CUE ACTION: Position drift! Expected {0}, got {1}".format(
+                    target_time, current_pos))
+                # Re-set position and retry
+                self._song.current_song_time = target_time
+                self.schedule_message(1, self._execute_cue_action)
+                return
+
+            # Execute the toggle
+            self._song.set_or_delete_cue()
+            self.log_message("CUE ACTION: Toggled at {0}".format(target_time))
+
+            # Set name if this was a create action
+            if action == "create":
+                cue_name = op.get("name", "")
+                if cue_name:
+                    for cp in self._song.cue_points:
+                        if abs(cp.time - target_time) < 0.001:
+                            cp.name = cue_name
+                            self.log_message("CUE ACTION: Named '{0}'".format(cue_name))
+                            break
+
+            # Clear pending action
+            self._cue_pending_action = None
+
+            # Process next item in queue
+            if self._pending_cue_ops:
+                self.schedule_message(1, self._process_cue_queue)
+
+        except Exception as e:
+            self.log_message("CUE ACTION ERROR: " + str(e))
+            self._cue_pending_action = None
+            # Continue processing queue on error
+            if self._pending_cue_ops:
+                self.schedule_message(1, self._process_cue_queue)
 
     def _delete_cue_point(self, index):
         """Delete a cue point by index."""
@@ -1192,27 +1408,64 @@ class AbletonMCP(ControlSurface):
             cue_name = cue_point.name
             cue_time = cue_point.time
 
-            # Save current playhead position to restore after deletion
-            original_time = self._song.current_song_time
+            # Schedule both position set AND toggle on Ableton's main thread
+            self._pending_cue_delete = {"time": cue_time, "name": cue_name}
+            self.schedule_message(0, self._do_delete_cue)
+            self.log_message("CUE DELETE: Scheduled for time {0}".format(cue_time))
 
-            try:
-                # Move playhead to cue point (required for set_or_delete_cue to target it)
-                cue_point.jump()
-
-                # Delete the cue point at current playhead position
-                self._song.set_or_delete_cue()
-
-                return {
-                    "deleted": True,
-                    "name": cue_name,
-                    "time": cue_time
-                }
-            finally:
-                # Restore original playhead position
-                self._song.current_song_time = original_time
+            return {
+                "deleted": True,
+                "name": cue_name,
+                "time": cue_time,
+                "message": "Cue point deletion scheduled"
+            }
         except Exception as e:
             self.log_message("Error deleting cue point: " + str(e))
             raise
+
+    def _do_delete_cue(self):
+        """Step 1: Set position on Ableton's main thread, then schedule toggle."""
+        try:
+            params = getattr(self, '_pending_cue_delete', None)
+            if not params:
+                self.log_message("CUE DELETE STEP1: No params!")
+                return
+
+            target_time = params["time"]
+
+            # Set position on main thread
+            self._song.current_song_time = target_time
+            self.log_message("CUE DELETE STEP1: Position set to {0}, actual={1}".format(
+                target_time, self._song.current_song_time))
+
+            # Schedule toggle for next frame
+            self.schedule_message(1, self._do_delete_cue_toggle)
+
+        except Exception as e:
+            self.log_message("CUE DELETE STEP1 ERROR: " + str(e))
+
+    def _do_delete_cue_toggle(self):
+        """Step 2: Toggle cue point after position has been set."""
+        try:
+            params = getattr(self, '_pending_cue_delete', None)
+            if not params:
+                self.log_message("CUE DELETE STEP2: No params!")
+                return
+
+            target_time = params["time"]
+
+            # Verify position
+            actual_pos = self._song.current_song_time
+            self.log_message("CUE DELETE STEP2: Position is {0}, target was {1}".format(
+                actual_pos, target_time))
+
+            # Toggle cue point (should delete)
+            self._song.set_or_delete_cue()
+            self.log_message("CUE DELETE STEP2: Toggled")
+
+            self._pending_cue_delete = None
+        except Exception as e:
+            self.log_message("CUE DELETE STEP2 ERROR: " + str(e))
 
     def _jump_to_next_cue_point(self):
         """Jump to the next cue point after current song time"""

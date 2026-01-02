@@ -1194,29 +1194,36 @@ class TestArrangementToolErrors:
 
     @pytest.mark.asyncio
     async def test_create_cue_point_updated(self, mock_ableton_connection):
-        """Test create_cue_point when cue already exists."""
+        """Test create_cue_point when cue already exists and name is provided."""
+        from unittest.mock import patch
+
         from MCP_Server.server import create_cue_point
 
-        mock_ableton_connection.send_command_async.return_value = {
-            "updated": True,
-            "time": 4.0,
-            "message": "Cue point already exists at beat 4.0"
-        }
+        # Orchestration: get_cue_points finds existing, then set_cue_point_name updates it
+        mock_ableton_connection.send_command_async.side_effect = [
+            {"cue_points": [{"index": 0, "name": "Old", "time": 4.0}], "count": 1},
+            {"success": True, "time": 4.0, "name": "New Name"},
+        ]
 
-        result = await create_cue_point(MagicMock(), time=4.0)
+        with patch("MCP_Server.server.anyio.sleep"):
+            result = await create_cue_point(MagicMock(), time=4.0, name="New Name")
         assert "already exists" in result
+        assert "updated name" in result
 
     @pytest.mark.asyncio
     async def test_create_cue_point_updated_no_message(self, mock_ableton_connection):
-        """Test create_cue_point when cue updated without message."""
+        """Test create_cue_point when cue exists but no name provided (no update needed)."""
+        from unittest.mock import patch
+
         from MCP_Server.server import create_cue_point
 
-        mock_ableton_connection.send_command_async.return_value = {
-            "updated": True,
-            "time": 4.0
-        }
+        # Orchestration: get_cue_points finds existing, no further action when no name
+        mock_ableton_connection.send_command_async.side_effect = [
+            {"cue_points": [{"index": 0, "name": "Existing", "time": 4.0}], "count": 1},
+        ]
 
-        result = await create_cue_point(MagicMock(), time=4.0)
+        with patch("MCP_Server.server.anyio.sleep"):
+            result = await create_cue_point(MagicMock(), time=4.0)
         assert "already exists" in result
 
 

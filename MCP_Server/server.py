@@ -19,8 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger("AbletonMCPServer")
 
 # Configurable delay for state-modifying commands (in seconds)
-# Set ABLETON_MCP_COMMAND_DELAY=0.1 to restore original 100ms delays if needed
-COMMAND_DELAY = float(os.environ.get("ABLETON_MCP_COMMAND_DELAY", "0"))
+COMMAND_DELAY = float(os.environ.get("ABLETON_MCP_COMMAND_DELAY", "0.1"))
 
 
 @dataclass
@@ -850,8 +849,9 @@ async def set_song_time(ctx: Context, time: float) -> str:
     """
     try:
         ableton = get_ableton_connection()
-        result = await ableton.send_command_async("set_song_time", {"time": time})
-        return f"Moved playhead to beat {result.get('current_song_time', time)}"
+        await ableton.send_command_async("set_song_time", {"time": time})
+        # Use input value - command succeeded if no exception was raised
+        return f"Moved playhead to beat {time}"
     except Exception as e:
         logger.error(f"Error setting song time: {str(e)}")
         return f"Error setting song time: {str(e)}"
@@ -889,8 +889,9 @@ async def set_loop_enabled(ctx: Context, enabled: bool) -> str:
     """
     try:
         ableton = get_ableton_connection()
-        result = await ableton.send_command_async("set_loop_enabled", {"enabled": enabled})
-        state = "enabled" if result.get("loop_enabled") else "disabled"
+        await ableton.send_command_async("set_loop_enabled", {"enabled": enabled})
+        # Use input value - command succeeded if no exception was raised
+        state = "enabled" if enabled else "disabled"
         return f"Arrangement loop {state}"
     except Exception as e:
         logger.error(f"Error setting loop enabled: {str(e)}")
@@ -970,19 +971,38 @@ async def create_cue_point(ctx: Context, time: float, name: str = "") -> str:
     """
     try:
         ableton = get_ableton_connection()
-        result = await ableton.send_command_async("create_cue_point", {"time": time, "name": name})
-        cue_name = result.get("name", "")
 
-        # Handle case where cue point already existed
-        if result.get("updated"):
-            if result.get("message"):
-                return result.get("message")
-            return f"Cue point already exists at beat {result.get('time')}"
+        # First, check if cue point already exists at target time
+        cue_points = await ableton.send_command_async("get_cue_points", {})
+        existing_cue = None
+        for cp in cue_points.get("cue_points", []):
+            if abs(cp.get("time", -1) - time) < 0.001:
+                existing_cue = cp
+                break
 
-        # Normal creation case
-        if cue_name:
-            return f"Created cue point '{cue_name}' at beat {result.get('time')}"
-        return f"Created cue point at beat {result.get('time')}"
+        if existing_cue:
+            # Cue point already exists - just update name if provided
+            if name:
+                await ableton.send_command_async("set_cue_point_name", {"time": time, "name": name})
+                return f"Cue point already exists at beat {time}; updated name to '{name}'"
+            return f"Cue point already exists at beat {time}"
+
+        # Step 1: Move playhead to target position
+        await ableton.send_command_async("set_song_time", {"time": time})
+
+        # Step 2: Brief delay to ensure position is set
+        await anyio.sleep(0.05)
+
+        # Step 3: Toggle cue point at current playhead position
+        result = await ableton.send_command_async("toggle_cue_at_playhead", {})
+
+        # Step 4: Set name if provided
+        if name and result.get("action") == "created":
+            await anyio.sleep(0.02)
+            await ableton.send_command_async("set_cue_point_name", {"time": time, "name": name})
+            return f"Created cue point '{name}' at beat {time}"
+
+        return f"Created cue point at beat {time}"
     except Exception as e:
         logger.error(f"Error creating cue point: {str(e)}")
         return f"Error creating cue point: {str(e)}"
@@ -998,8 +1018,28 @@ async def delete_cue_point(ctx: Context, index: int) -> str:
     """
     try:
         ableton = get_ableton_connection()
-        result = await ableton.send_command_async("delete_cue_point", {"index": index})
-        return f"Deleted cue point '{result.get('name')}' at beat {result.get('time')}"
+
+        # First, get the cue point info to find its time position
+        cue_points = await ableton.send_command_async("get_cue_points", {})
+        cue_list = cue_points.get("cue_points", [])
+
+        if index < 0 or index >= len(cue_list):
+            return f"Error: Cue point index {index} out of range (0-{len(cue_list) - 1})"
+
+        cue_to_delete = cue_list[index]
+        cue_time = cue_to_delete.get("time")
+        cue_name = cue_to_delete.get("name", "")
+
+        # Step 1: Move playhead to cue point position
+        await ableton.send_command_async("set_song_time", {"time": cue_time})
+
+        # Step 2: Brief delay to ensure position is set
+        await anyio.sleep(0.05)
+
+        # Step 3: Toggle cue point at current playhead position (should delete it)
+        await ableton.send_command_async("toggle_cue_at_playhead", {})
+
+        return f"Deleted cue point '{cue_name}' at beat {cue_time}"
     except Exception as e:
         logger.error(f"Error deleting cue point: {str(e)}")
         return f"Error deleting cue point: {str(e)}"
