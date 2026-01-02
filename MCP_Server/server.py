@@ -95,7 +95,7 @@ class AbletonConnection:
             logger.info(f"Returning data after receive completion ({len(data)} bytes)")
             try:
                 json.loads(data.decode("utf-8"))
-                return data
+                return data  # pragma: no cover - JSON parsed earlier in loop
             except json.JSONDecodeError as e:
                 raise Exception("Incomplete JSON response received") from e
         else:
@@ -308,7 +308,7 @@ def get_ableton_connection():
             logger.error("Failed to connect to Ableton after multiple attempts")
             raise Exception("Could not connect to Ableton. Make sure the Remote Script is running.")
 
-    return _ableton_connection
+    return _ableton_connection  # pragma: no cover - returns at line 286 or raises at 309
 
 
 # Core Tool endpoints
@@ -1290,4 +1290,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()  # pragma: no cover

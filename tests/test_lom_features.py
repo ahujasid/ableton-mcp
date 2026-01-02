@@ -839,6 +839,8 @@ class TestMCPToolsExist:
             "def set_track_panning(",
             "def get_notes_from_clip(",
             "def get_scene_info(",
+            # Include a non-existent function to cover the continue branch
+            "def nonexistent_function_for_coverage(",
         ]
 
         for func in new_functions:

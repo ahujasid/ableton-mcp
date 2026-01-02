@@ -2,7 +2,7 @@
 
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -138,6 +138,37 @@ class TestPingCommandInRemoteScript:
 
         # Should return {"status": "ok"}
         assert '"status": "ok"' in source or "'status': 'ok'" in source
+
+
+class TestConnectionErrorHandling:
+    """Test connection error handling in health check."""
+
+    def test_connection_error_raises_exception(self):
+        """Test that connection errors are properly raised."""
+        import MCP_Server.server
+        from MCP_Server.server import get_ableton_connection
+
+        MCP_Server.server._ableton_connection = None
+
+        # Mock AbletonConnection class to fail validation
+        with patch("MCP_Server.server.AbletonConnection") as MockConn:
+            mock_instance = MagicMock()
+            mock_instance.connect.return_value = True
+            mock_instance.send_command.side_effect = ConnectionError("Test connection error")
+            mock_instance.disconnect = MagicMock()
+            MockConn.return_value = mock_instance
+
+            with patch("time.sleep"):
+                # This should raise after all retries fail
+                try:
+                    get_ableton_connection()
+                except (ConnectionError, OSError, Exception) as e:
+                    # We hit the exception path - test passes
+                    assert "connection" in str(e).lower() or "connect" in str(e).lower()
+                    return
+
+        # If we get here without exception, the test should fail
+        pytest.fail("Expected exception was not raised")
 
 
 class TestHealthCheckTimeout:
