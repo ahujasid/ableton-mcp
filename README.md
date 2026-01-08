@@ -129,6 +129,7 @@ Once the config file has been set on Claude, and the remote script is running in
 - Control playback
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
+- **Read notes from existing MIDI clips** (NEW)
 - Change tempo and other session parameters
 
 ## Example Commands
@@ -143,6 +144,8 @@ Here are some examples of what you can ask Claude to do:
 - "Get information about the current Ableton session"
 - "Load a 808 drum rack into the selected track"
 - "Add a jazz chord progression to the clip in track 1"
+- "Show me the notes in the drum clip on track 3"
+- "Get the MIDI notes from the first clip and transpose them up an octave"
 - "Set the tempo to 120 BPM"
 - "Play the clip in track 2"
 

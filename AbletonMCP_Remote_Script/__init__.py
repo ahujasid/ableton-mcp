@@ -225,6 +225,10 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "get_notes_from_clip":
+                track_index = params.get("track_index", 0)
+                clip_index = params.get("clip_index", 0)
+                response["result"] = self._get_notes_from_clip(track_index, clip_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name", 
                                  "create_clip", "add_notes_to_clip", "set_clip_name", 
@@ -486,19 +490,19 @@ class AbletonMCP(ControlSurface):
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
-            
+
             track = self._song.tracks[track_index]
-            
+
             if clip_index < 0 or clip_index >= len(track.clip_slots):
                 raise IndexError("Clip index out of range")
-            
+
             clip_slot = track.clip_slots[clip_index]
-            
+
             if not clip_slot.has_clip:
                 raise Exception("No clip in slot")
-            
+
             clip = clip_slot.clip
-            
+
             # Convert note data to Live's format
             live_notes = []
             for note in notes:
@@ -507,18 +511,63 @@ class AbletonMCP(ControlSurface):
                 duration = note.get("duration", 0.25)
                 velocity = note.get("velocity", 100)
                 mute = note.get("mute", False)
-                
+
                 live_notes.append((pitch, start_time, duration, velocity, mute))
-            
+
             # Add the notes
             clip.set_notes(tuple(live_notes))
-            
+
             result = {
                 "note_count": len(notes)
             }
             return result
         except Exception as e:
             self.log_message("Error adding notes to clip: " + str(e))
+            raise
+
+    def _get_notes_from_clip(self, track_index, clip_index):
+        """Get all MIDI notes from a clip"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            # Get all notes from the clip
+            # get_notes_extended(from_pitch, pitch_span, from_time, time_span)
+            # Get all pitches (0-128) for the full clip length
+            notes_tuple = clip.get_notes_extended(0, 128, 0.0, clip.length)
+
+            # Convert to list of dictionaries
+            notes = []
+            for note in notes_tuple:
+                notes.append({
+                    "pitch": note.pitch,
+                    "start_time": note.start_time,
+                    "duration": note.duration,
+                    "velocity": note.velocity,
+                    "mute": note.mute
+                })
+
+            result = {
+                "clip_name": clip.name,
+                "length": clip.length,
+                "note_count": len(notes),
+                "notes": notes
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error getting notes from clip: " + str(e))
             raise
     
     def _set_clip_name(self, track_index, clip_index, name):
