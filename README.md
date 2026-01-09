@@ -129,7 +129,52 @@ Once the config file has been set on Claude, and the remote script is running in
 - Control playback
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
+- **Read notes from existing MIDI clips**
+- **ASCII Grid Notation** (NEW) - Read and write MIDI using human-readable grid format
 - Change tempo and other session parameters
+
+## Grid Notation
+
+Grid notation lets you read and write MIDI patterns using ASCII art instead of JSON. This is easier to read, visualize, and iterate on.
+
+### Drum Grid Format
+
+```
+KK|o---o---|o---o-o-|
+SN|----o---|----o---|
+HC|x-x-x-x-|x-x-x-x-|
+  |1   2   3   4   |1   2   3   4   |
+```
+
+**Symbols:**
+- `o` = normal hit (velocity 100)
+- `O` = accent (velocity 127)
+- `.` = ghost note (velocity 50)
+- `x` = closed hi-hat
+- `X` = open hi-hat / accent
+- `-` = rest
+
+**Drum Labels:**
+- `KK` = Kick, `SN` = Snare, `HC` = Closed Hi-hat, `HO` = Open Hi-hat
+- `CR` = Crash, `RD` = Ride, `LT/MT/HT` = Toms
+- See `grid_notation.py` for full list
+
+### Melodic Grid Format
+
+```
+G4|----o---|--------|
+E4|--o-----|oooo----|
+C4|o-------|----oooo|
+  |1   2   3   4   |1   2   3   4   |
+```
+
+Each character = 1/16th note. Bar separators (`|`) are visual only.
+
+### Grid Notation Tools
+
+- **`clip_to_grid`** - Read a clip and display as ASCII grid
+- **`grid_to_clip`** - Write ASCII grid notation directly to a clip
+- **`parse_grid_preview`** - Preview what notes a grid would produce (without writing)
 
 ## Example Commands
 
@@ -143,6 +188,8 @@ Here are some examples of what you can ask Claude to do:
 - "Get information about the current Ableton session"
 - "Load a 808 drum rack into the selected track"
 - "Add a jazz chord progression to the clip in track 1"
+- "Show me the notes in the drum clip on track 3"
+- "Get the MIDI notes from the first clip and transpose them up an octave"
 - "Set the tempo to 120 BPM"
 - "Play the clip in track 2"
 
