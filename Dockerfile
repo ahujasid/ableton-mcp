@@ -14,5 +14,5 @@ RUN pip install --no-cache-dir .
 
 # Expose port if server uses it, although MCP might use stdio
 
-# Command to run the MCP server
-CMD ["python", "-m", "MCP_Server.server"]
+# Command to run the MCP server using the new CLI
+CMD ["ableton-mcp", "server"]

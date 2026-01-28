@@ -5,7 +5,8 @@ description = "Ableton Live integration through the Model Context Protocol"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    {name = "Siddharth Ahuja", email = "ahujasid@gmail.com"}
+    {name = "Siddharth Ahuja", email = "ahujasid@gmail.com"},
+    {name = "Youssef Hemimy", email = "youssefhemimy@gmail.com"}
 ]
 license = {text = "MIT"}
 classifiers = [
@@ -18,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ableton-mcp = "MCP_Server.server:main"
+ableton-mcp = "MCP_Server.cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -28,5 +29,5 @@ build-backend = "setuptools.build_meta"
 packages = ["MCP_Server"]
 
 [project.urls]
-"Homepage" = "https://github.com/ahujasid/ableton-mcp"
-"Bug Tracker" = "https://github.com/ahujasid/ableton-mcp/issues"
+"Homepage" = "https://github.com/itsuzef/ableton-mcp"
+"Bug Tracker" = "https://github.com/itsuzef/ableton-mcp/issues"

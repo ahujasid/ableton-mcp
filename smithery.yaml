@@ -1,4 +1,10 @@
 # Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+name: "AbletonMCP Enhanced"
+description: "Control Ableton Live with AI assistants through the Model Context Protocol"
+author: "Youssef Hemimy"
+license: "MIT"
+repository: "https://github.com/itsuzef/ableton-mcp"
+version: "1.0.0"
 
 startCommand:
   type: stdio
@@ -11,6 +17,6 @@ startCommand:
     |-
     (config) => ({
       command: 'python',
-      args: ['-m', 'MCP_Server.server']
+      args: ['-m', 'MCP_Server.cli', 'server']
     })
   exampleConfig: {}

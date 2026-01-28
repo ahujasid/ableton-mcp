@@ -5,7 +5,7 @@ import json
 import logging
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Any, List, Union
+from typing import AsyncIterator, Dict, Any, List, Union, Optional
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -104,8 +104,10 @@ class AbletonConnection:
         is_modifying_command = command_type in [
             "create_midi_track", "create_audio_track", "set_track_name",
             "create_clip", "add_notes_to_clip", "set_clip_name",
-            "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
-            "start_playback", "stop_playback", "load_instrument_or_effect"
+            "set_tempo", "fire_clip", "stop_clip", "start_playback", "stop_playback",
+            "load_browser_item", "load_drum_kit", "set_device_parameter",
+            "set_eq_band", "set_eq_global", "apply_eq_preset", "create_return_track",
+            "set_send_level", "set_track_volume"
         ]
         
         try:
@@ -262,7 +264,7 @@ def get_session_info(ctx: Context) -> str:
     """Get detailed information about the current Ableton session"""
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("get_session_info")
+        result = ableton.send_command("get_session_info", {})
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting session info from Ableton: {str(e)}")
@@ -300,6 +302,20 @@ def create_midi_track(ctx: Context, index: int = -1) -> str:
         logger.error(f"Error creating MIDI track: {str(e)}")
         return f"Error creating MIDI track: {str(e)}"
 
+@mcp.tool()
+def create_return_track(ctx: Context) -> str:
+    """
+    Create a new return track in the Ableton session.
+    
+    Return tracks are used for send effects and are added to the end of the return track list.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_return_track", {})
+        return f"Created new return track: {result.get('name', 'unknown')}"
+    except Exception as e:
+        logger.error(f"Error creating return track: {str(e)}")
+        return f"Error creating return track: {str(e)}"
 
 @mcp.tool()
 def set_track_name(ctx: Context, track_index: int, name: str) -> str:
@@ -404,7 +420,6 @@ def set_tempo(ctx: Context, tempo: float) -> str:
     except Exception as e:
         logger.error(f"Error setting tempo: {str(e)}")
         return f"Error setting tempo: {str(e)}"
-
 
 @mcp.tool()
 def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
@@ -651,10 +666,493 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) 
         logger.error(f"Error loading drum kit: {str(e)}")
         return f"Error loading drum kit: {str(e)}"
 
+@mcp.tool()
+def get_device_parameters(ctx: Context, track_index: int, device_index: int) -> Dict[str, Any]:
+    """
+    Get all parameters for a device.
+    
+    Parameters:
+    - track_index: The index of the track containing the device
+    - device_index: The index of the device on the track
+    
+    Returns:
+    - Dictionary with device information and parameters
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error getting device parameters: {str(e)}")
+        return {"error": f"Error getting device parameters: {str(e)}"}
+
+@mcp.tool()
+def set_device_parameter(ctx: Context, track_index: int, device_index: int, 
+                         parameter_name: Optional[str] = None, 
+                         parameter_index: Optional[int] = None, 
+                         value: Optional[Union[float, int, str]] = None) -> str:
+    """
+    Set a device parameter by name or index.
+    
+    Parameters:
+    - track_index: The index of the track containing the device
+    - device_index: The index of the device on the track
+    - parameter_name: The name of the parameter to set (alternative to parameter_index)
+    - parameter_index: The index of the parameter to set (alternative to parameter_name)
+    - value: The value to set the parameter to
+    
+    Returns:
+    - String with the result of the operation
+    """
+    try:
+        if parameter_name is None and parameter_index is None:
+            return "Error: Either parameter_name or parameter_index must be provided"
+        
+        if value is None:
+            return "Error: Value must be provided"
+        
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_device_parameter", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameter_name": parameter_name,
+            "parameter_index": parameter_index,
+            "value": value
+        })
+        
+        if "parameter_name" in result:
+            return f"Set parameter '{result['parameter_name']}' of device '{result['device_name']}' to {result['value']}"
+        else:
+            return f"Failed to set parameter: {result.get('message', 'Unknown error')}"
+    except Exception as e:
+        logger.error(f"Error setting device parameter: {str(e)}")
+        return f"Error setting device parameter: {str(e)}"
+
+@mcp.tool()
+def set_eq_band(ctx: Context, track_index: int, device_index: int, band_index: int,
+                frequency: Optional[float] = None, gain: Optional[float] = None,
+                q: Optional[float] = None, filter_type: Optional[Union[int, str]] = None) -> str:
+    """
+    Set parameters for a specific band in an EQ Eight device.
+    
+    Parameters:
+    - track_index: The index of the track containing the EQ Eight
+    - device_index: The index of the EQ Eight device on the track
+    - band_index: The index of the band to modify (0-7)
+    - frequency: The frequency value to set (Hz)
+    - gain: The gain value to set (dB)
+    - q: The Q factor to set
+    - filter_type: The filter type to set (either index or name)
+    
+    Returns:
+    - String with the result of the operation
+    """
+    try:
+        ableton = get_ableton_connection()
+        
+        # First, verify that this is an EQ Eight device
+        device_info = ableton.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        
+        if "device_name" not in device_info or "EQ Eight" not in device_info["device_name"]:
+            return f"Error: Device at index {device_index} is not an EQ Eight device"
+        
+        # EQ Eight has 8 bands (0-7)
+        if band_index < 0 or band_index > 7:
+            return f"Error: Band index must be between 0 and 7"
+        
+        # Convert band_index (0-7) to the actual band number (1-8)
+        band_number = band_index + 1
+        
+        # Set parameters as requested
+        results = []
+        
+        # Set frequency if provided
+        if frequency is not None:
+            # Convert frequency to normalized value (0-1)
+            if frequency < 20:
+                frequency = 20  # Minimum frequency
+            if frequency > 20000:
+                frequency = 20000  # Maximum frequency
+            
+            # Convert to logarithmic scale (approximation)
+            import math
+            log_min = math.log10(20)  # 20 Hz
+            log_max = math.log10(20000)  # 20 kHz
+            log_freq = math.log10(frequency)
+            normalized_value = (log_freq - log_min) / (log_max - log_min)
+            
+            freq_param_name = f"{band_number} Frequency A"
+            freq_result = ableton.send_command("set_device_parameter", {
+                "track_index": track_index,
+                "device_index": device_index,
+                "parameter_name": freq_param_name,
+                "value": normalized_value
+            })
+            results.append(f"Set {freq_param_name} to {frequency} Hz")
+        
+        # Set gain if provided
+        if gain is not None:
+            gain_param_name = f"{band_number} Gain A"
+            gain_result = ableton.send_command("set_device_parameter", {
+                "track_index": track_index,
+                "device_index": device_index,
+                "parameter_name": gain_param_name,
+                "value": gain
+            })
+            results.append(f"Set {gain_param_name} to {gain} dB")
+        
+        # Set Q if provided
+        if q is not None:
+            # Convert Q value to normalized value (0-1)
+            normalized_q = q / 10.0  # Assuming max Q is around 10
+            if normalized_q > 1.0:
+                normalized_q = 1.0
+                
+            q_param_name = f"{band_number} Resonance A"
+            q_result = ableton.send_command("set_device_parameter", {
+                "track_index": track_index,
+                "device_index": device_index,
+                "parameter_name": q_param_name,
+                "value": normalized_q
+            })
+            results.append(f"Set {q_param_name} to {q}")
+        
+        # Set filter type if provided
+        if filter_type is not None:
+            filter_param_name = f"{band_number} Filter Type A"
+            filter_result = ableton.send_command("set_device_parameter", {
+                "track_index": track_index,
+                "device_index": device_index,
+                "parameter_name": filter_param_name,
+                "value": filter_type
+            })
+            results.append(f"Set {filter_param_name} to {filter_type}")
+        
+        if not results:
+            return "No parameters were set"
+        
+        return "\n".join(results)
+    except Exception as e:
+        logger.error(f"Error setting EQ band parameters: {str(e)}")
+        return f"Error setting EQ band parameters: {str(e)}"
+
+@mcp.tool()
+def set_eq_global(ctx: Context, track_index: int, device_index: int,
+                 scale: Optional[float] = None, mode: Optional[Union[int, str]] = None,
+                 oversampling: Optional[bool] = None) -> str:
+    """
+    Set global parameters for an EQ Eight device.
+    
+    Parameters:
+    - track_index: The index of the track containing the EQ Eight
+    - device_index: The index of the EQ Eight device on the track
+    - scale: The scale value to set (0.5 = 50%, 1.0 = 100%, 2.0 = 200%, etc.)
+    - mode: The mode to set (either index or name: "Stereo" or "L/R" or "M/S")
+    - oversampling: Whether to enable oversampling (true/false)
+    
+    Returns:
+    - String with the result of the operation
+    """
+    try:
+        ableton = get_ableton_connection()
+        
+        # First, verify that this is an EQ Eight device
+        device_info = ableton.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        
+        if "device_name" not in device_info or "EQ Eight" not in device_info["device_name"]:
+            return f"Error: Device at index {device_index} is not an EQ Eight device"
+        
+        # Set parameters as requested
+        results = []
+        
+        # Set scale if provided
+        if scale is not None:
+            scale_result = ableton.send_command("set_device_parameter", {
+                "track_index": track_index,
+                "device_index": device_index,
+                "parameter_name": "Scale",
+                "value": scale
+            })
+            results.append(f"Set Scale to {scale}")
+        
+        # Set mode if provided - Note: EQ Eight doesn't seem to have a "Mode" parameter
+        # We'll check if there's a parameter with "Mode" in its name
+        if mode is not None:
+            # Get all parameters to find one that might be the mode
+            all_params = device_info.get("parameters", [])
+            mode_param = None
+            
+            for param in all_params:
+                if "Mode" in param.get("name", ""):
+                    mode_param = param
+                    break
+            
+            if mode_param:
+                mode_result = ableton.send_command("set_device_parameter", {
+                    "track_index": track_index,
+                    "device_index": device_index,
+                    "parameter_name": mode_param["name"],
+                    "value": mode
+                })
+                results.append(f"Set {mode_param['name']} to {mode}")
+            else:
+                results.append(f"Warning: Could not find a Mode parameter in EQ Eight")
+        
+        # Set oversampling if provided - Note: EQ Eight doesn't seem to have an "Oversampling" parameter
+        # We'll check if there's a parameter with "Oversampling" or "Hi Quality" in its name
+        if oversampling is not None:
+            # Get all parameters to find one that might be oversampling
+            all_params = device_info.get("parameters", [])
+            oversampling_param = None
+            
+            for param in all_params:
+                param_name = param.get("name", "")
+                if "Oversampling" in param_name or "Hi Quality" in param_name:
+                    oversampling_param = param
+                    break
+            
+            if oversampling_param:
+                # Convert boolean to 0 or 1
+                oversampling_value = 1 if oversampling else 0
+                oversampling_result = ableton.send_command("set_device_parameter", {
+                    "track_index": track_index,
+                    "device_index": device_index,
+                    "parameter_name": oversampling_param["name"],
+                    "value": oversampling_value
+                })
+                results.append(f"Set {oversampling_param['name']} to {'enabled' if oversampling else 'disabled'}")
+            else:
+                results.append(f"Warning: Could not find an Oversampling parameter in EQ Eight")
+        
+        if not results:
+            return "No parameters were set"
+        
+        return "\n".join(results)
+    except Exception as e:
+        logger.error(f"Error setting EQ global parameters: {str(e)}")
+        return f"Error setting EQ global parameters: {str(e)}"
+
+@mcp.tool()
+def apply_eq_preset(ctx: Context, track_index: int, device_index: int, preset_type: str) -> str:
+    """
+    Apply a preset to an EQ Eight device.
+    
+    Parameters:
+    - track_index: The index of the track containing the EQ Eight
+    - device_index: The index of the EQ Eight device on the track
+    - preset_type: The type of preset to apply ("low_cut", "high_cut", "low_shelf", "high_shelf", "bell", "notch", "flat")
+    
+    Returns:
+    - String with the result of the operation
+    """
+    try:
+        ableton = get_ableton_connection()
+        
+        # First, verify that this is an EQ Eight device
+        device_info = ableton.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        
+        if "device_name" not in device_info or "EQ Eight" not in device_info["device_name"]:
+            return f"Error: Device at index {device_index} is not an EQ Eight device"
+        
+        # Define presets
+        presets = {
+            "low_cut": {
+                0: {"enabled": True, "freq": 80, "gain": 0, "q": 0.7, "type": "High Pass 48dB"}
+            },
+            "high_cut": {
+                7: {"enabled": True, "freq": 10000, "gain": 0, "q": 0.7, "type": "Low Pass 48dB"}
+            },
+            "low_shelf": {
+                0: {"enabled": True, "freq": 100, "gain": -3, "q": 0.7, "type": "Low Shelf"}
+            },
+            "high_shelf": {
+                7: {"enabled": True, "freq": 8000, "gain": -3, "q": 0.7, "type": "High Shelf"}
+            },
+            "bell": {
+                3: {"enabled": True, "freq": 1000, "gain": 0, "q": 1.0, "type": "Bell"}
+            },
+            "notch": {
+                3: {"enabled": True, "freq": 1000, "gain": -12, "q": 8.0, "type": "Notch"}
+            },
+            "flat": {
+                # Reset all bands to default values
+                0: {"enabled": False},
+                1: {"enabled": False},
+                2: {"enabled": False},
+                3: {"enabled": False},
+                4: {"enabled": False},
+                5: {"enabled": False},
+                6: {"enabled": False},
+                7: {"enabled": False}
+            }
+        }
+        
+        if preset_type not in presets:
+            return f"Error: Unknown preset type '{preset_type}'. Available presets: {', '.join(presets.keys())}"
+        
+        preset = presets[preset_type]
+        results = []
+        
+        # Apply preset settings
+        for band_index, settings in preset.items():
+            # Convert band_index (0-7) to the actual band number (1-8)
+            band_number = band_index + 1
+            
+            # Enable/disable the band
+            if "enabled" in settings:
+                enable_param_name = f"{band_number} Filter On A"
+                enable_value = 1 if settings["enabled"] else 0
+                enable_result = ableton.send_command("set_device_parameter", {
+                    "track_index": track_index,
+                    "device_index": device_index,
+                    "parameter_name": enable_param_name,
+                    "value": enable_value
+                })
+                results.append(f"Set {enable_param_name} to {'enabled' if settings['enabled'] else 'disabled'}")
+            
+            # Only set other parameters if the band is enabled
+            if settings.get("enabled", False):
+                # Set frequency if provided
+                if "freq" in settings:
+                    # Convert frequency to normalized value (0-1)
+                    frequency = settings["freq"]
+                    if frequency < 20:
+                        frequency = 20  # Minimum frequency
+                    if frequency > 20000:
+                        frequency = 20000  # Maximum frequency
+                    
+                    # Convert to logarithmic scale (approximation)
+                    import math
+                    log_min = math.log10(20)  # 20 Hz
+                    log_max = math.log10(20000)  # 20 kHz
+                    log_freq = math.log10(frequency)
+                    normalized_value = (log_freq - log_min) / (log_max - log_min)
+                    
+                    freq_param_name = f"{band_number} Frequency A"
+                    freq_result = ableton.send_command("set_device_parameter", {
+                        "track_index": track_index,
+                        "device_index": device_index,
+                        "parameter_name": freq_param_name,
+                        "value": normalized_value
+                    })
+                    results.append(f"Set {freq_param_name} to {frequency} Hz")
+                
+                # Set gain if provided
+                if "gain" in settings:
+                    gain_param_name = f"{band_number} Gain A"
+                    gain_result = ableton.send_command("set_device_parameter", {
+                        "track_index": track_index,
+                        "device_index": device_index,
+                        "parameter_name": gain_param_name,
+                        "value": settings["gain"]
+                    })
+                    results.append(f"Set {gain_param_name} to {settings['gain']} dB")
+                
+                # Set Q if provided
+                if "q" in settings:
+                    # Convert Q value to normalized value (0-1)
+                    normalized_q = settings["q"] / 10.0  # Assuming max Q is around 10
+                    if normalized_q > 1.0:
+                        normalized_q = 1.0
+                        
+                    q_param_name = f"{band_number} Resonance A"
+                    q_result = ableton.send_command("set_device_parameter", {
+                        "track_index": track_index,
+                        "device_index": device_index,
+                        "parameter_name": q_param_name,
+                        "value": normalized_q
+                    })
+                    results.append(f"Set {q_param_name} to {settings['q']}")
+                
+                # Set filter type if provided
+                if "type" in settings:
+                    filter_param_name = f"{band_number} Filter Type A"
+                    filter_result = ableton.send_command("set_device_parameter", {
+                        "track_index": track_index,
+                        "device_index": device_index,
+                        "parameter_name": filter_param_name,
+                        "value": settings["type"]
+                    })
+                    results.append(f"Set {filter_param_name} to {settings['type']}")
+        
+        return f"Applied '{preset_type}' preset to EQ Eight"
+    except Exception as e:
+        logger.error(f"Error applying EQ preset: {str(e)}")
+        return f"Error applying EQ preset: {str(e)}"
+
+@mcp.tool()
+def set_send_level(ctx: Context, track_index: int, send_index: int, value: float) -> str:
+    """
+    Set the level of a send from a track to a return track.
+    
+    Parameters:
+    - track_index: The index of the track containing the send
+    - send_index: The index of the send (corresponds to the return track index)
+    - value: The value to set the send level to (0.0 to 1.0)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_send_level", {
+            "track_index": track_index, 
+            "send_index": send_index, 
+            "value": value
+        })
+        return f"Set send level from track {result.get('track_name', 'unknown')} to {result.get('return_track_name', 'unknown')} to {result.get('value', value)}"
+    except Exception as e:
+        logger.error(f"Error setting send level: {str(e)}")
+        return f"Error setting send level: {str(e)}"
+
+@mcp.tool()
+def set_track_volume(ctx: Context, track_index: int, value: float) -> str:
+    """
+    Set the volume of a track.
+    
+    Parameters:
+    - track_index: The index of the track to set the volume for
+    - value: The volume value (0.0 to 1.0)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_volume", {
+            "track_index": track_index, 
+            "value": value
+        })
+        
+        volume_db = result.get('volume_db', 'unknown')
+        if volume_db == float('-inf'):
+            volume_db_str = "-∞ dB"
+        else:
+            volume_db_str = f"{volume_db:.1f} dB"
+            
+        return f"Set volume of track {result.get('track_name', 'unknown')} to {volume_db_str}"
+    except Exception as e:
+        logger.error(f"Error setting track volume: {str(e)}")
+        return f"Error setting track volume: {str(e)}"
+
 # Main execution
 def main():
     """Run the MCP server"""
-    mcp.run()
+    import os
+    
+    # Get host and port from environment variables (set by CLI)
+    host = os.environ.get("MCP_HOST", "127.0.0.1")
+    port = int(os.environ.get("MCP_PORT", "8000"))
+    
+    # Start the server
+    mcp.serve(host=host, port=port)
 
 if __name__ == "__main__":
     main()
