@@ -222,14 +222,33 @@ class AbletonMCP(ControlSurface):
             # Route the command to the appropriate handler
             if command_type == "get_session_info":
                 response["result"] = self._get_session_info()
+            elif command_type == "list_scenes":
+                response["result"] = self._list_scenes()
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "get_device_details":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                response["result"] = self._get_device_details(track_index, device_index)
+            elif command_type == "find_device_by_name":
+                track_index = params.get("track_index", 0)
+                device_name = params.get("device_name", "")
+                response["result"] = self._find_device_by_name(track_index, device_name)
+            elif command_type == "get_clip_info":
+                track_index = params.get("track_index", 0)
+                clip_index = params.get("clip_index", 0)
+                response["result"] = self._get_clip_info(track_index, clip_index)
+            elif command_type == "list_locators":
+                response["result"] = self._list_locators()
+            elif command_type == "list_return_tracks":
+                response["result"] = self._list_return_tracks()
             # Commands that modify Live's state should be scheduled on the main thread
-            elif command_type in ["create_midi_track", "set_track_name", 
-                                 "create_clip", "add_notes_to_clip", "set_clip_name", 
-                                 "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item"]:
+            elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
+                                 "create_clip", "add_notes_to_clip", "set_clip_name",
+                                 "set_tempo", "fire_clip", "stop_clip", "fire_scene", "create_scene", "rename_scene", "write_automation", "show_message", "create_locator", "set_song_position", "set_send_level",
+                                 "start_playback", "stop_playback", "load_browser_item",
+                                 "get_device_parameters", "set_device_parameter", "delete_device"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -240,6 +259,9 @@ class AbletonMCP(ControlSurface):
                         if command_type == "create_midi_track":
                             index = params.get("index", -1)
                             result = self._create_midi_track(index)
+                        elif command_type == "create_audio_track":
+                            index = params.get("index", -1)
+                            result = self._create_audio_track(index)
                         elif command_type == "set_track_name":
                             track_index = params.get("track_index", 0)
                             name = params.get("name", "")
@@ -270,6 +292,33 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             result = self._stop_clip(track_index, clip_index)
+                        elif command_type == "fire_scene":
+                            scene_index = params.get("scene_index", 0)
+                            result = self._fire_scene(scene_index)
+                        elif command_type == "create_scene":
+                            scene_index = params.get("scene_index", -1)
+                            result = self._create_scene(scene_index)
+                        elif command_type == "rename_scene":
+                            scene_index = params.get("scene_index", 0)
+                            name = params.get("name", "")
+                            result = self._rename_scene(scene_index, name)
+                        elif command_type == "create_locator":
+                            time = params.get("time", 0.0)
+                            result = self._create_locator(time)
+                        elif command_type == "set_song_position":
+                            time = params.get("time", 0.0)
+                            result = self._set_song_position(time)
+                        elif command_type == "set_send_level":
+                            track_index = params.get("track_index", 0)
+                            send_index = params.get("send_index", 0)
+                            level = params.get("level", 0.0)
+                            result = self._set_send_level(track_index, send_index, level)
+                        elif command_type == "write_automation":
+                            params_to_pass = params.copy()
+                            result = self._write_automation(**params_to_pass)
+                        elif command_type == "show_message":
+                            message = params.get("message", "")
+                            result = self._show_message(message)
                         elif command_type == "start_playback":
                             result = self._start_playback()
                         elif command_type == "stop_playback":
@@ -282,6 +331,21 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
                             result = self._load_browser_item(track_index, item_uri)
+                        elif command_type == "get_device_parameters":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            result = self._get_device_parameters(track_index, device_index)
+                        elif command_type == "set_device_parameter":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            value = params.get("value", 0)
+                            parameter_index = params.get("parameter_index")
+                            parameter_name = params.get("parameter_name")
+                            result = self._set_device_parameter(track_index, device_index, value, parameter_index, parameter_name)
+                        elif command_type == "delete_device":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            result = self._delete_device(track_index, device_index)
                         
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -322,7 +386,8 @@ class AbletonMCP(ControlSurface):
             # Add the new browser commands
             elif command_type == "get_browser_tree":
                 category_type = params.get("category_type", "all")
-                response["result"] = self.get_browser_tree(category_type)
+                max_depth = params.get("max_depth", 2)
+                response["result"] = self.get_browser_tree(category_type, max_depth)
             elif command_type == "get_browser_items_at_path":
                 path = params.get("path", "")
                 response["result"] = self.get_browser_items_at_path(path)
@@ -414,6 +479,132 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting track info: " + str(e))
             raise
     
+    def _list_scenes(self):
+        """Get a list of all scenes in the session"""
+        try:
+            scenes = []
+            for index, scene in enumerate(self._song.scenes):
+                scenes.append({
+                    "index": index,
+                    "name": scene.name
+                })
+            return {
+                "scenes": scenes,
+                "scene_count": len(scenes)
+            }
+        except Exception as e:
+            self.log_message("Error listing scenes: " + str(e))
+            raise
+
+    def _fire_scene(self, scene_index):
+        """Fire a scene"""
+        try:
+            if scene_index < 0 or scene_index >= len(self._song.scenes):
+                raise IndexError("Scene index out of range")
+
+            scene = self._song.scenes[scene_index]
+            scene.fire()
+
+            return {
+                "fired": True,
+                "scene_index": scene_index
+            }
+        except Exception as e:
+            self.log_message("Error firing scene: " + str(e))
+            raise
+
+    def _create_scene(self, scene_index):
+        """Create a new scene"""
+        try:
+            # Create the scene at the specified index
+            self._song.create_scene(scene_index)
+
+            # Get the new scene's index
+            new_scene_index = len(self._song.scenes) - 1 if scene_index == -1 else scene_index
+
+            return {
+                "created": True,
+                "scene_index": new_scene_index
+            }
+        except Exception as e:
+            self.log_message("Error creating scene: " + str(e))
+            raise
+
+    def _rename_scene(self, scene_index, name):
+        """Rename a scene"""
+        try:
+            if scene_index < 0 or scene_index >= len(self._song.scenes):
+                raise IndexError("Scene index out of range")
+
+            scene = self._song.scenes[scene_index]
+            scene.name = name
+
+            return {
+                "renamed": True,
+                "scene_index": scene_index,
+                "new_name": scene.name
+            }
+        except Exception as e:
+            self.log_message("Error renaming scene: " + str(e))
+            raise
+
+    def _write_automation(self, track_index, clip_index, device_index, points, parameter_index=None, parameter_name=None):
+        """Write automation points for a device parameter within a clip."""
+        try:
+            # 1. Get the clip
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+            clip_slot = track.clip_slots[clip_index]
+            if not clip_slot.has_clip:
+                raise ValueError("No clip in the specified slot.")
+            clip = clip_slot.clip
+
+            # 2. Get the device
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+            device = track.devices[device_index]
+
+            # 3. Get the parameter
+            parameter = None
+            if parameter_index is not None:
+                if parameter_index < 0 or parameter_index >= len(device.parameters):
+                    raise IndexError("Parameter index out of range")
+                parameter = device.parameters[parameter_index]
+            elif parameter_name is not None:
+                for p in device.parameters:
+                    if p.name.lower() == parameter_name.lower():
+                        parameter = p
+                        break
+                if parameter is None:
+                    raise ValueError("Parameter with name '{0}' not found".format(parameter_name))
+            else:
+                raise ValueError("Either parameter_index or parameter_name must be provided")
+
+            if not parameter:
+                raise ValueError("Parameter could not be found.")
+
+            # 4. Get or create the automation envelope
+            envelope = clip.get_automation_envelope(parameter)
+
+            # 5. Set the automation points
+            automation_points = []
+            for point in points:
+                automation_points.append((point.get("time"), point.get("value")))
+
+            envelope.set_automation(tuple(automation_points))
+
+            return {
+                "wrote_automation": True,
+                "point_count": len(automation_points),
+                "parameter_name": parameter.name
+            }
+        except Exception as e:
+            self.log_message("Error writing automation: " + str(e))
+            raise
+
     def _create_midi_track(self, index):
         """Create a new MIDI track at the specified index"""
         try:
@@ -433,6 +624,24 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error creating MIDI track: " + str(e))
             raise
     
+    def _create_audio_track(self, index):
+        """Create a new audio track at the specified index"""
+        try:
+            # Create the track
+            self._song.create_audio_track(index)
+
+            # Get the new track
+            new_track_index = len(self._song.tracks) - 1 if index == -1 else index
+            new_track = self._song.tracks[new_track_index]
+
+            result = {
+                "index": new_track_index,
+                "name": new_track.name
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error creating audio track: " + str(e))
+            raise
     
     def _set_track_name(self, track_index, name):
         """Set the name of a track"""
@@ -799,6 +1008,284 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error finding browser item by URI: {0}".format(str(e)))
             return None
     
+    def _delete_device(self, track_index, device_index):
+        """Delete a device from a track"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+
+            device_name = track.devices[device_index].name
+            track.delete_device(device_index)
+
+            return {
+                "track_index": track_index,
+                "device_index": device_index,
+                "deleted_device_name": device_name
+            }
+        except Exception as e:
+            self.log_message("Error deleting device: " + str(e))
+            raise
+
+    def _get_device_parameters(self, track_index, device_index):
+        """Get a list of parameters for a device"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+
+            device = track.devices[device_index]
+
+            parameters = []
+            for param_index, param in enumerate(device.parameters):
+                if param.is_enabled:
+                    param_info = {
+                        "index": param_index,
+                        "name": param.name,
+                        "value": param.value,
+                        "min": param.min,
+                        "max": param.max,
+                        "is_quantized": param.is_quantized,
+                    }
+                    if param.is_quantized:
+                        param_info["value_items"] = param.value_items
+                    parameters.append(param_info)
+
+            return {
+                "track_index": track_index,
+                "device_index": device_index,
+                "device_name": device.name,
+                "parameters": parameters
+            }
+        except Exception as e:
+            self.log_message("Error getting device parameters: " + str(e))
+            raise
+
+    def _get_device_details(self, track_index, device_index):
+        """Get detailed information about a specific device."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+            device = track.devices[device_index]
+
+            details = {
+                "name": device.name,
+                "class_name": device.class_name,
+                "type": self._get_device_type(device),
+                "can_have_chains": device.can_have_chains,
+                "can_have_drum_pads": device.can_have_drum_pads
+            }
+            return details
+        except Exception as e:
+            self.log_message("Error getting device details: " + str(e))
+            raise
+
+    def _find_device_by_name(self, track_index, device_name):
+        """Find a device on a track by its name."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+
+            for index, device in enumerate(track.devices):
+                if device.name.lower() == device_name.lower():
+                    return {
+                        "found": True,
+                        "track_index": track_index,
+                        "device_index": index,
+                        "device_name": device.name
+                    }
+
+            # If no device is found
+            return {
+                "found": False,
+                "track_index": track_index,
+                "device_name": device_name
+            }
+        except Exception as e:
+            self.log_message("Error finding device by name: " + str(e))
+            raise
+
+    def _get_clip_info(self, track_index, clip_index):
+        """Get detailed information about a specific clip."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                return { "has_clip": False }
+
+            clip = clip_slot.clip
+
+            clip_details = {
+                "has_clip": True,
+                "name": clip.name,
+                "color": clip.color,
+                "is_looping": clip.looping,
+                "loop_start": clip.loop_start,
+                "loop_end": clip.loop_end,
+                "start_marker": clip.start_marker,
+                "end_marker": clip.end_marker,
+                "signature_numerator": clip.signature_numerator,
+                "signature_denominator": clip.signature_denominator,
+                "is_playing": clip.is_playing,
+            }
+            return clip_details
+        except Exception as e:
+            self.log_message("Error getting clip info: " + str(e))
+            raise
+
+    def _show_message(self, message):
+        """Display a message in Ableton's status bar."""
+        try:
+            self.show_message(message)
+            return { "message_shown": True }
+        except Exception as e:
+            self.log_message("Error showing message: " + str(e))
+            raise
+
+    def _list_locators(self):
+        """Get a list of all locators (cue points) in the session."""
+        try:
+            locators = []
+            for cue_point in self._song.cue_points:
+                locators.append({
+                    "name": cue_point.name,
+                    "time": cue_point.time
+                })
+            return {
+                "locators": locators,
+                "locator_count": len(locators)
+            }
+        except Exception as e:
+            self.log_message("Error listing locators: " + str(e))
+            raise
+
+    def _list_return_tracks(self):
+        """Get a list of all return tracks in the session."""
+        try:
+            return_tracks = []
+            for index, track in enumerate(self._song.return_tracks):
+                return_tracks.append({
+                    "index": index,
+                    "name": track.name
+                })
+            return {
+                "return_tracks": return_tracks,
+                "return_track_count": len(return_tracks)
+            }
+        except Exception as e:
+            self.log_message("Error listing return tracks: " + str(e))
+            raise
+
+    def _set_send_level(self, track_index, send_index, level):
+        """Set the send level for a track."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+
+            if send_index < 0 or send_index >= len(track.mixer_device.sends):
+                raise IndexError("Send index out of range")
+
+            send = track.mixer_device.sends[send_index]
+            send.value = level
+
+            return {
+                "send_set": True,
+                "track_index": track_index,
+                "send_index": send_index,
+                "new_level": send.value
+            }
+        except Exception as e:
+            self.log_message("Error setting send level: " + str(e))
+            raise
+
+    def _create_locator(self, time):
+        """Create a new locator (cue point) at a specific time."""
+        try:
+            cue_point = self._song.create_cue_point(time)
+            return {
+                "created": True,
+                "time": cue_point.time
+            }
+        except Exception as e:
+            self.log_message("Error creating locator: " + str(e))
+            raise
+
+    def _set_song_position(self, time):
+        """Set the song's current playback time."""
+        try:
+            self._song.current_song_time = time
+            return {
+                "position_set": True,
+                "time": self._song.current_song_time
+            }
+        except Exception as e:
+            self.log_message("Error setting song position: " + str(e))
+            raise
+
+    def _set_device_parameter(self, track_index, device_index, value, parameter_index=None, parameter_name=None):
+        """Set a parameter for a device by index or name"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+
+            device = track.devices[device_index]
+
+            parameter_to_set = None
+
+            if parameter_index is not None:
+                if parameter_index < 0 or parameter_index >= len(device.parameters):
+                    raise IndexError("Parameter index out of range")
+                parameter_to_set = device.parameters[parameter_index]
+            elif parameter_name is not None:
+                for param in device.parameters:
+                    if param.name.lower() == parameter_name.lower():
+                        parameter_to_set = param
+                        break
+                if parameter_to_set is None:
+                    raise ValueError("Parameter with name '{0}' not found".format(parameter_name))
+            else:
+                raise ValueError("Either parameter_index or parameter_name must be provided")
+
+            if not parameter_to_set.is_enabled:
+                raise Exception("Parameter is not enabled")
+
+            parameter_to_set.value = value
+
+            return {
+                "track_index": track_index,
+                "device_index": device_index,
+                "parameter_name": parameter_to_set.name,
+                "new_value": parameter_to_set.value
+            }
+        except Exception as e:
+            self.log_message("Error setting device parameter: " + str(e))
+            raise
+
     # Helper methods
     
     def _get_device_type(self, device):
@@ -820,42 +1307,35 @@ class AbletonMCP(ControlSurface):
         except:
             return "unknown"
     
-    def get_browser_tree(self, category_type="all"):
+    def get_browser_tree(self, category_type="all", max_depth=2):
         """
-        Get a simplified tree of browser categories.
+        Get a simplified tree of browser categories, with recursion.
         
         Args:
             category_type: Type of categories to get ('all', 'instruments', 'sounds', etc.)
+            max_depth: How many levels of subfolders to explore.
             
         Returns:
             Dictionary with the browser tree structure
         """
         try:
-            # Access the application's browser instance instead of creating a new one
             app = self.application()
-            if not app:
-                raise RuntimeError("Could not access Live application")
-                
-            # Check if browser is available
-            if not hasattr(app, 'browser') or app.browser is None:
+            if not app or not hasattr(app, 'browser') or app.browser is None:
                 raise RuntimeError("Browser is not available in the Live application")
             
-            # Log available browser attributes to help diagnose issues
             browser_attrs = [attr for attr in dir(app.browser) if not attr.startswith('_')]
-            self.log_message("Available browser attributes: {0}".format(browser_attrs))
             
             result = {
                 "type": category_type,
                 "categories": [],
                 "available_categories": browser_attrs
             }
-            
-            # Helper function to process a browser item and its children
-            def process_item(item, depth=0):
-                if not item:
+
+            def process_item_recursive(item, current_depth=0):
+                if not item or current_depth >= max_depth:
                     return None
                 
-                result = {
+                item_info = {
                     "name": item.name if hasattr(item, 'name') else "Unknown",
                     "is_folder": hasattr(item, 'children') and bool(item.children),
                     "is_device": hasattr(item, 'is_device') and item.is_device,
@@ -864,75 +1344,35 @@ class AbletonMCP(ControlSurface):
                     "children": []
                 }
                 
+                if item_info["is_folder"] and current_depth < max_depth - 1:
+                    for child in item.children:
+                        child_info = process_item_recursive(child, current_depth + 1)
+                        if child_info:
+                            item_info["children"].append(child_info)
                 
-                return result
+                return item_info
             
-            # Process based on category type and available attributes
-            if (category_type == "all" or category_type == "instruments") and hasattr(app.browser, 'instruments'):
-                try:
-                    instruments = process_item(app.browser.instruments)
-                    if instruments:
-                        instruments["name"] = "Instruments"  # Ensure consistent naming
-                        result["categories"].append(instruments)
-                except Exception as e:
-                    self.log_message("Error processing instruments: {0}".format(str(e)))
+            categories_to_process = []
+            if category_type == "all":
+                categories_to_process = ['instruments', 'sounds', 'drums', 'audio_effects', 'midi_effects', 'plugins']
+            else:
+                categories_to_process = [category_type]
             
-            if (category_type == "all" or category_type == "sounds") and hasattr(app.browser, 'sounds'):
-                try:
-                    sounds = process_item(app.browser.sounds)
-                    if sounds:
-                        sounds["name"] = "Sounds"  # Ensure consistent naming
-                        result["categories"].append(sounds)
-                except Exception as e:
-                    self.log_message("Error processing sounds: {0}".format(str(e)))
-            
-            if (category_type == "all" or category_type == "drums") and hasattr(app.browser, 'drums'):
-                try:
-                    drums = process_item(app.browser.drums)
-                    if drums:
-                        drums["name"] = "Drums"  # Ensure consistent naming
-                        result["categories"].append(drums)
-                except Exception as e:
-                    self.log_message("Error processing drums: {0}".format(str(e)))
-            
-            if (category_type == "all" or category_type == "audio_effects") and hasattr(app.browser, 'audio_effects'):
-                try:
-                    audio_effects = process_item(app.browser.audio_effects)
-                    if audio_effects:
-                        audio_effects["name"] = "Audio Effects"  # Ensure consistent naming
-                        result["categories"].append(audio_effects)
-                except Exception as e:
-                    self.log_message("Error processing audio_effects: {0}".format(str(e)))
-            
-            if (category_type == "all" or category_type == "midi_effects") and hasattr(app.browser, 'midi_effects'):
-                try:
-                    midi_effects = process_item(app.browser.midi_effects)
-                    if midi_effects:
-                        midi_effects["name"] = "MIDI Effects"
-                        result["categories"].append(midi_effects)
-                except Exception as e:
-                    self.log_message("Error processing midi_effects: {0}".format(str(e)))
-            
-            # Try to process other potentially available categories
-            for attr in browser_attrs:
-                if attr not in ['instruments', 'sounds', 'drums', 'audio_effects', 'midi_effects'] and \
-                   (category_type == "all" or category_type == attr):
+            for category_name in categories_to_process:
+                if hasattr(app.browser, category_name):
                     try:
-                        item = getattr(app.browser, attr)
-                        if hasattr(item, 'children') or hasattr(item, 'name'):
-                            category = process_item(item)
-                            if category:
-                                category["name"] = attr.capitalize()
-                                result["categories"].append(category)
+                        category_root = getattr(app.browser, category_name)
+                        category_tree = process_item_recursive(category_root)
+                        if category_tree:
+                            result["categories"].append(category_tree)
                     except Exception as e:
-                        self.log_message("Error processing {0}: {1}".format(attr, str(e)))
-            
-            self.log_message("Browser tree generated for {0} with {1} root categories".format(
-                category_type, len(result['categories'])))
+                        self.log_message("Error processing category " + category_name + ": " + str(e))
+
+            self.log_message("Browser tree generated for " + category_type + " with max_depth " + str(max_depth))
             return result
             
         except Exception as e:
-            self.log_message("Error getting browser tree: {0}".format(str(e)))
+            self.log_message("Error getting browser tree: " + str(e))
             self.log_message(traceback.format_exc())
             raise
     

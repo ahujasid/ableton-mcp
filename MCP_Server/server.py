@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, List, Union
+from .m4l_utils import set_parameter_default_value
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -285,6 +286,191 @@ def get_track_info(ctx: Context, track_index: int) -> str:
         return f"Error getting track info: {str(e)}"
 
 @mcp.tool()
+def list_scenes(ctx: Context) -> str:
+    """Get a list of all scenes in the Ableton session."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("list_scenes")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error listing scenes: {str(e)}")
+        return f"Error listing scenes: {str(e)}"
+
+@mcp.tool()
+def fire_scene(ctx: Context, scene_index: int) -> str:
+    """
+    Fire a scene in the Ableton session.
+
+    Parameters:
+    - scene_index: The index of the scene to fire.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("fire_scene", {"scene_index": scene_index})
+        return f"Fired scene {scene_index}."
+    except Exception as e:
+        logger.error(f"Error firing scene: {str(e)}")
+        return f"Error firing scene: {str(e)}"
+
+@mcp.tool()
+def create_scene(ctx: Context, scene_index: int = -1) -> str:
+    """
+    Create a new scene in the Ableton session.
+
+    Parameters:
+    - scene_index: The index to create the scene at (-1 = end of list).
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_scene", {"scene_index": scene_index})
+        new_index = result.get('scene_index', scene_index)
+        return f"Created new scene at index {new_index}."
+    except Exception as e:
+        logger.error(f"Error creating scene: {str(e)}")
+        return f"Error creating scene: {str(e)}"
+
+@mcp.tool()
+def rename_scene(ctx: Context, scene_index: int, name: str) -> str:
+    """
+    Rename a scene in the Ableton session.
+
+    Parameters:
+    - scene_index: The index of the scene to rename.
+    - name: The new name for the scene.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("rename_scene", {"scene_index": scene_index, "name": name})
+        new_name = result.get('new_name', name)
+        return f"Renamed scene {scene_index} to '{new_name}'."
+    except Exception as e:
+        logger.error(f"Error renaming scene: {str(e)}")
+        return f"Error renaming scene: {str(e)}"
+
+@mcp.tool()
+def list_locators(ctx: Context) -> str:
+    """Get a list of all locators (cue points) in the Ableton session."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("list_locators")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error listing locators: {str(e)}")
+        return f"Error listing locators: {str(e)}"
+
+@mcp.tool()
+def list_return_tracks(ctx: Context) -> str:
+    """Get a list of all return tracks in the Ableton session."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("list_return_tracks")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error listing return tracks: {str(e)}")
+        return f"Error listing return tracks: {str(e)}"
+
+@mcp.tool()
+def set_send_level(ctx: Context, track_index: int, send_index: int, level: float) -> str:
+    """
+    Set the send level for a track.
+
+    Parameters:
+    - track_index: The index of the track to modify.
+    - send_index: The index of the send to modify (corresponds to the return track index).
+    - level: The new send level (0.0 to 1.0).
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_send_level", {
+            "track_index": track_index,
+            "send_index": send_index,
+            "level": level
+        })
+        return f"Set send {send_index} on track {track_index} to {result.get('new_level')}."
+    except Exception as e:
+        logger.error(f"Error setting send level: {str(e)}")
+        return f"Error setting send level: {str(e)}"
+
+@mcp.tool()
+def create_locator(ctx: Context, time: float) -> str:
+    """
+    Create a new locator (cue point) at a specific time in the arrangement.
+
+    Parameters:
+    - time: The time in beats where the locator should be created.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_locator", {"time": time})
+        return f"Created new locator at beat {result.get('time')}."
+    except Exception as e:
+        logger.error(f"Error creating locator: {str(e)}")
+        return f"Error creating locator: {str(e)}"
+
+@mcp.tool()
+def set_song_position(ctx: Context, time: float) -> str:
+    """
+    Set the song's current playback time in the arrangement.
+
+    Parameters:
+    - time: The time in beats to set the playhead to.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_song_position", {"time": time})
+        return f"Song position set to beat {result.get('time')}."
+    except Exception as e:
+        logger.error(f"Error setting song position: {str(e)}")
+        return f"Error setting song position: {str(e)}"
+
+@mcp.tool()
+def write_automation(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    device_index: int,
+    points: List[Dict[str, float]],
+    parameter_index: int = None,
+    parameter_name: str = None
+) -> str:
+    """
+    Write automation points for a device parameter within a clip.
+
+    Parameters:
+    - track_index: The index of the track.
+    - clip_index: The index of the clip slot.
+    - device_index: The index of the device on the track.
+    - points: A list of automation points. Each point is a dictionary with "time" and "value" keys.
+              Example: [{"time": 0.0, "value": 0.0}, {"time": 4.0, "value": 1.0}]
+    - parameter_index: The index of the parameter to automate (optional).
+    - parameter_name: The name of the parameter to automate (optional).
+    """
+    if parameter_index is None and parameter_name is None:
+        return "Error: You must provide either a parameter_index or a parameter_name."
+
+    try:
+        ableton = get_ableton_connection()
+
+        params = {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "device_index": device_index,
+            "points": points,
+        }
+        if parameter_index is not None:
+            params["parameter_index"] = parameter_index
+        if parameter_name is not None:
+            params["parameter_name"] = parameter_name
+
+        result = ableton.send_command("write_automation", params)
+        point_count = result.get('point_count', len(points))
+        param_name = result.get('parameter_name', 'Unknown')
+        return f"Wrote {point_count} automation points for parameter '{param_name}'."
+    except Exception as e:
+        logger.error(f"Error writing automation: {str(e)}")
+        return f"Error writing automation: {str(e)}"
+
+@mcp.tool()
 def create_midi_track(ctx: Context, index: int = -1) -> str:
     """
     Create a new MIDI track in the Ableton session.
@@ -299,6 +485,22 @@ def create_midi_track(ctx: Context, index: int = -1) -> str:
     except Exception as e:
         logger.error(f"Error creating MIDI track: {str(e)}")
         return f"Error creating MIDI track: {str(e)}"
+
+@mcp.tool()
+def create_audio_track(ctx: Context, index: int = -1) -> str:
+    """
+    Create a new audio track in the Ableton session.
+
+    Parameters:
+    - index: The index to insert the track at (-1 = end of list)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_audio_track", {"index": index})
+        return f"Created new audio track: {result.get('name', 'unknown')}"
+    except Exception as e:
+        logger.error(f"Error creating audio track: {str(e)}")
+        return f"Error creating audio track: {str(e)}"
 
 
 @mcp.tool()
@@ -390,6 +592,26 @@ def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) ->
         return f"Error setting clip name: {str(e)}"
 
 @mcp.tool()
+def get_clip_info(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Get detailed information about a specific clip.
+
+    Parameters:
+    - track_index: The index of the track containing the clip.
+    - clip_index: The index of the clip slot.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_clip_info", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting clip info: {str(e)}")
+        return f"Error getting clip info: {str(e)}"
+
+@mcp.tool()
 def set_tempo(ctx: Context, tempo: float) -> str:
     """
     Set the tempo of the Ableton session.
@@ -409,11 +631,11 @@ def set_tempo(ctx: Context, tempo: float) -> str:
 @mcp.tool()
 def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
     """
-    Load an instrument or effect onto a track using its URI.
+    Load an instrument, effect, or audio file from the browser onto a track using its URI.
     
     Parameters:
-    - track_index: The index of the track to load the instrument on
-    - uri: The URI of the instrument or effect to load (e.g., 'query:Synths#Instrument%20Rack:Bass:FileId_5116')
+    - track_index: The index of the track to load the item on.
+    - uri: The URI of the browser item to load (e.g., an instrument, audio effect, or an audio file).
     """
     try:
         ableton = get_ableton_connection()
@@ -499,17 +721,145 @@ def stop_playback(ctx: Context) -> str:
         return f"Error stopping playback: {str(e)}"
 
 @mcp.tool()
-def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
+def get_device_parameters(ctx: Context, track_index: int, device_index: int) -> str:
     """
-    Get a hierarchical tree of browser categories from Ableton.
+    Get a list of parameters for a specific device on a track.
+
+    Parameters:
+    - track_index: The index of the track containing the device.
+    - device_index: The index of the device on the track.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device parameters: {str(e)}")
+        return f"Error getting device parameters: {str(e)}"
+
+@mcp.tool()
+def get_device_details(ctx: Context, track_index: int, device_index: int) -> str:
+    """
+    Get detailed information about a specific device on a track.
+
+    Parameters:
+    - track_index: The index of the track containing the device.
+    - device_index: The index of the device on the track.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_details", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device details: {str(e)}")
+        return f"Error getting device details: {str(e)}"
+
+@mcp.tool()
+def find_device_by_name(ctx: Context, track_index: int, device_name: str) -> str:
+    """
+    Find the index of a device on a track by its name.
+
+    Parameters:
+    - track_index: The index of the track to search on.
+    - device_name: The name of the device to find.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("find_device_by_name", {
+            "track_index": track_index,
+            "device_name": device_name
+        })
+        if result.get("found"):
+            return f"Device '{result.get('device_name')}' found at index {result.get('device_index')} on track {track_index}."
+        else:
+            return f"Device '{device_name}' not found on track {track_index}."
+    except Exception as e:
+        logger.error(f"Error finding device by name: {str(e)}")
+        return f"Error finding device by name: {str(e)}"
+
+@mcp.tool()
+def set_device_parameter(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    value: float,
+    parameter_index: int = None,
+    parameter_name: str = None
+) -> str:
+    """
+    Set the value of a parameter for a specific device, identifying the parameter by its index or name.
+
+    Parameters:
+    - track_index: The index of the track containing the device.
+    - device_index: The index of the device on the track.
+    - value: The new value for the parameter.
+    - parameter_index: The index of the parameter to set. Use this or parameter_name.
+    - parameter_name: The name of the parameter to set. Use this or parameter_index.
+    """
+    if parameter_index is None and parameter_name is None:
+        return "Error: You must provide either a parameter_index or a parameter_name."
+
+    try:
+        ableton = get_ableton_connection()
+
+        params = {
+            "track_index": track_index,
+            "device_index": device_index,
+            "value": value
+        }
+        if parameter_index is not None:
+            params["parameter_index"] = parameter_index
+        if parameter_name is not None:
+            params["parameter_name"] = parameter_name
+
+        result = ableton.send_command("set_device_parameter", params)
+
+        return f"Set parameter '{result.get('parameter_name')}' on device {device_index} of track {track_index} to {result.get('new_value', value)}"
+    except Exception as e:
+        logger.error(f"Error setting device parameter: {str(e)}")
+        return f"Error setting device parameter: {str(e)}"
+
+@mcp.tool()
+def delete_device(ctx: Context, track_index: int, device_index: int) -> str:
+    """
+    Delete a device from a track.
+
+    Parameters:
+    - track_index: The index of the track containing the device.
+    - device_index: The index of the device to delete.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_device", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        deleted_name = result.get('deleted_device_name', 'Unknown device')
+        return f"Deleted device '{deleted_name}' from track {track_index}."
+    except Exception as e:
+        logger.error(f"Error deleting device: {str(e)}")
+        return f"Error deleting device: {str(e)}"
+
+@mcp.tool()
+def get_browser_tree(ctx: Context, category_type: str = "all", max_depth: int = 2) -> str:
+    """
+    Get a hierarchical tree of browser categories from Ableton, with recursive exploration.
     
     Parameters:
-    - category_type: Type of categories to get ('all', 'instruments', 'sounds', 'drums', 'audio_effects', 'midi_effects')
+    - category_type: Type of categories to get ('all', 'instruments', 'sounds', 'drums', 'audio_effects', 'midi_effects', 'plugins').
+    - max_depth: How many levels of subfolders to explore. Defaults to 2.
     """
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("get_browser_tree", {
-            "category_type": category_type
+            "category_type": category_type,
+            "max_depth": max_depth
         })
         
         # Check if we got any categories
@@ -650,6 +1000,55 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) 
     except Exception as e:
         logger.error(f"Error loading drum kit: {str(e)}")
         return f"Error loading drum kit: {str(e)}"
+
+@mcp.tool()
+def modify_m4l_device_default(
+    ctx: Context,
+    input_filepath: str,
+    output_filepath: str,
+    parameter_name: str,
+    new_default_value: float
+) -> str:
+    """
+    Creates a new Max for Live device file with a modified default value for a parameter.
+
+    Parameters:
+    - input_filepath: The path to the source .amxd file.
+    - output_filepath: The path where the new .amxd file will be saved.
+    - parameter_name: The name of the parameter to modify (e.g., "Decay", "Filter Freq").
+    - new_default_value: The new default value for the parameter.
+    """
+    try:
+        success = set_parameter_default_value(
+            input_filepath,
+            output_filepath,
+            parameter_name,
+            new_default_value
+        )
+        if success:
+            return f"Successfully created new M4L device at '{output_filepath}' with updated default for '{parameter_name}'."
+        else:
+            # This path should ideally not be reached if set_parameter_default_value raises exceptions on failure
+            return "An unknown error occurred during device modification."
+    except Exception as e:
+        logger.error(f"Error modifying M4L device: {str(e)}")
+        return f"Error modifying M4L device: {str(e)}"
+
+@mcp.tool()
+def show_message(ctx: Context, message: str) -> str:
+    """
+    Display a message in Ableton's status bar.
+
+    Parameters:
+    - message: The message to display.
+    """
+    try:
+        ableton = get_ableton_connection()
+        ableton.send_command("show_message", {"message": message})
+        return f"Message '{message}' shown in Ableton."
+    except Exception as e:
+        logger.error(f"Error showing message: {str(e)}")
+        return f"Error showing message: {str(e)}"
 
 # Main execution
 def main():
