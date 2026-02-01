@@ -229,7 +229,8 @@ class AbletonMCP(ControlSurface):
             elif command_type in ["create_midi_track", "set_track_name", 
                                  "create_clip", "add_notes_to_clip", "set_clip_name", 
                                  "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item"]:
+                                 "start_playback", "stop_playback", "load_browser_item", 
+                                 "record_arrangement_clip", "switch_to_view"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -282,6 +283,16 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
                             result = self._load_browser_item(track_index, item_uri)
+                        elif command_type == "record_arrangement_clip": # Handle new command
+                            track_index = params.get("track_index", 0)
+                            start_time = params.get("start_time", 0.0)
+                            length = params.get("length", 4.0)
+                            clip_index = params.get("clip_index", 0)
+                            clip_name = params.get("clip_name", "")
+                            result = self._record_clip_to_arrangement(track_index, start_time, length, clip_index, clip_name)
+                        elif command_type == "switch_to_view":
+                            view_name = params.get("view_name", "Arranger")
+                            result = self._switch_to_view(view_name)
                         
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -480,7 +491,66 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error creating clip: " + str(e))
             raise
+        
+    def _get_clip_slot_by_name(self, track, clip_name):
+        for clip_slot in track.clip_slots:
+            if clip_slot.has_clip and clip_slot.clip.name == clip_name:
+                return clip_slot
+        return None
     
+    def _record_clip_to_arrangement(self, track_index, start_time, length, clip_index, clip_name):
+        """Record a new Arrangement MIDI clip in the Arrangement View at the specified time."""
+        try:
+            track = self.song().tracks[track_index]
+            if track.can_be_armed and not track.arm:
+                track.arm = True
+                
+            clip_slot = None
+            
+            if clip_name:
+                clip_slot = self._get_clip_slot_by_name(track, clip_name)
+            else:
+                clip_slot = track.clip_slots[clip_index]
+            
+            clip_slot.fire()
+            # Start Recording the Session Clip into Arrangement View
+            self._song.record_mode = True
+            self._song.start_playing()
+            self._song.is_playing = True
+            self._song.start_time = start_time
+
+            time.sleep(length * 60.0 / self._song.tempo)
+
+            self._song.is_playing = False
+            self._song.stop_playing()
+            self._song.record_mode = False
+            clip_slot.stop()
+
+            result = {
+                "created_arrangement_clip": True
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error creating arrangement clip: " + str(e))
+            raise
+        
+    def _switch_to_view(self, view_name):
+        """Switch between 'Session' and 'Arranger' views"""
+        try:
+            view = self.application().view
+            
+            if view_name == "Session":
+                view.focus_view("Session")
+                self._song.back_to_arranger = False
+            else:
+                view.focus_view("Arranger")
+                self._song.back_to_arranger = True
+            
+            return {"view": view_name}
+        except Exception as e:
+            self.log_message("Error switching views: " + str(e))
+            raise
+
     def _add_notes_to_clip(self, track_index, clip_index, notes):
         """Add MIDI notes to a clip"""
         try:

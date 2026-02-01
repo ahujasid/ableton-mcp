@@ -105,7 +105,8 @@ class AbletonConnection:
             "create_midi_track", "create_audio_track", "set_track_name",
             "create_clip", "add_notes_to_clip", "set_clip_name",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
-            "start_playback", "stop_playback", "load_instrument_or_effect"
+            "start_playback", "stop_playback", "load_instrument_or_effect",
+            "record_arrangement_clip", "switch_to_view"
         ]
         
         try:
@@ -335,6 +336,8 @@ def create_clip(ctx: Context, track_index: int, clip_index: int, length: float =
             "clip_index": clip_index, 
             "length": length
         })
+        ableton.send_command("switch_to_view", {"view_name": "Session"})
+
         return f"Created new clip at track {track_index}, slot {clip_index} with length {length} beats"
     except Exception as e:
         logger.error(f"Error creating clip: {str(e)}")
@@ -650,6 +653,69 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) 
     except Exception as e:
         logger.error(f"Error loading drum kit: {str(e)}")
         return f"Error loading drum kit: {str(e)}"
+
+@mcp.tool()
+def switch_to_view(ctx: Context, view_name: str = "Arranger") -> str:
+    """
+    Switch between Arrangement (called Arranger) and Session View
+    
+    Parameters:
+    - view_name: Either "Arranger" or "Session"
+    """
+    try:
+
+        ableton = get_ableton_connection()
+        
+        # Validate view name
+        view_name = view_name.capitalize()
+        if view_name not in ["Arranger", "Session"]:
+            return f"Invalid view name. Must be either 'Arrangement' or 'Session'"
+            
+        result = ableton.send_command("switch_to_view", {
+            "view_name": view_name
+        })
+        
+        return f"Switched to {view_name} view. Result: {result}"
+    except Exception as e:
+        logger.error(f"Error switching view: {str(e)}")
+        return f"Error switching view: {str(e)}"
+
+@mcp.tool()
+def record_arrangement_clip(
+    ctx: Context,
+    track_index: int,
+    start_time: float = 0.0,
+    length: float = 4.0,
+    clip_index: int = -1,
+    clip_name: str = ""
+) -> str:
+    """
+    Record into the Arrangement View from the Session View
+    
+    Parameters:
+    - track_index: Which track to create the clip on
+    - start_time: Start time in beats
+    - length: Length of the clip in beats
+    """
+    try:
+        ableton = get_ableton_connection()
+        
+        # Create the clip in arrangement view
+        result = ableton.send_command("record_arrangement_clip", {
+            "track_index": track_index,
+            "start_time": start_time,
+            "length": length,
+            "clip_index": clip_index,
+            "clip_name": clip_name
+        })
+        
+        # Switch to Arrangement View
+        ableton.send_command("switch_to_view", {"view_name": "Arranger"})
+        
+        return f"Created arrangement clip from Track ${track_index}"
+    except Exception as e:
+        logger.error(f"Error creating arrangement clip: {str(e)}")
+        return f"Error creating arrangement clip: {str(e)}"
 
 # Main execution
 def main():
