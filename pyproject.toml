@@ -1,11 +1,11 @@
 [project]
-name = "ableton-mcp"
-version = "1.0.0"
-description = "Ableton Live integration through the Model Context Protocol"
+name = "ableton-mcp-extended"
+version = "2.2.0"
+description = "Extended Ableton Live integration with 76 tools through the Model Context Protocol"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    {name = "Siddharth Ahuja", email = "ahujasid@gmail.com"}
+    {name = "IMNMV", email = "nyk@example.com"}
 ]
 license = {text = "MIT"}
 classifiers = [
@@ -15,10 +15,11 @@ classifiers = [
 ]
 dependencies = [
     "mcp[cli]>=1.3.0",
+    "audio2llm>=0.1.0",
 ]
 
 [project.scripts]
-ableton-mcp = "MCP_Server.server:main"
+ableton-mcp-extended = "MCP_Server.server:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -28,5 +29,5 @@ build-backend = "setuptools.build_meta"
 packages = ["MCP_Server"]
 
 [project.urls]
-"Homepage" = "https://github.com/ahujasid/ableton-mcp"
-"Bug Tracker" = "https://github.com/ahujasid/ableton-mcp/issues"
+"Homepage" = "https://github.com/IMNMV/ableton-mcp"
+"Bug Tracker" = "https://github.com/IMNMV/ableton-mcp/issues"
