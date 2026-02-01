@@ -1,16 +1,17 @@
 # AbletonMCP/init.py
 from __future__ import absolute_import, print_function, unicode_literals
 
-from _Framework.ControlSurface import ControlSurface
+from _Framework.ControlSurface import ControlSurface  # type: ignore[import-not-found]
 import socket
 import json
 import threading
 import time
 import traceback
+from typing import Optional, Any
 
 # Change queue import for Python 2
 try:
-    import Queue as queue  # Python 2
+    import Queue as queue  # type: ignore[import-not-found]  # Python 2
 except ImportError:
     import queue  # Python 3
 
@@ -22,19 +23,19 @@ def create_instance(c_instance):
     """Create and return the AbletonMCP script instance"""
     return AbletonMCP(c_instance)
 
-class AbletonMCP(ControlSurface):
+class AbletonMCP(ControlSurface):  # type: ignore[misc]
     """AbletonMCP Remote Script for Ableton Live"""
     
-    def __init__(self, c_instance):
+    def __init__(self, c_instance: Any) -> None:
         """Initialize the control surface"""
         ControlSurface.__init__(self, c_instance)
         self.log_message("AbletonMCP Remote Script initializing...")
         
         # Socket server for communication
-        self.server = None
-        self.client_threads = []
-        self.server_thread = None
-        self.running = False
+        self.server: Optional[socket.socket] = None
+        self.client_threads: list[threading.Thread] = []
+        self.server_thread: Optional[threading.Thread] = None
+        self.running: bool = False
         
         # Cache the song reference for easier access
         self._song = self.song()
@@ -94,6 +95,11 @@ class AbletonMCP(ControlSurface):
         """Server thread implementation - handles client connections"""
         try:
             self.log_message("Server thread started")
+            # Guard against None server (should never happen in practice)
+            if self.server is None:
+                self.log_message("Server socket is None, cannot start server thread")
+                return
+            
             # Set a timeout to allow regular checking of running flag
             self.server.settimeout(1.0)
             
@@ -227,9 +233,13 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_track_info(track_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name", 
-                                 "create_clip", "add_notes_to_clip", "set_clip_name", 
+                                 "create_clip", "add_notes_to_clip", "set_clip_name", "duplicate_clip", "remove_clip", "move_clip",
                                  "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item"]:
+                                 "start_playback", "stop_playback", "load_browser_item",
+                                 "set_track_volume", "set_master_volume",
+                                 "create_audio_effect_rack", "create_rack_chain",
+                                 "get_device_parameters", "set_device_param", "load_effect_to_chain",
+                                 "load_effect_on_master"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -259,6 +269,22 @@ class AbletonMCP(ControlSurface):
                             clip_index = params.get("clip_index", 0)
                             name = params.get("name", "")
                             result = self._set_clip_name(track_index, clip_index, name)
+                        elif command_type == "duplicate_clip":
+                            source_track_index = params.get("source_track_index", 0)
+                            source_clip_index = params.get("source_clip_index", 0)
+                            dest_track_index = params.get("dest_track_index", 0)
+                            dest_clip_index = params.get("dest_clip_index", 0)
+                            result = self._duplicate_clip(source_track_index, source_clip_index, dest_track_index, dest_clip_index)
+                        elif command_type == "remove_clip":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            result = self._remove_clip(track_index, clip_index)
+                        elif command_type == "move_clip":
+                            source_track_index = params.get("source_track_index", 0)
+                            source_clip_index = params.get("source_clip_index", 0)
+                            dest_track_index = params.get("dest_track_index", 0)
+                            dest_clip_index = params.get("dest_clip_index", 0)
+                            result = self._move_clip(source_track_index, source_clip_index, dest_track_index, dest_clip_index)
                         elif command_type == "set_tempo":
                             tempo = params.get("tempo", 120.0)
                             result = self._set_tempo(tempo)
@@ -277,11 +303,50 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "load_instrument_or_effect":
                             track_index = params.get("track_index", 0)
                             uri = params.get("uri", "")
-                            result = self._load_instrument_or_effect(track_index, uri)
+                            result = self._load_browser_item(track_index, uri)
+                        elif command_type == "load_effect_on_master":
+                            uri = params.get("uri", "")
+                            result = self._load_effect_on_master(uri)
                         elif command_type == "load_browser_item":
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
                             result = self._load_browser_item(track_index, item_uri)
+                        elif command_type == "set_track_volume":
+                            track_index = params.get("track_index", 0)
+                            volume = params.get("volume", 0.85)
+                            result = self._set_track_volume(track_index, volume)
+                        elif command_type == "set_master_volume":
+                            volume = params.get("volume", 0.85)
+                            result = self._set_master_volume(volume)
+                        elif command_type == "create_audio_effect_rack":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", -1)
+                            result = self._create_audio_effect_rack(track_index, device_index)
+                        elif command_type == "create_rack_chain":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            chain_name = params.get("chain_name", "")
+                            result = self._create_rack_chain(track_index, device_index, chain_name)
+                        elif command_type == "get_device_parameters":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            chain_index = params.get("chain_index", -1)
+                            rack_device_index = params.get("rack_device_index", -1)
+                            result = self._get_device_parameters(track_index, device_index, chain_index, rack_device_index)
+                        elif command_type == "set_device_param":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            parameter_name = params.get("parameter_name", "")
+                            value = params.get("value", 0.0)
+                            chain_index = params.get("chain_index", -1)
+                            rack_device_index = params.get("rack_device_index", -1)
+                            result = self._set_device_param(track_index, device_index, parameter_name, value, chain_index, rack_device_index)
+                        elif command_type == "load_effect_to_chain":
+                            track_index = params.get("track_index", 0)
+                            rack_device_index = params.get("rack_device_index", 0)
+                            chain_index = params.get("chain_index", 0)
+                            effect_uri = params.get("effect_uri", "")
+                            result = self._load_effect_to_chain(track_index, rack_device_index, chain_index, effect_uri)
                         
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -548,6 +613,124 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error setting clip name: " + str(e))
             raise
     
+    def _duplicate_clip(self, source_track_index, source_clip_index, dest_track_index, dest_clip_index):
+        """Duplicate a clip from one slot to another"""
+        try:
+            # Validate source track and clip
+            if source_track_index < 0 or source_track_index >= len(self._song.tracks):
+                raise IndexError("Source track index out of range")
+            
+            source_track = self._song.tracks[source_track_index]
+            
+            if source_clip_index < 0 or source_clip_index >= len(source_track.clip_slots):
+                raise IndexError("Source clip index out of range")
+            
+            source_clip_slot = source_track.clip_slots[source_clip_index]
+            
+            if not source_clip_slot.has_clip:
+                raise Exception("No clip in source slot")
+            
+            source_clip = source_clip_slot.clip
+            
+            # Only MIDI clips are supported for duplication
+            if not source_clip.is_midi_clip:
+                raise Exception("duplicate_clip only supports MIDI clips. Audio clip duplication is not yet implemented.")
+            
+            # Validate destination track and clip slot
+            if dest_track_index < 0 or dest_track_index >= len(self._song.tracks):
+                raise IndexError("Destination track index out of range")
+            
+            dest_track = self._song.tracks[dest_track_index]
+            
+            if dest_clip_index < 0 or dest_clip_index >= len(dest_track.clip_slots):
+                raise IndexError("Destination clip index out of range")
+            
+            dest_clip_slot = dest_track.clip_slots[dest_clip_index]
+            
+            if dest_clip_slot.has_clip:
+                raise Exception("Destination clip slot already has a clip")
+            
+            # Get source clip properties
+            clip_length = source_clip.length
+            clip_name = source_clip.name
+            
+            # Create a new clip in the destination
+            dest_clip_slot.create_clip(clip_length)
+            dest_clip = dest_clip_slot.clip
+            dest_clip.name = clip_name
+            
+            # Copy MIDI notes if it's a MIDI clip
+            if source_clip.is_midi_clip:
+                # Get all notes from source clip
+                notes = source_clip.get_notes(0, 0, clip_length, 128)
+                
+                # set_notes expects a tuple of tuples: ((pitch, start_time, duration, velocity, mute), ...)
+                if notes and len(notes) > 0:
+                    dest_clip.set_notes(notes)
+            
+            result = {
+                "source_track": source_track_index,
+                "source_clip": source_clip_index,
+                "dest_track": dest_track_index,
+                "dest_clip": dest_clip_index,
+                "clip_name": clip_name,
+                "clip_length": clip_length
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error duplicating clip: " + str(e))
+            raise
+    
+    def _remove_clip(self, track_index, clip_index):
+        """Remove a clip from a clip slot"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            
+            track = self._song.tracks[track_index]
+            
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+            
+            clip_slot = track.clip_slots[clip_index]
+            
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot to delete")
+            
+            # Delete the clip
+            clip_slot.delete_clip()
+            
+            result = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "deleted": True
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error removing clip: " + str(e))
+            raise
+
+    def _move_clip(self, source_track_index, source_clip_index, dest_track_index, dest_clip_index):
+        """Move a clip from one slot to another by duplicating then removing the source"""
+        try:
+            # First duplicate the clip
+            self._duplicate_clip(source_track_index, source_clip_index, dest_track_index, dest_clip_index)
+            
+            # Then remove the source clip
+            self._remove_clip(source_track_index, source_clip_index)
+            
+            result = {
+                "source_track_index": source_track_index,
+                "source_clip_index": source_clip_index,
+                "dest_track_index": dest_track_index,
+                "dest_clip_index": dest_clip_index,
+                "moved": True
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error moving clip: " + str(e))
+            raise
+    
     def _set_tempo(self, tempo):
         """Set the tempo of the session"""
         try:
@@ -559,6 +742,367 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error setting tempo: " + str(e))
+            raise
+    
+    def _set_track_volume(self, track_index, volume):
+        """Set the volume of a track"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            
+            track = self._song.tracks[track_index]
+            track.mixer_device.volume.value = volume
+            
+            result = {
+                "track_index": track_index,
+                "volume": track.mixer_device.volume.value
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting track volume: " + str(e))
+            raise
+    
+    def _set_master_volume(self, volume):
+        """Set the volume of the master track"""
+        try:
+            self._song.master_track.mixer_device.volume.value = volume
+            
+            result = {
+                "volume": self._song.master_track.mixer_device.volume.value
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting master volume: " + str(e))
+            raise
+    
+    def _load_effect_on_master(self, uri):
+        """Load an audio effect onto the master track by its URI"""
+        try:
+            master_track = self._song.master_track
+            
+            # Access the application's browser instance
+            app = self.application()
+            
+            # Find the browser item by URI
+            item = self._find_browser_item_by_uri(app.browser, uri)
+            
+            if not item:
+                raise ValueError("Browser item with URI '{0}' not found".format(uri))
+            
+            # Select the master track
+            self._song.view.selected_track = master_track
+            
+            # Load the item
+            app.browser.load_item(item)
+            
+            # Brief delay for async load
+            import time
+            time.sleep(0.1)
+            
+            result = {
+                "loaded": True,
+                "item_name": item.name,
+                "track_name": "Master",
+                "uri": uri,
+                "device_count": len(master_track.devices)
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error loading effect on master: {0}".format(str(e)))
+            raise
+    
+    def _create_audio_effect_rack(self, track_index, device_index=-1):
+        """Create an empty Audio Effect Rack on a track.
+        
+        Parameters:
+        - track_index: The track to add the rack to
+        - device_index: Position in device chain to insert the rack (-1 = append to end)
+        """
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            
+            track = self._song.tracks[track_index]
+            devices_before = len(track.devices)
+            
+            # Select the track first
+            self._song.view.selected_track = track
+            
+            # Find Audio Effect Rack in browser
+            app = self.application()
+            browser = app.browser
+            
+            # Navigate to Audio Effect Rack
+            rack_item = None
+            for item in browser.audio_effects.children:
+                if item.name == "Audio Effect Rack":
+                    rack_item = item
+                    break
+            
+            if not rack_item:
+                raise Exception("Could not find Audio Effect Rack in browser")
+            
+            # Load the rack (loads to end of device chain)
+            browser.load_item(rack_item)
+            
+            # browser.load_item() is asynchronous - brief delay needed for device to appear
+            # This is a known limitation of the Live API
+            import time
+            time.sleep(0.1)
+            
+            # If device_index is specified and valid, move the rack to that position
+            devices_after = len(track.devices)
+            if devices_after > devices_before and device_index >= 0:
+                new_rack = track.devices[devices_after - 1]  # The newly loaded rack
+                if device_index < devices_after - 1:  # Only move if not already at desired position
+                    self._song.move_device(new_rack, track, device_index)
+                    self.log_message("Moved rack to device index: " + str(device_index))
+            
+            result = {
+                "track_index": track_index,
+                "device_index": device_index if device_index >= 0 else len(track.devices) - 1,
+                "device_count": len(track.devices)
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error creating audio effect rack: " + str(e))
+            raise
+    
+    def _create_rack_chain(self, track_index, device_index, chain_name=""):
+        """Create a new chain in an Audio Effect Rack"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            
+            track = self._song.tracks[track_index]
+            
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+            
+            device = track.devices[device_index]
+            
+            # Check if it's a rack
+            if not device.can_have_chains:
+                raise Exception("Device is not a rack and cannot have chains")
+            
+            # Get count before
+            chains_before = len(device.chains)
+            self.log_message("Chains before: " + str(chains_before))
+            
+            # Use insert_chain to create a new chain at the end
+            if not hasattr(device, 'insert_chain'):
+                raise Exception("Device does not support insert_chain")
+            
+            self.log_message("Creating chain with insert_chain...")
+            device.insert_chain(chains_before)  # Insert at end
+            
+            # Check if we succeeded
+            chains_after = len(device.chains)
+            self.log_message("Chains after: " + str(chains_after))
+            
+            if chains_after <= chains_before:
+                raise Exception("insert_chain did not create a new chain. Chains: " + str(chains_before) + " -> " + str(chains_after))
+            
+            # Get the new chain
+            new_chain_index = len(device.chains) - 1
+            new_chain = device.chains[new_chain_index]
+            
+            # Set the name if provided
+            if chain_name:
+                new_chain.name = chain_name
+            
+            result = {
+                "chain_index": new_chain_index,
+                "chain_name": new_chain.name,
+                "total_chains": len(device.chains)
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error creating rack chain: " + str(e))
+            raise
+    
+    def _get_device_parameters(self, track_index, device_index, chain_index=-1, rack_device_index=-1):
+        """Get all parameters of a device"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            
+            track = self._song.tracks[track_index]
+            
+            # Get the device (either from track or from a chain)
+            if chain_index >= 0 and rack_device_index >= 0:
+                # Device is inside a rack chain
+                rack = track.devices[rack_device_index]
+                if not rack.can_have_chains:
+                    raise Exception("Device is not a rack")
+                if chain_index >= len(rack.chains):
+                    raise IndexError("Chain index out of range")
+                chain = rack.chains[chain_index]
+                if device_index < 0 or device_index >= len(chain.devices):
+                    raise IndexError("Device index out of range in chain (have {}, requested {})".format(len(chain.devices), device_index))
+                device = chain.devices[device_index]
+            else:
+                if device_index < 0 or device_index >= len(track.devices):
+                    raise IndexError("Device index out of range")
+                device = track.devices[device_index]
+            
+            # Get all parameters
+            params = []
+            for i, param in enumerate(device.parameters):
+                param_info = {
+                    "index": i,
+                    "name": param.name,
+                    "value": param.value,
+                    "min": param.min,
+                    "max": param.max,
+                    "is_quantized": param.is_quantized
+                }
+                params.append(param_info)
+            
+            result = {
+                "device_name": device.name,
+                "device_class": device.class_name,
+                "parameters": params
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error getting device parameters: " + str(e))
+            raise
+    
+    def _set_device_param(self, track_index, device_index, parameter_name, value, chain_index=-1, rack_device_index=-1):
+        """Set a parameter value on a device"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            
+            track = self._song.tracks[track_index]
+            
+            # Get the device
+            if chain_index >= 0 and rack_device_index >= 0:
+                rack = track.devices[rack_device_index]
+                if not rack.can_have_chains:
+                    raise Exception("Device is not a rack")
+                if chain_index >= len(rack.chains):
+                    raise IndexError("Chain index out of range")
+                chain = rack.chains[chain_index]
+                if device_index < 0 or device_index >= len(chain.devices):
+                    raise IndexError("Device index out of range in chain")
+                device = chain.devices[device_index]
+            else:
+                if device_index < 0 or device_index >= len(track.devices):
+                    raise IndexError("Device index out of range")
+                device = track.devices[device_index]
+            
+            # Find the parameter by name
+            target_param = None
+            for param in device.parameters:
+                if param.name.lower() == parameter_name.lower():
+                    target_param = param
+                    break
+            
+            if not target_param:
+                raise Exception("Parameter '{}' not found on device".format(parameter_name))
+            
+            # Set the value
+            target_param.value = value
+            
+            result = {
+                "parameter_name": target_param.name,
+                "new_value": target_param.value
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting device parameter: " + str(e))
+            raise
+    
+    def _load_effect_to_chain(self, track_index, rack_device_index, chain_index, effect_uri):
+        """Load an effect into a specific chain of a rack using move_device"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            
+            track = self._song.tracks[track_index]
+            
+            if rack_device_index >= len(track.devices):
+                raise IndexError("Rack device index out of range")
+            
+            rack = track.devices[rack_device_index]
+            self.log_message("Rack name: " + rack.name)
+            
+            if not rack.can_have_chains:
+                raise Exception("Device is not a rack")
+            
+            if chain_index >= len(rack.chains):
+                raise IndexError("Chain index out of range (have {}, requested {})".format(len(rack.chains), chain_index))
+            
+            chain = rack.chains[chain_index]
+            self.log_message("Chain name: " + chain.name)
+            devices_before = len(chain.devices)
+            self.log_message("Devices in chain before: " + str(devices_before))
+            
+            # Find the browser item first
+            app = self.application()
+            browser = app.browser
+            
+            effect_item = self._find_browser_item_by_uri(browser, effect_uri)
+            if not effect_item:
+                raise Exception("Could not find effect with URI: {}".format(effect_uri))
+            self.log_message("Found effect: " + effect_item.name)
+            
+            # Count track devices before loading
+            track_devices_before = len(track.devices)
+            self.log_message("Track devices before: " + str(track_devices_before))
+            
+            # Select the track and load the effect (it will go to the end of the track)
+            self._song.view.selected_track = track
+            browser.load_item(effect_item)
+            
+            # browser.load_item() is asynchronous - delay needed for device to appear
+            # This is a known limitation of the Live API
+            import time
+            time.sleep(0.3)
+            
+            # Check if a new device was added to the track
+            track_devices_after = len(track.devices)
+            self.log_message("Track devices after: " + str(track_devices_after))
+            
+            if track_devices_after > track_devices_before:
+                # The effect was loaded to the track, now move it into the chain
+                new_device = track.devices[track_devices_after - 1]
+                self.log_message("New device loaded: " + new_device.name)
+                
+                # Use move_device to move it into the chain
+                # The chain is a valid target (it's a DeviceContainer)
+                target_position = len(chain.devices)  # Add to end of chain
+                self.log_message("Moving device to chain at position: " + str(target_position))
+                
+                result_position = self._song.move_device(new_device, chain, target_position)
+                self.log_message("Device moved to position: " + str(result_position))
+                
+                time.sleep(0.2)
+            
+            # Check result
+            devices_after = len(chain.devices)
+            self.log_message("Devices in chain after: " + str(devices_after))
+            
+            # Verify the effect is now in the chain
+            if devices_after <= devices_before:
+                self.log_message("Effect failed to load into chain. Track devices: " + str(len(track.devices)))
+                for i, d in enumerate(track.devices):
+                    self.log_message("  Device {}: {}".format(i, d.name))
+                raise Exception("Failed to load effect into chain. The effect may have loaded to the track instead.")
+            
+            result = {
+                "track_index": track_index,
+                "rack_device_index": rack_device_index,
+                "chain_index": chain_index,
+                "chain_name": chain.name,
+                "devices_in_chain": devices_after,
+                "effect_loaded": effect_item.name
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error loading effect to chain: " + str(e))
             raise
     
     def _fire_clip(self, track_index, clip_index):
@@ -1045,11 +1589,11 @@ class AbletonMCP(ControlSurface):
             
             result = {
                 "path": path,
-                "name": current_item.name if hasattr(current_item, 'name') else "Unknown",
-                "uri": current_item.uri if hasattr(current_item, 'uri') else None,
-                "is_folder": hasattr(current_item, 'children') and bool(current_item.children),
-                "is_device": hasattr(current_item, 'is_device') and current_item.is_device,
-                "is_loadable": hasattr(current_item, 'is_loadable') and current_item.is_loadable,
+                "name": getattr(current_item, 'name', "Unknown"),
+                "uri": getattr(current_item, 'uri', None),
+                "is_folder": hasattr(current_item, 'children') and bool(getattr(current_item, 'children', None)),
+                "is_device": hasattr(current_item, 'is_device') and getattr(current_item, 'is_device', False),
+                "is_loadable": hasattr(current_item, 'is_loadable') and getattr(current_item, 'is_loadable', False),
                 "items": items
             }
             
