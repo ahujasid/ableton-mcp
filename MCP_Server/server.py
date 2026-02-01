@@ -43,52 +43,26 @@ class AbletonConnection:
             finally:
                 self.sock = None
 
-    def receive_full_response(self, sock, buffer_size=8192):
-        """Receive the complete response, potentially in multiple chunks"""
-        chunks = []
-        sock.settimeout(15.0)  # Increased timeout for operations that might take longer
-        
+    def receive_full_response(self, sock, buffer_size=4096):
+        """Receive a newline-delimited JSON response from the socket."""
+        buffer = b''
+        sock.settimeout(15.0)
         try:
             while True:
-                try:
-                    chunk = sock.recv(buffer_size)
-                    if not chunk:
-                        if not chunks:
-                            raise Exception("Connection closed before receiving any data")
-                        break
-                    
-                    chunks.append(chunk)
-                    
-                    # Check if we've received a complete JSON object
-                    try:
-                        data = b''.join(chunks)
-                        json.loads(data.decode('utf-8'))
-                        logger.info(f"Received complete response ({len(data)} bytes)")
-                        return data
-                    except json.JSONDecodeError:
-                        # Incomplete JSON, continue receiving
-                        continue
-                except socket.timeout:
-                    logger.warning("Socket timeout during chunked receive")
-                    break
-                except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
-                    logger.error(f"Socket connection error during receive: {str(e)}")
-                    raise
+                chunk = sock.recv(buffer_size)
+                if not chunk:
+                    raise ConnectionError("Connection closed while waiting for response.")
+                buffer += chunk
+                if b'\n' in buffer:
+                    response_data, _, _ = buffer.partition(b'\n')
+                    logger.info(f"Received complete response ({len(response_data)} bytes)")
+                    return response_data
+        except socket.timeout:
+            logger.error("Socket timeout while waiting for response from Ableton")
+            raise TimeoutError("Timeout waiting for Ableton response")
         except Exception as e:
-            logger.error(f"Error during receive: {str(e)}")
+            logger.error(f"Error receiving data: {str(e)}")
             raise
-            
-        # If we get here, we either timed out or broke out of the loop
-        if chunks:
-            data = b''.join(chunks)
-            logger.info(f"Returning data after receive completion ({len(data)} bytes)")
-            try:
-                json.loads(data.decode('utf-8'))
-                return data
-            except json.JSONDecodeError:
-                raise Exception("Incomplete JSON response received")
-        else:
-            raise Exception("No data received")
 
     def send_command(self, command_type: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """Send a command to Ableton and return the response"""
@@ -111,8 +85,11 @@ class AbletonConnection:
         try:
             logger.info(f"Sending command: {command_type} with params: {params}")
             
+            # Create command string and append newline
+            command_str = json.dumps(command) + '\n'
+
             # Send the command
-            self.sock.sendall(json.dumps(command).encode('utf-8'))
+            self.sock.sendall(command_str.encode('utf-8'))
             logger.info(f"Command sent, waiting for response...")
             
             # For state-modifying commands, add a small delay to give Ableton time to process
@@ -283,6 +260,26 @@ def get_track_info(ctx: Context, track_index: int) -> str:
     except Exception as e:
         logger.error(f"Error getting track info from Ableton: {str(e)}")
         return f"Error getting track info: {str(e)}"
+
+@mcp.tool()
+def get_device_parameters(ctx: Context, track_index: int, device_index: int) -> str:
+    """
+    Get a list of parameters for a specific device on a track.
+
+    Parameters:
+    - track_index: The index of the track containing the device.
+    - device_index: The index of the device on the track.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device parameters from Ableton: {str(e)}")
+        return f"Error getting device parameters: {str(e)}"
 
 @mcp.tool()
 def create_midi_track(ctx: Context, index: int = -1) -> str:

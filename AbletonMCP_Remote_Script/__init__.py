@@ -131,75 +131,82 @@ class AbletonMCP(ControlSurface):
             self.log_message("Server thread error: " + str(e))
     
     def _handle_client(self, client):
-        """Handle communication with a connected client"""
+        """Handle communication with a connected client using newline-delimited JSON."""
         self.log_message("Client handler started")
-        client.settimeout(None)  # No timeout for client socket
-        buffer = ''  # Changed from b'' to '' for Python 2
-        
+        client.settimeout(None)
+        buffer = ''
+
         try:
             while self.running:
                 try:
-                    # Receive data
                     data = client.recv(8192)
-                    
                     if not data:
-                        # Client disconnected
                         self.log_message("Client disconnected")
                         break
-                    
-                    # Accumulate data in buffer with explicit encoding/decoding
+
                     try:
                         # Python 3: data is bytes, decode to string
                         buffer += data.decode('utf-8')
                     except AttributeError:
                         # Python 2: data is already string
                         buffer += data
-                    
-                    try:
-                        # Try to parse command from buffer
-                        command = json.loads(buffer)  # Removed decode('utf-8')
-                        buffer = ''  # Clear buffer after successful parse
-                        
-                        self.log_message("Received command: " + str(command.get("type", "unknown")))
-                        
-                        # Process the command and get response
-                        response = self._process_command(command)
-                        
-                        # Send the response with explicit encoding
+
+                    # Process all complete commands in the buffer
+                    while '\n' in buffer:
+                        command_str, buffer = buffer.split('\n', 1)
+                        if not command_str:
+                            continue
+
                         try:
-                            # Python 3: encode string to bytes
-                            client.sendall(json.dumps(response).encode('utf-8'))
-                        except AttributeError:
-                            # Python 2: string is already bytes
-                            client.sendall(json.dumps(response))
-                    except ValueError:
-                        # Incomplete data, wait for more
-                        continue
-                        
+                            command = json.loads(command_str)
+                            self.log_message("Received command: " + str(command.get("type", "unknown")))
+
+                            response = self._process_command(command)
+
+                            # Append newline to the response
+                            response_str = json.dumps(response) + '\n'
+
+                            try:
+                                # Python 3: encode string to bytes
+                                client.sendall(response_str.encode('utf-8'))
+                            except AttributeError:
+                                # Python 2: string is already bytes
+                                client.sendall(response_str)
+
+                        except ValueError as e:
+                            self.log_message("JSON Decode Error: " + str(e))
+                            error_response = { "status": "error", "message": "Invalid JSON received: " + str(e) }
+                            error_str = json.dumps(error_response) + '\n'
+                            try:
+                                client.sendall(error_str.encode('utf-8'))
+                            except AttributeError:
+                                client.sendall(error_str)
+                        except Exception as e:
+                            self.log_message("Error processing command: " + str(e))
+                            self.log_message(traceback.format_exc())
+                            error_response = { "status": "error", "message": "Error processing command: " + str(e) }
+                            error_str = json.dumps(error_response) + '\n'
+                            try:
+                                client.sendall(error_str.encode('utf-8'))
+                            except AttributeError:
+                                client.sendall(error_str)
+
+                except (socket.error, IOError) as e:
+                    self.log_message("Socket error in client handler: " + str(e))
+                    break # Exit the loop on socket errors
                 except Exception as e:
-                    self.log_message("Error handling client data: " + str(e))
+                    self.log_message("Unhandled error in client handler: " + str(e))
                     self.log_message(traceback.format_exc())
-                    
-                    # Send error response if possible
-                    error_response = {
-                        "status": "error",
-                        "message": str(e)
-                    }
                     try:
-                        # Python 3: encode string to bytes
-                        client.sendall(json.dumps(error_response).encode('utf-8'))
-                    except AttributeError:
-                        # Python 2: string is already bytes
-                        client.sendall(json.dumps(error_response))
+                        error_response = { "status": "error", "message": "An unexpected error occurred: " + str(e) }
+                        error_str = json.dumps(error_response) + '\n'
+                        client.sendall(error_str.encode('utf-8'))
                     except:
-                        # If we can't send the error, the connection is probably dead
-                        break
-                    
-                    # For serious errors, break the loop
-                    if not isinstance(e, ValueError):
-                        break
+                        pass
+                    break
+
         except Exception as e:
-            self.log_message("Error in client handler: " + str(e))
+            self.log_message("Critical error in client handler: " + str(e))
         finally:
             try:
                 client.close()
@@ -225,6 +232,10 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "get_device_parameters":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                response["result"] = self._get_device_parameters(track_index, device_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name", 
                                  "create_clip", "add_notes_to_clip", "set_clip_name", 
@@ -414,6 +425,41 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting track info: " + str(e))
             raise
     
+    def _get_device_parameters(self, track_index, device_index):
+        """Get a list of parameters for a specific device on a track."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+
+            device = track.devices[device_index]
+
+            parameters = []
+            if device.parameters:
+                for param in device.parameters:
+                    # Check for valid parameters that have a name and can be read
+                    if hasattr(param, 'name') and param.name and hasattr(param, 'value'):
+                        parameters.append({
+                            "name": param.name,
+                            "value": param.value,
+                            "min": param.min,
+                            "max": param.max
+                        })
+
+            return {
+                "track_index": track_index,
+                "device_index": device_index,
+                "device_name": device.name,
+                "parameters": parameters
+            }
+        except Exception as e:
+            self.log_message("Error getting device parameters: " + str(e))
+            raise
+
     def _create_midi_track(self, index):
         """Create a new MIDI track at the specified index"""
         try:
