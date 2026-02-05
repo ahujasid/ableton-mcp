@@ -16,6 +16,35 @@ interaction with the software's user interface or file system.
 ✅ Search browser - search_browser(query, category)
 
 
+## IMPLEMENTED FEATURES (v1.2.0)
+
+✅ Create audio tracks - create_audio_track(index)
+✅ Delete clips - delete_clip(track_index, clip_index)
+✅ Get MIDI notes from clips - get_clip_notes(track_index, clip_index, start_time, time_span, start_pitch, pitch_span)
+✅ Delete/remove devices - delete_device(track_index, device_index)
+✅ Set track volume - set_track_volume(track_index, volume)
+✅ Set track pan - set_track_pan(track_index, pan)
+✅ Set track mute - set_track_mute(track_index, mute)
+✅ Set track solo - set_track_solo(track_index, solo)
+✅ Set track arm - set_track_arm(track_index, arm)
+✅ Scene management - get_scenes(), fire_scene(scene_index), create_scene(index), set_scene_name(scene_index, name)
+✅ Return track management - get_return_tracks(), get_return_track_info(return_track_index)
+✅ Set return track volume - set_return_track_volume(return_track_index, volume)
+✅ Set track send levels - set_track_send(track_index, send_index, value)
+
+
+## IMPLEMENTED FEATURES (v1.3.0)
+
+✅ Delete tracks - delete_track(track_index)
+✅ Delete scenes - delete_scene(scene_index)
+✅ Get detailed clip info - get_clip_info(track_index, clip_index)
+✅ Clear clip notes - clear_clip_notes(track_index, clip_index)
+✅ Duplicate clips - duplicate_clip(track_index, clip_index, target_clip_index)
+✅ Duplicate tracks - duplicate_track(track_index)
+✅ Quantize clip notes - quantize_clip_notes(track_index, clip_index, grid_size)
+✅ Transpose clip notes - transpose_clip_notes(track_index, clip_index, semitones)
+
+
 ## REMAINING LIMITATIONS
 
 ❌ Cannot load VST/AU plugins - Ableton API does not expose third-party plugin loading
@@ -39,7 +68,7 @@ interaction with the software's user interface or file system.
 - Explore clip arrangement position control
 
 
-Update aftre testing:
+Update after testing:
 
 Sorry, there seems to be a problem loading Serum via the API. Ableton's MCP has some limitations when loading third-party VST plugins programmatically.
 What I can suggest is:
