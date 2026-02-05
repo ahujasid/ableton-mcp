@@ -45,6 +45,18 @@ interaction with the software's user interface or file system.
 ✅ Transpose clip notes - transpose_clip_notes(track_index, clip_index, semitones)
 
 
+## IMPLEMENTED FEATURES (v1.4.0)
+
+✅ Set clip looping state - set_clip_looping(track_index, clip_index, looping)
+✅ Set clip loop points - set_clip_loop_points(track_index, clip_index, loop_start, loop_end)
+✅ Set clip color - set_clip_color(track_index, clip_index, color_index)
+✅ Set return track pan - set_return_track_pan(return_track_index, pan)
+✅ Set return track mute - set_return_track_mute(return_track_index, mute)
+✅ Set return track solo - set_return_track_solo(return_track_index, solo)
+✅ Get master track info - get_master_track_info()
+✅ Set master volume - set_master_volume(volume)
+
+
 ## REMAINING LIMITATIONS
 
 ❌ Cannot load VST/AU plugins - Ableton API does not expose third-party plugin loading
@@ -66,12 +78,3 @@ interaction with the software's user interface or file system.
 - Investigate Max for Live bridge for accessing hidden parameters
 - Add support for drum rack pad sample loading
 - Explore clip arrangement position control
-
-
-Update after testing:
-
-Sorry, there seems to be a problem loading Serum via the API. Ableton's MCP has some limitations when loading third-party VST plugins programmatically.
-What I can suggest is:
-
-Manually load Serum onto the track I just created (track 8 "Serum").
-Once loaded, I can create MIDI clips and control the parameters.

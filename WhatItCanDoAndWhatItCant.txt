@@ -1,125 +1,192 @@
-✅ WHAT CAN I DO:
-Track Management
+Here's a complete list of all the Ableton tools I have available:
+Session & Track Management:
 
-Create new MIDI tracks
+get_session_info - Get details about the current Ableton session
+get_track_info - Get detailed information about a specific track
+create_midi_track - Create a new MIDI track
+create_audio_track - Create a new audio track
+set_track_name - Rename a track
+delete_track - Delete a track from the session
+duplicate_track - Duplicate a track with all devices and clips
+
+Clip Operations:
+
+create_clip - Create a new MIDI clip in a track
+delete_clip - Delete a clip from a clip slot
+duplicate_clip - Duplicate a clip to another slot
+set_clip_name - Rename a clip
+get_clip_info - Get detailed clip information (length, loop points, etc.)
+get_clip_notes - Retrieve MIDI notes from a clip
+add_notes_to_clip - Add MIDI notes to a clip
+clear_clip_notes - Remove all notes from a clip
+quantize_clip_notes - Snap note times to a grid
+transpose_clip_notes - Shift all notes up/down by semitones
+set_clip_looping - Enable/disable clip looping
+set_clip_loop_points - Set loop start and end positions
+set_clip_color - Set the clip color (0-69 palette)
+fire_clip - Start playing a clip
+stop_clip - Stop playing a clip
+
+Playback Control:
+
+start_playback - Start playing the session
+stop_playback - Stop playing the session
+set_tempo - Change the tempo (BPM)
+
+Track Parameters:
+
+set_track_volume - Adjust track volume
+set_track_pan - Adjust track panning
+set_track_mute - Mute/unmute a track
+set_track_solo - Solo/unsolo a track
+set_track_arm - Arm/disarm a track for recording
+set_track_send - Set send levels to return tracks
+
+Device Management:
+
+load_instrument_or_effect - Load instruments or effects using URIs
+delete_device - Remove a device from a track
+get_device_parameters - Get all parameters for a device
+set_device_parameter - Adjust device parameter values
+
+Browser & Library:
+
+get_browser_tree - Get hierarchical tree of browser categories
+get_browser_items_at_path - Browse items at a specific path
+search_browser - Search for instruments, effects, or sounds
+get_user_library - Get user library browser tree
+get_user_folders - Get user-configured sample folders
+load_sample - Load audio samples onto tracks
+load_drum_kit - Load drum rack with a specific kit
+
+Scenes:
+
+get_scenes - Get information about all scenes
+fire_scene - Launch a scene
+create_scene - Create a new scene
+delete_scene - Delete a scene from the session
+set_scene_name - Rename a scene
+
+Return Tracks:
+
+get_return_tracks - Get info about all return tracks
+get_return_track_info - Get detailed info about a specific return track
+set_return_track_volume - Adjust return track volume
+set_return_track_pan - Adjust return track panning
+set_return_track_mute - Mute/unmute a return track
+set_return_track_solo - Solo/unsolo a return track
+
+Master Track:
+
+get_master_track_info - Get master track info (volume, pan, devices)
+set_master_volume - Adjust master track volume
+
+Automation:
+
+create_clip_automation - Create automation for parameters within clips
+
+Is there anything specific you'd like to do with any of these tools?Can you make a list of all the things that you can do and the things that you still can't do?18:19Here's a comprehensive breakdown of what I can and cannot do with Ableton:
+✅ What I CAN Do:
+Track & Session Management:
+
+Create MIDI and audio tracks
 Rename tracks
-Get track information (name, type, volume, pan, mute, solo, arm)
-View devices loaded on each track
+View session info (tempo, time signature, track count)
+Get detailed track information
 
-MIDI Clip Management
+MIDI Clip Creation & Editing:
 
-Create new MIDI clips in session view
-Add MIDI notes (pitch, velocity, timing, duration)
+Create MIDI clips with custom lengths
+Add notes with specific pitch, timing, velocity, and duration
+Read existing MIDI notes from clips
+Delete clips
 Rename clips
-Get information about existing clips
+Set clip looping, loop points, and color
+Fire (play) and stop clips
 
-Playback Control
+Playback & Tempo:
 
-Start playback
-Stop playback
-Play specific clips (fire clips)
-Stop specific clips
+Start and stop playback
+Change tempo/BPM
+Fire scenes (launch entire rows of clips)
 
-Browser & Instruments
+Mixing & Track Controls:
 
-Explore the Ableton browser (categories, presets, plugins)
-Search for instruments and presets
-Load native Ableton instruments (Wavetable, Analog, Sampler, etc.)
-View the browser folder structure
+Adjust volume, pan, mute, solo, and arm status
+Set send levels to return tracks
+Control return track volumes, pan, mute, and solo
+Control master track volume
 
-Device Parameters
+Instruments & Effects:
 
-Read all parameters of a device
-Modify parameter values ​​(e.g., cutoff, resonance, envelope, etc.)
+Load instruments and effects from Ableton's browser
+Search for instruments, effects, and sounds
+Browse categories and user libraries
+Load samples onto tracks
+Load drum kits into drum racks
+Delete devices from tracks
 
-Session Information
+Device Parameters:
 
-Tempo (BPM)
-Time Signature
-Number of Tracks
-Number of Scenes
-Master Track Information
+View all parameters for any device
+Adjust parameter values (filters, envelopes, LFOs, etc.)
+Fine-tune synthesizers and effects
 
-❌ WHAT I CANNOT DO (or with limitations):
-Third-party VST/VST3 plugins
+Scenes:
 
-❌ Reliably load VST/VST3 plugins (such as Serum, Omnisphere, etc.)
-I can see that they exist, but the API has problems loading them.
-Workaround: You load them manually, and I can then control the parameters.
+Create and rename scenes
+Fire scenes to launch clips
 
-Audio Tracks
+Clip Automation:
 
-❌ Create audio tracks
-❌ Record audio
-❌ Edit existing audio clips
-I can only see information about existing audio tracks
+Create basic automation within MIDI clips for device parameters
 
-Automation
 
-❌ Create automation in arrangement view
-❌ Edit automation lanes
-The clip automation function is very limited
+❌ What I CANNOT Do:
+Audio Recording & Editing:
 
-Arrangement View
+Cannot record audio or MIDI in real-time
+Cannot edit audio clips (warping, slicing, fades)
+Cannot process or analyze audio waveforms
 
-❌ Work in arrangement view
-❌ Move clips on the timeline
-❌ Create complex arrangements
-I mainly work in Session View
+Arrangement View:
 
-Routing & Mixing
+Cannot work in Arrangement View (only Session View)
+Cannot create or edit arrangement automation (only clip automation, which has limited support)
 
-❌ Create send/return
-❌ Edit routing between tracks
-❌ Create track groups
-❌ Control volume/pan in detail (read-only)
+Advanced Clip Features:
 
-Audio Effects
+Cannot adjust clip envelopes directly
+Cannot set warp markers
+Cannot use MIDI effects like arpeggiators or scale tools
 
-I can load Ableton native effects, but:
-❌ Complex configuration of effect racks
-❌ Parallel chains/multiband processing
+Browser Limitations:
 
-Advanced MIDI
+Cannot browse or load third-party VST/AU plugins
+Cannot create or modify presets
+Cannot organize or tag browser items
 
-❌ CC (Control Change) messages
-❌ Pitch bend automation
-❌ MPE (MIDI Polyphonic Expression)
-Only basic note on/off
+Mixing Limitations:
 
-Sampling
+Cannot access detailed mixer features like pre/post fader routing
+Cannot create custom effect chains or groups
+Cannot freeze or flatten tracks
 
-❌ Load custom audio samples
-❌ Warping audio clips
-❌ Slicing and chopping
+MIDI Editing Constraints:
 
-Scenes & Sessions
+Cannot use advanced MIDI editing (humanization, groove templates)
+Cannot work with MPE or polyphonic expression
 
-❌ Create new scenes
-❌ Rename scenes
-❌ Launch complete scenes
+Project Management:
 
-Saving
+Cannot save, load, or export projects
+Cannot manage multiple open sets
+Cannot export audio or MIDI files
 
-❌ Save project
-❌ Export/bounce audio
-❌ Create new projects
+Max for Live:
 
-🎯 IN SUMMARY:
-I'm great for:
+Cannot interact with Max for Live devices or custom instruments
 
-Quickly creating beats and MIDI patterns
-Programming drums, bass, and melodies
-Exploring Ableton's native presets and instruments
-Prototyping musical ideas
-Tweaking native synth parameters
 
-You have to do manually:
-
-Loading third-party VST plugins
-Mixing and mastering
-Timeline arrangement
-Audio recording
-Saving and exporting
-Complex routing
-
+In Summary: I'm excellent at creating MIDI compositions, loading and tweaking instruments/effects, controlling playback, and mixing in Session View. However, I cannot record, work with audio editing, use Arrangement View, or access more advanced production features.
+What would you like to create with the tools I have available?
