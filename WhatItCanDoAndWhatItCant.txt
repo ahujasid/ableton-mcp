@@ -1,0 +1,125 @@
+✅ WHAT CAN I DO:
+Track Management
+
+Create new MIDI tracks
+Rename tracks
+Get track information (name, type, volume, pan, mute, solo, arm)
+View devices loaded on each track
+
+MIDI Clip Management
+
+Create new MIDI clips in session view
+Add MIDI notes (pitch, velocity, timing, duration)
+Rename clips
+Get information about existing clips
+
+Playback Control
+
+Start playback
+Stop playback
+Play specific clips (fire clips)
+Stop specific clips
+
+Browser & Instruments
+
+Explore the Ableton browser (categories, presets, plugins)
+Search for instruments and presets
+Load native Ableton instruments (Wavetable, Analog, Sampler, etc.)
+View the browser folder structure
+
+Device Parameters
+
+Read all parameters of a device
+Modify parameter values ​​(e.g., cutoff, resonance, envelope, etc.)
+
+Session Information
+
+Tempo (BPM)
+Time Signature
+Number of Tracks
+Number of Scenes
+Master Track Information
+
+❌ WHAT I CANNOT DO (or with limitations):
+Third-party VST/VST3 plugins
+
+❌ Reliably load VST/VST3 plugins (such as Serum, Omnisphere, etc.)
+I can see that they exist, but the API has problems loading them.
+Workaround: You load them manually, and I can then control the parameters.
+
+Audio Tracks
+
+❌ Create audio tracks
+❌ Record audio
+❌ Edit existing audio clips
+I can only see information about existing audio tracks
+
+Automation
+
+❌ Create automation in arrangement view
+❌ Edit automation lanes
+The clip automation function is very limited
+
+Arrangement View
+
+❌ Work in arrangement view
+❌ Move clips on the timeline
+❌ Create complex arrangements
+I mainly work in Session View
+
+Routing & Mixing
+
+❌ Create send/return
+❌ Edit routing between tracks
+❌ Create track groups
+❌ Control volume/pan in detail (read-only)
+
+Audio Effects
+
+I can load Ableton native effects, but:
+❌ Complex configuration of effect racks
+❌ Parallel chains/multiband processing
+
+Advanced MIDI
+
+❌ CC (Control Change) messages
+❌ Pitch bend automation
+❌ MPE (MIDI Polyphonic Expression)
+Only basic note on/off
+
+Sampling
+
+❌ Load custom audio samples
+❌ Warping audio clips
+❌ Slicing and chopping
+
+Scenes & Sessions
+
+❌ Create new scenes
+❌ Rename scenes
+❌ Launch complete scenes
+
+Saving
+
+❌ Save project
+❌ Export/bounce audio
+❌ Create new projects
+
+🎯 IN SUMMARY:
+I'm great for:
+
+Quickly creating beats and MIDI patterns
+Programming drums, bass, and melodies
+Exploring Ableton's native presets and instruments
+Prototyping musical ideas
+Tweaking native synth parameters
+
+You have to do manually:
+
+Loading third-party VST plugins
+Mixing and mastering
+Timeline arrangement
+Audio recording
+Saving and exporting
+Complex routing
+
