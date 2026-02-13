@@ -285,6 +285,23 @@ def get_track_info(ctx: Context, track_index: int) -> str:
         return f"Error getting track info: {str(e)}"
 
 @mcp.tool()
+def get_rack_device_info(ctx: Context, track_index: int, device_index: int) -> str:
+    """
+    Get detailed information about a rack device's chains and nested devices.
+
+    Parameters:
+    - track_index: The index of the track containing the rack device
+    - device_index: The index of the device on the track (must be a rack)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_rack_device_info", {"track_index": track_index, "device_index": device_index})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting rack device info from Ableton: {str(e)}")
+        return f"Error getting rack device info: {str(e)}"
+
+@mcp.tool()
 def create_midi_track(ctx: Context, index: int = -1) -> str:
     """
     Create a new MIDI track in the Ableton session.

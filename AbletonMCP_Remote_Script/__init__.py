@@ -225,6 +225,10 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "get_rack_device_info":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                response["result"] = self._get_rack_device_info(track_index, device_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name", 
                                  "create_clip", "add_notes_to_clip", "set_clip_name", 
@@ -389,12 +393,19 @@ class AbletonMCP(ControlSurface):
             # Get devices
             devices = []
             for device_index, device in enumerate(track.devices):
-                devices.append({
+                device_info = {
                     "index": device_index,
                     "name": device.name,
                     "class_name": device.class_name,
                     "type": self._get_device_type(device)
-                })
+                }
+                if device.can_have_chains:
+                    device_info["chains"] = [{
+                        "index": i,
+                        "name": chain.name,
+                        "device_count": len(chain.devices)
+                    } for i, chain in enumerate(device.chains)]
+                devices.append(device_info)
             
             result = {
                 "index": track_index,
@@ -414,6 +425,49 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting track info: " + str(e))
             raise
     
+    def _serialize_device(self, device):
+        """Serialize a device, recursively including chains for rack devices"""
+        device_info = {
+            "name": device.name,
+            "class_name": device.class_name,
+            "type": self._get_device_type(device)
+        }
+        if device.can_have_chains:
+            chains = []
+            for chain_index, chain in enumerate(device.chains):
+                chain_devices = [self._serialize_device(dev) for dev in chain.devices]
+                chains.append({
+                    "index": chain_index,
+                    "name": chain.name,
+                    "devices": chain_devices
+                })
+            device_info["chains"] = chains
+        return device_info
+
+    def _get_rack_device_info(self, track_index, device_index):
+        """Get detailed information about a rack device's chains and nested devices"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+
+            device = track.devices[device_index]
+
+            if not device.can_have_chains:
+                raise ValueError("Device '{}' is not a rack and does not have chains".format(device.name))
+
+            result = self._serialize_device(device)
+            result["track_index"] = track_index
+            result["device_index"] = device_index
+            return result
+        except Exception as e:
+            self.log_message("Error getting rack device info: " + str(e))
+            raise
+
     def _create_midi_track(self, index):
         """Create a new MIDI track at the specified index"""
         try:
