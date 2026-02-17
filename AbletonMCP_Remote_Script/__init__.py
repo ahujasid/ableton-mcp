@@ -227,7 +227,7 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_track_info(track_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name", 
-                                 "create_clip", "add_notes_to_clip", "set_clip_name", 
+                                 "create_clip", "get_clip_notes", "add_notes_to_clip", "set_clip_name", 
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback", "load_browser_item"]:
                 # Use a thread-safe approach with a response queue
@@ -249,6 +249,10 @@ class AbletonMCP(ControlSurface):
                             clip_index = params.get("clip_index", 0)
                             length = params.get("length", 4.0)
                             result = self._create_clip(track_index, clip_index, length)
+                        elif command_type == "get_clip_notes":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            result = self._get_clip_notes(track_index, clip_index)
                         elif command_type == "add_notes_to_clip":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
@@ -480,7 +484,62 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error creating clip: " + str(e))
             raise
-    
+
+    def _get_clip_notes(self, track_index, clip_index):
+        """Get MIDI notes from a clip"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            
+            track = self._song.tracks[track_index]
+            
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+            
+            clip_slot = track.clip_slots[clip_index]
+            
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+            
+            clip = clip_slot.clip
+
+            if not clip.is_midi_clip:
+                raise Exception("Clip is not a MIDI clip")
+
+            all_notes = clip.get_all_notes_extended()
+            if isinstance(all_notes, dict):
+                notes = all_notes.get("notes", [])
+            elif isinstance(all_notes, list):
+                notes = all_notes
+            else:
+                notes = []
+            notes = list(notes)  # Convert to list if it's a tuple or other iterable
+
+            clip_length = clip.length
+            quantization = getattr(clip, "launch_quantization", None)
+
+            scale_info = None
+            
+            if hasattr(self._song, "scale_mode"):
+                scale_info = {
+                    "enabled": self._song.scale_mode,
+                    "root_note": getattr(self._song, "root_note", None),
+                    "scale_name": getattr(self._song, "scale_name", None),
+                    "scale_intervals": getattr(self._song, "scale_intervals", None)
+                }
+
+
+            result = {
+                "notes": notes,
+                "clip_length": clip_length,
+                "quantization": quantization,
+                "scale_info": scale_info
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error getting clip notes: " + str(e))
+            raise
+
     def _add_notes_to_clip(self, track_index, clip_index, notes):
         """Add MIDI notes to a clip"""
         try:
