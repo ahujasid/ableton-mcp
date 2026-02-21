@@ -66,6 +66,28 @@ def register(mcp: Any, get_ableton_connection: Callable[[], Any]) -> None:
             return f"Error switching view: {str(e)}"
 
     @mcp.tool()
+    def get_project_overview(ctx: Context) -> str:
+        """Get a complete project overview in a single call: session info, all tracks with devices, group structure, and arrangement clips for every track. Use this instead of calling get_session_info + get_all_tracks_info + get_arrangement_clips individually."""
+        try:
+            ableton = get_ableton_connection()
+            result = ableton.send_command("get_project_overview")
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            logger.error(f"Error getting project overview: {str(e)}")
+            return f"Error getting project overview: {str(e)}"
+
+    @mcp.tool()
+    def reload_handlers(ctx: Context) -> str:
+        """Hot-reload all AbletonMCP handler modules without restarting Ableton. Use after deploying code changes."""
+        try:
+            ableton = get_ableton_connection()
+            result = ableton.send_command("reload_handlers")
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            logger.error(f"Error reloading handlers: {str(e)}")
+            return f"Error reloading handlers: {str(e)}"
+
+    @mcp.tool()
     def record_arrangement_clip(
         ctx: Context,
         track_index: int,

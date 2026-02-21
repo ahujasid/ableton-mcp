@@ -634,6 +634,220 @@ def _build_arrangement(song, p, ctrl):
     }
 
 
+def _fill_session_gaps(song, p, ctrl):
+    """Fill empty session clip slots where the plan expects clips.
+
+    For each section/track in the plan, if the session slot is empty but the
+    track has a clip in another slot, duplicate it there.
+
+    Params:
+        plan: list of sections (same format as build/record)
+    """
+    plan = p.get("plan", [])
+    if not plan:
+        return {"error": "no plan provided"}
+
+    filled = 0
+    errors = []
+    for i, section in enumerate(plan):
+        for ti in section.get("tracks", []):
+            try:
+                track = song.tracks[ti]
+                if i >= len(track.clip_slots):
+                    continue
+                slot = track.clip_slots[i]
+                if slot.has_clip:
+                    continue  # already has a clip
+                # Find a source clip on this track
+                source = None
+                for s in track.clip_slots:
+                    if s.has_clip:
+                        source = s
+                        break
+                if source is None:
+                    continue  # no clips at all on this track
+                source.duplicate_clip_to(slot)
+                filled += 1
+            except Exception as e:
+                errors.append("[{0}] scene {1}: {2}".format(ti, i, e))
+
+    return {"filled": filled, "errors": errors}
+
+
+def _place_clips(song, p, ctrl):
+    """Place session clips into arrangement without recording.
+
+    For each section in the plan, copies each track's session clip to the
+    correct arrangement position. Does NOT use recording mode, so any
+    existing arrangement content on non-plan tracks is untouched.
+
+    Params:
+        plan: list of sections (same format as build/record)
+    """
+    plan = p.get("plan", [])
+    if not plan:
+        return {"error": "no plan provided"}
+
+    placed = 0
+    errors = []
+    for i, section in enumerate(plan):
+        beat = (section["bar"] - 1) * 4
+        for ti in section.get("tracks", []):
+            try:
+                track = song.tracks[ti]
+                slot = track.clip_slots[i]
+                if not slot.has_clip:
+                    continue
+                result = arrangement.copy_clip_to_arrangement(
+                    song, ti, i, float(beat), ctrl)
+                if result and result.get("copied"):
+                    placed += 1
+                else:
+                    errors.append("[{0}] scene {1}: copy returned not-copied".format(ti, i))
+            except Exception as e:
+                errors.append("[{0}] scene {1}: {2}".format(ti, i, e))
+
+    return {
+        "clips_placed": placed,
+        "errors": errors,
+    }
+
+
+def _record_automation(song, p, ctrl):
+    """Record automation only — plays arrangement, no scene firing.
+
+    Plays the existing arrangement in record mode while setting parameter
+    values in real-time. Since no scenes are fired, existing arrangement
+    clips (including FX, one-shots, etc.) are NOT overwritten.
+
+    All tracks are disarmed before recording to prevent any audio/MIDI
+    input from overwriting clips.
+
+    Params:
+        plan: list of sections (used only to calculate total length)
+        automation: list of automation lanes (same format as record_arrangement)
+        stop_after: bool (default True)
+    """
+    from . import automation as _auto
+
+    plan = p.get("plan", [])
+    auto_lanes = p.get("automation", [])
+    stop_after = p.get("stop_after", True)
+
+    if not auto_lanes:
+        return {"error": "no automation lanes provided"}
+
+    # Calculate total beats from plan
+    total_beats = 0
+    for s in plan:
+        end = (s["bar"] - 1) * 4 + s["bars"] * 4
+        if end > total_beats:
+            total_beats = end
+
+    if total_beats == 0:
+        total_beats = max(float(pt["time"]) for lane in auto_lanes for pt in lane["points"]) + 16
+
+    # Resolve automation parameters
+    auto_resolved = []
+    for lane in auto_lanes:
+        try:
+            tidx = lane["track_index"]
+            track = song.tracks[tidx]
+            param = _auto._find_parameter(track, lane["parameter_name"])
+            if param is None:
+                if ctrl:
+                    ctrl.log_message("auto: param not found: {0} on track {1}".format(
+                        lane["parameter_name"], tidx))
+                continue
+            pts = sorted(lane["points"], key=lambda x: float(x["time"]))
+            auto_resolved.append({"param": param, "points": pts, "next": [0],
+                                  "name": lane["parameter_name"], "track": tidx})
+        except Exception as e:
+            if ctrl:
+                ctrl.log_message("auto: resolve error: {0}".format(e))
+
+    def poll_automation():
+        now = song.current_song_time
+
+        if now >= total_beats:
+            if stop_after:
+                song.record_mode = False
+                song.stop_playing()
+            if ctrl:
+                ctrl.log_message("record_automation: done at {0}".format(now))
+            return
+
+        # Apply automation with interpolation
+        for lane in auto_resolved:
+            ni = lane["next"][0]
+            pts = lane["points"]
+            while ni < len(pts) and now >= float(pts[ni]["time"]):
+                val = max(0.0, min(1.0, float(pts[ni]["value"])))
+                try:
+                    lane["param"].value = val
+                except Exception:
+                    pass
+                ni += 1
+                lane["next"][0] = ni
+
+            if ni > 0 and ni < len(pts):
+                prev = pts[ni - 1]
+                nxt = pts[ni]
+                t0 = float(prev["time"])
+                t1 = float(nxt["time"])
+                v0 = float(prev["value"])
+                v1 = float(nxt["value"])
+                if t1 > t0:
+                    frac = (now - t0) / (t1 - t0)
+                    frac = max(0.0, min(1.0, frac))
+                    interp = v0 + (v1 - v0) * frac
+                    try:
+                        lane["param"].value = max(0.0, min(1.0, interp))
+                    except Exception:
+                        pass
+
+        ctrl.schedule_message(1, poll_automation)
+
+    # Disarm ALL tracks so recording doesn't capture audio/MIDI input
+    for track in song.tracks:
+        try:
+            if track.can_be_armed and track.arm:
+                track.arm = False
+        except Exception:
+            pass
+
+    # Setup
+    song.stop_playing()
+    song.current_song_time = 0.0
+
+    # Set initial values
+    for lane in auto_resolved:
+        if lane["points"]:
+            val = max(0.0, min(1.0, float(lane["points"][0]["value"])))
+            try:
+                lane["param"].value = val
+            except Exception:
+                pass
+
+    # Start arrangement playback in record mode (no scene firing!)
+    song.record_mode = True
+    song.start_playing()
+
+    if ctrl:
+        ctrl.log_message("record_automation: started, {0} lanes, {1} beats".format(
+            len(auto_resolved), total_beats))
+
+    ctrl.schedule_message(1, poll_automation)
+
+    return {
+        "status": "recording_automation",
+        "total_beats": total_beats,
+        "total_bars": total_beats / 4,
+        "duration_seconds": total_beats * 60.0 / song.tempo,
+        "automation_lanes": len(auto_resolved),
+    }
+
+
 # Registry of dynamically dispatched commands.
 # Key: command name, Value: (handler_func, param_extractor, needs_main_thread)
 def _get_registry():
@@ -748,6 +962,18 @@ def _get_registry():
         },
         "record_arrangement": {
             "handler": lambda song, p, ctrl: _record_arrangement(song, p, ctrl),
+            "modifying": True,
+        },
+        "place_clips": {
+            "handler": lambda song, p, ctrl: _place_clips(song, p, ctrl),
+            "modifying": True,
+        },
+        "fill_session_gaps": {
+            "handler": lambda song, p, ctrl: _fill_session_gaps(song, p, ctrl),
+            "modifying": True,
+        },
+        "record_automation": {
+            "handler": lambda song, p, ctrl: _record_automation(song, p, ctrl),
             "modifying": True,
         },
     }

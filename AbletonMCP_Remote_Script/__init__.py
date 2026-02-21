@@ -186,6 +186,24 @@ class AbletonMCP(ControlSurface):
                 pass
             self.log_message("Client handler stopped")
 
+    def _reload_handlers(self):
+        """Hot-reload all handler modules without restarting."""
+        import importlib
+        reloaded = []
+        errors = []
+        for submod_name in sorted(handlers.__dict__):
+            submod = getattr(handlers, submod_name, None)
+            if hasattr(submod, "__file__"):
+                try:
+                    importlib.reload(submod)
+                    reloaded.append(submod_name)
+                except Exception as e:
+                    errors.append({"module": submod_name, "error": str(e)})
+                    self.log_message("Reload error for {0}: {1}".format(submod_name, e))
+        self.log_message("Reloaded {0} handler modules".format(len(reloaded)))
+        self.show_message("AbletonMCP: Reloaded {0} modules".format(len(reloaded)))
+        return {"reloaded": reloaded, "errors": errors}
+
     def _process_command(self, command):
         command_type = command.get("type", "")
         params = command.get("params", {})
@@ -418,6 +436,10 @@ class AbletonMCP(ControlSurface):
                 except queue.Empty:
                     response["status"] = "error"
                     response["message"] = "Timeout waiting for operation to complete"
+
+            # ---- Hot-reload command ----
+            elif command_type == "reload_handlers":
+                response["result"] = self._reload_handlers()
 
             # ---- Dynamic dispatch (hot-reloadable) ----
             elif handlers.dispatch.is_known(command_type):
