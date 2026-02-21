@@ -672,7 +672,7 @@ class AbletonMCP(ControlSurface):
                 
                 # Determine the root based on the first part
                 current_item = None
-                if path_parts[0].lower() == "nstruments":
+                if path_parts[0].lower() == "instruments":
                     current_item = app.browser.instruments
                 elif path_parts[0].lower() == "sounds":
                     current_item = app.browser.sounds
