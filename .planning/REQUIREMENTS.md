@@ -11,8 +11,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [x] **FNDN-01**: Server runs on Python 3 only — all Python 2 compatibility code removed
 - [x] **FNDN-02**: Remote Script uses Python 3.11 idioms (super(), f-strings, type hints, queue module)
-- [ ] **FNDN-03**: Socket protocol uses length-prefix framing instead of JSON-completeness parsing
-- [ ] **FNDN-04**: Global connection protected by threading.Lock for concurrent tool invocations
+- [x] **FNDN-03**: Socket protocol uses length-prefix framing instead of JSON-completeness parsing
+- [x] **FNDN-04**: Global connection protected by threading.Lock for concurrent tool invocations
 - [x] **FNDN-05**: All error handling uses specific exception types — no bare except:pass blocks
 - [ ] **FNDN-06**: Remote Script command dispatch uses dict-based router instead of if/elif chain
 - [ ] **FNDN-07**: MCP tools organized into domain modules (tracks, clips, mixing, etc.)
@@ -156,8 +156,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 | FNDN-01 | Phase 1 | Complete |
 | FNDN-02 | Phase 1 | Complete |
-| FNDN-03 | Phase 1 | Pending |
-| FNDN-04 | Phase 1 | Pending |
+| FNDN-03 | Phase 1 | Complete |
+| FNDN-04 | Phase 1 | Complete |
 | FNDN-05 | Phase 1 | Complete |
 | FNDN-06 | Phase 1 | Pending |
 | FNDN-07 | Phase 2 | Pending |
