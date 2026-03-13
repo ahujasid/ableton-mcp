@@ -80,6 +80,16 @@ def _timeout_for(command_type: str) -> float:
     return TIMEOUT_READ
 
 
+def format_error(message: str, detail: str = "", suggestion: str = "") -> str:
+    """Format error for AI consumption. Clean message first, technical detail below."""
+    parts = [f"Error: {message}"]
+    if suggestion:
+        parts.append(f"Suggestion: {suggestion}")
+    if detail:
+        parts.append(f"Debug: {detail}")
+    return "\n".join(parts)
+
+
 @dataclass
 class AbletonConnection:
     host: str
@@ -247,6 +257,30 @@ def get_ableton_connection() -> AbletonConnection:
 # Core Tool endpoints
 
 @mcp.tool()
+def get_connection_status(ctx: Context) -> str:
+    """Check connection health and get Ableton session summary.
+    Returns connection state, Ableton version, and basic session info.
+    Use this to verify the connection before starting work."""
+    try:
+        ableton = get_ableton_connection()
+        ping_result = ableton.send_command("ping")
+        session = ableton.send_command("get_session_info")
+        return json.dumps({
+            "connected": True,
+            "ableton_version": ping_result.get("ableton_version", "unknown"),
+            "tempo": session.get("tempo"),
+            "track_count": session.get("track_count"),
+            "return_track_count": session.get("return_track_count"),
+        }, indent=2)
+    except Exception as e:
+        return format_error(
+            "Cannot reach Ableton",
+            detail=str(e),
+            suggestion="Ensure Ableton is running and Remote Script is loaded in Preferences > Link/Tempo/MIDI",
+        )
+
+
+@mcp.tool()
 def get_session_info(ctx: Context) -> str:
     """Get detailed information about the current Ableton session"""
     try:
@@ -255,7 +289,8 @@ def get_session_info(ctx: Context) -> str:
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting session info from Ableton: {str(e)}")
-        return f"Error getting session info: {str(e)}"
+        return format_error("Failed to get session info", detail=str(e),
+                           suggestion="Verify connection with get_connection_status first")
 
 @mcp.tool()
 def get_track_info(ctx: Context, track_index: int) -> str:
@@ -271,7 +306,8 @@ def get_track_info(ctx: Context, track_index: int) -> str:
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting track info from Ableton: {str(e)}")
-        return f"Error getting track info: {str(e)}"
+        return format_error("Failed to get track info", detail=str(e),
+                           suggestion="Check track index with get_session_info first")
 
 @mcp.tool()
 def create_midi_track(ctx: Context, index: int = -1) -> str:
@@ -287,7 +323,8 @@ def create_midi_track(ctx: Context, index: int = -1) -> str:
         return f"Created new MIDI track: {result.get('name', 'unknown')}"
     except Exception as e:
         logger.error(f"Error creating MIDI track: {str(e)}")
-        return f"Error creating MIDI track: {str(e)}"
+        return format_error("Failed to create MIDI track", detail=str(e),
+                           suggestion="Check track count with get_session_info")
 
 
 @mcp.tool()
@@ -305,7 +342,8 @@ def set_track_name(ctx: Context, track_index: int, name: str) -> str:
         return f"Renamed track to: {result.get('name', name)}"
     except Exception as e:
         logger.error(f"Error setting track name: {str(e)}")
-        return f"Error setting track name: {str(e)}"
+        return format_error("Failed to set track name", detail=str(e),
+                           suggestion="Verify track index with get_session_info")
 
 @mcp.tool()
 def create_clip(ctx: Context, track_index: int, clip_index: int, length: float = 4.0) -> str:
@@ -327,7 +365,8 @@ def create_clip(ctx: Context, track_index: int, clip_index: int, length: float =
         return f"Created new clip at track {track_index}, slot {clip_index} with length {length} beats"
     except Exception as e:
         logger.error(f"Error creating clip: {str(e)}")
-        return f"Error creating clip: {str(e)}"
+        return format_error("Failed to create clip", detail=str(e),
+                           suggestion="Verify track and clip slot indices with get_track_info")
 
 @mcp.tool()
 def add_notes_to_clip(
@@ -354,7 +393,8 @@ def add_notes_to_clip(
         return f"Added {len(notes)} notes to clip at track {track_index}, slot {clip_index}"
     except Exception as e:
         logger.error(f"Error adding notes to clip: {str(e)}")
-        return f"Error adding notes to clip: {str(e)}"
+        return format_error("Failed to add notes to clip", detail=str(e),
+                           suggestion="Ensure clip exists at the specified track and slot")
 
 @mcp.tool()
 def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) -> str:
@@ -376,7 +416,8 @@ def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) ->
         return f"Renamed clip at track {track_index}, slot {clip_index} to '{name}'"
     except Exception as e:
         logger.error(f"Error setting clip name: {str(e)}")
-        return f"Error setting clip name: {str(e)}"
+        return format_error("Failed to set clip name", detail=str(e),
+                           suggestion="Ensure clip exists at the specified track and slot")
 
 @mcp.tool()
 def set_tempo(ctx: Context, tempo: float) -> str:
@@ -392,14 +433,15 @@ def set_tempo(ctx: Context, tempo: float) -> str:
         return f"Set tempo to {tempo} BPM"
     except Exception as e:
         logger.error(f"Error setting tempo: {str(e)}")
-        return f"Error setting tempo: {str(e)}"
+        return format_error("Failed to set tempo", detail=str(e),
+                           suggestion="Tempo must be between 20 and 999 BPM")
 
 
 @mcp.tool()
 def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
     """
     Load an instrument or effect onto a track using its URI.
-    
+
     Parameters:
     - track_index: The index of the track to load the instrument on
     - uri: The URI of the instrument or effect to load (e.g., 'query:Synths#Instrument%20Rack:Bass:FileId_5116')
@@ -408,22 +450,30 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
         ableton = get_ableton_connection()
         result = ableton.send_command("load_browser_item", {
             "track_index": track_index,
-            "item_uri": uri
+            "item_uri": uri,
         })
-        
+
         # Check if the instrument was loaded successfully
         if result.get("loaded", False):
-            new_devices = result.get("new_devices", [])
-            if new_devices:
-                return f"Loaded instrument with URI '{uri}' on track {track_index}. New devices: {', '.join(new_devices)}"
-            else:
-                devices = result.get("devices_after", [])
-                return f"Loaded instrument with URI '{uri}' on track {track_index}. Devices on track: {', '.join(devices)}"
+            item_name = result.get("item_name", "unknown")
+            device_chain = result.get("devices", [])
+            chain_str = ", ".join(device_chain) if device_chain else "none"
+            return (
+                f"Loaded '{item_name}' on track {track_index} "
+                f"(device chain: {chain_str})"
+            )
         else:
-            return f"Failed to load instrument with URI '{uri}'"
+            return format_error(
+                f"Failed to load instrument with URI '{uri}'",
+                suggestion="Verify the URI using get_browser_items_at_path first",
+            )
     except Exception as e:
         logger.error(f"Error loading instrument by URI: {str(e)}")
-        return f"Error loading instrument by URI: {str(e)}"
+        return format_error(
+            "Failed to load instrument",
+            detail=str(e),
+            suggestion="Verify the URI using get_browser_items_at_path first",
+        )
 
 @mcp.tool()
 def fire_clip(ctx: Context, track_index: int, clip_index: int) -> str:
@@ -443,7 +493,8 @@ def fire_clip(ctx: Context, track_index: int, clip_index: int) -> str:
         return f"Started playing clip at track {track_index}, slot {clip_index}"
     except Exception as e:
         logger.error(f"Error firing clip: {str(e)}")
-        return f"Error firing clip: {str(e)}"
+        return format_error("Failed to fire clip", detail=str(e),
+                           suggestion="Ensure clip exists at the specified track and slot")
 
 @mcp.tool()
 def stop_clip(ctx: Context, track_index: int, clip_index: int) -> str:
@@ -463,7 +514,8 @@ def stop_clip(ctx: Context, track_index: int, clip_index: int) -> str:
         return f"Stopped clip at track {track_index}, slot {clip_index}"
     except Exception as e:
         logger.error(f"Error stopping clip: {str(e)}")
-        return f"Error stopping clip: {str(e)}"
+        return format_error("Failed to stop clip", detail=str(e),
+                           suggestion="Ensure clip exists at the specified track and slot")
 
 @mcp.tool()
 def start_playback(ctx: Context) -> str:
@@ -474,7 +526,8 @@ def start_playback(ctx: Context) -> str:
         return "Started playback"
     except Exception as e:
         logger.error(f"Error starting playback: {str(e)}")
-        return f"Error starting playback: {str(e)}"
+        return format_error("Failed to start playback", detail=str(e),
+                           suggestion="Verify connection with get_connection_status")
 
 @mcp.tool()
 def stop_playback(ctx: Context) -> str:
@@ -485,7 +538,8 @@ def stop_playback(ctx: Context) -> str:
         return "Stopped playback"
     except Exception as e:
         logger.error(f"Error stopping playback: {str(e)}")
-        return f"Error stopping playback: {str(e)}"
+        return format_error("Failed to stop playback", detail=str(e),
+                           suggestion="Verify connection with get_connection_status")
 
 @mcp.tool()
 def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
@@ -540,15 +594,18 @@ def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
         return formatted_output
     except Exception as e:
         error_msg = str(e)
+        logger.error(f"Error getting browser tree: {error_msg}")
         if "Browser is not available" in error_msg:
-            logger.error(f"Browser is not available in Ableton: {error_msg}")
-            return f"Error: The Ableton browser is not available. Make sure Ableton Live is fully loaded and try again."
+            return format_error("Browser is not available",
+                               detail=error_msg,
+                               suggestion="Make sure Ableton Live is fully loaded and try again")
         elif "Could not access Live application" in error_msg:
-            logger.error(f"Could not access Live application: {error_msg}")
-            return f"Error: Could not access the Ableton Live application. Make sure Ableton Live is running and the Remote Script is loaded."
+            return format_error("Could not access Live application",
+                               detail=error_msg,
+                               suggestion="Ensure Ableton is running and Remote Script is loaded")
         else:
-            logger.error(f"Error getting browser tree: {error_msg}")
-            return f"Error getting browser tree: {error_msg}"
+            return format_error("Failed to get browser tree", detail=error_msg,
+                               suggestion="Verify connection with get_connection_status")
 
 @mcp.tool()
 def get_browser_items_at_path(ctx: Context, path: str) -> str:
@@ -575,21 +632,26 @@ def get_browser_items_at_path(ctx: Context, path: str) -> str:
         return json.dumps(result, indent=2)
     except Exception as e:
         error_msg = str(e)
+        logger.error(f"Error getting browser items at path: {error_msg}")
         if "Browser is not available" in error_msg:
-            logger.error(f"Browser is not available in Ableton: {error_msg}")
-            return f"Error: The Ableton browser is not available. Make sure Ableton Live is fully loaded and try again."
+            return format_error("Browser is not available",
+                               detail=error_msg,
+                               suggestion="Make sure Ableton Live is fully loaded and try again")
         elif "Could not access Live application" in error_msg:
-            logger.error(f"Could not access Live application: {error_msg}")
-            return f"Error: Could not access the Ableton Live application. Make sure Ableton Live is running and the Remote Script is loaded."
+            return format_error("Could not access Live application",
+                               detail=error_msg,
+                               suggestion="Ensure Ableton is running and Remote Script is loaded")
         elif "Unknown or unavailable category" in error_msg:
-            logger.error(f"Invalid browser category: {error_msg}")
-            return f"Error: {error_msg}. Please check the available categories using get_browser_tree."
+            return format_error("Invalid browser category",
+                               detail=error_msg,
+                               suggestion="Check available categories using get_browser_tree")
         elif "Path part" in error_msg and "not found" in error_msg:
-            logger.error(f"Path not found: {error_msg}")
-            return f"Error: {error_msg}. Please check the path and try again."
+            return format_error("Path not found",
+                               detail=error_msg,
+                               suggestion="Check the path and try again")
         else:
-            logger.error(f"Error getting browser items at path: {error_msg}")
-            return f"Error getting browser items at path: {error_msg}"
+            return format_error("Failed to get browser items", detail=error_msg,
+                               suggestion="Verify the path format: category/folder/subfolder")
 
 @mcp.tool()
 def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:
@@ -638,7 +700,8 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) 
         return f"Loaded drum rack and kit '{loadable_kits[0].get('name')}' on track {track_index}"
     except Exception as e:
         logger.error(f"Error loading drum kit: {str(e)}")
-        return f"Error loading drum kit: {str(e)}"
+        return format_error("Failed to load drum kit", detail=str(e),
+                           suggestion="Verify URIs using get_browser_items_at_path first")
 
 # Main execution
 def main():

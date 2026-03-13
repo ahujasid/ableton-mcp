@@ -12,6 +12,20 @@ import queue
 DEFAULT_PORT = 9877
 HOST = "localhost"
 
+# Browser category name -> attribute name mapping (fixes 'nstruments' typo)
+_CATEGORY_MAP = {
+    "instruments": "instruments",
+    "sounds": "sounds",
+    "drums": "drums",
+    "audio_effects": "audio_effects",
+    "midi_effects": "midi_effects",
+    "max_for_live": "max_for_live",
+    "plug_ins": "plug_ins",
+    "clips": "clips",
+    "samples": "samples",
+    "packs": "packs",
+}
+
 
 # ---------------------------------------------------------------------------
 # Length-prefix framing protocol (identical to MCP_Server/server.py)
@@ -71,6 +85,9 @@ class AbletonMCP(ControlSurface):
         # Cache the song reference for easier access
         self._song = self.song()
 
+        # Browser path cache (cleared on disconnect)
+        self._browser_path_cache = {}
+
         # Build command dispatch tables
         self._build_command_table()
 
@@ -86,6 +103,7 @@ class AbletonMCP(ControlSurface):
         """Called when Ableton closes or the control surface is removed"""
         self.log_message("AbletonMCP disconnecting...")
         self.running = False
+        self._browser_path_cache.clear()
         
         # Stop the server
         if self.server:
@@ -248,9 +266,21 @@ class AbletonMCP(ControlSurface):
         # Unknown command
         return {"status": "error", "message": f"Unknown command: {command_type}"}
 
+    # Commands that manage their own main-thread scheduling
+    _SELF_SCHEDULING_COMMANDS = frozenset(["load_browser_item", "load_instrument_or_effect"])
+
     def _dispatch_write_command(self, command_type, params):
         """Execute a write command on the main thread via schedule_message."""
         handler = self._write_commands[command_type]
+
+        # Some commands handle their own scheduling internally
+        if command_type in self._SELF_SCHEDULING_COMMANDS:
+            result = handler(params)
+            # These handlers return the full response dict with status
+            if isinstance(result, dict) and "status" in result:
+                return result
+            return {"status": "success", "result": result}
+
         response_queue = queue.Queue()
 
         def main_thread_task():
@@ -267,17 +297,24 @@ class AbletonMCP(ControlSurface):
         except AssertionError:
             main_thread_task()
 
-        timeout = 30.0 if command_type in ("load_browser_item", "load_instrument_or_effect") else 10.0
         try:
-            return response_queue.get(timeout=timeout)
+            return response_queue.get(timeout=10.0)
         except queue.Empty:
             return {"status": "error", "message": f"Timeout waiting for {command_type} to complete"}
     
     # Command implementations
 
     def _ping(self, params=None):
-        """Respond to health check."""
-        return {"pong": True, "version": "1.0"}
+        """Respond to health check with protocol and Ableton version."""
+        try:
+            ableton_version = str(self.application().get_major_version())
+        except Exception:
+            ableton_version = "unknown"
+        return {
+            "pong": True,
+            "version": "1.0",
+            "ableton_version": ableton_version,
+        }
 
     def _get_session_info(self, params=None):
         """Get information about the current session"""
@@ -636,20 +673,14 @@ class AbletonMCP(ControlSurface):
             if path:
                 # Parse the path and navigate to the specified item
                 path_parts = path.split("/")
-                
-                # Determine the root based on the first part
+
+                # Determine the root based on the first part using dict lookup
+                category_key = path_parts[0].lower()
+                attr_name = _CATEGORY_MAP.get(category_key)
                 current_item = None
-                if path_parts[0].lower() == "nstruments":
-                    current_item = app.browser.instruments
-                elif path_parts[0].lower() == "sounds":
-                    current_item = app.browser.sounds
-                elif path_parts[0].lower() == "drums":
-                    current_item = app.browser.drums
-                elif path_parts[0].lower() == "audio_effects":
-                    current_item = app.browser.audio_effects
-                elif path_parts[0].lower() == "midi_effects":
-                    current_item = app.browser.midi_effects
-                else:
+                if attr_name:
+                    current_item = getattr(app.browser, attr_name, None)
+                if current_item is None:
                     # Default to instruments if not specified
                     current_item = app.browser.instruments
                     # Don't skip the first part in this case
@@ -691,54 +722,140 @@ class AbletonMCP(ControlSurface):
     
     
     def _load_browser_item(self, params=None):
-        """Load a browser item onto a track by its URI"""
+        """Load a browser item onto a track by its URI.
+
+        Uses same-callback pattern: selected_track and load_item happen in the
+        same schedule_message callback to prevent race conditions. Verifies
+        device count and retries once on failure.
+        """
+        params = params or {}
+        track_index = params.get("track_index", 0)
+        item_uri = params.get("item_uri", "")
+
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+
+        track = self._song.tracks[track_index]
+
+        app = self.application()
+        item = self._find_browser_item_by_uri(app.browser, item_uri)
+        if not item:
+            raise ValueError(f"Browser item with URI '{item_uri}' not found")
+
+        response_queue = queue.Queue()
+
+        def do_load(retries_remaining=1):
+            """Execute load on main thread: select track + load item in same callback."""
+            try:
+                devices_before = len(track.devices)
+                # CRITICAL: same callback -- selected_track AND load_item together
+                self._song.view.selected_track = track
+                app.browser.load_item(item)
+                # Schedule verification on next tick
+                self.schedule_message(
+                    1,
+                    lambda: self._verify_load(
+                        track, devices_before, item_uri, item.name,
+                        response_queue, retries_remaining,
+                    ),
+                )
+            except Exception as e:
+                self.log_message(f"[ERROR] _load_browser_item do_load: {e}")
+                self.log_message(traceback.format_exc())
+                response_queue.put({"status": "error", "message": str(e)})
+
         try:
-            params = params or {}
-            track_index = params.get("track_index", 0)
-            item_uri = params.get("item_uri", "")
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            
-            track = self._song.tracks[track_index]
-            
-            # Access the application's browser instance instead of creating a new one
-            app = self.application()
-            
-            # Find the browser item by URI
-            item = self._find_browser_item_by_uri(app.browser, item_uri)
-            
-            if not item:
-                raise ValueError(f"Browser item with URI '{item_uri}' not found")
-            
-            # Select the track
-            self._song.view.selected_track = track
-            
-            # Load the item
-            app.browser.load_item(item)
-            
-            result = {
-                "loaded": True,
-                "item_name": item.name,
-                "track_name": track.name,
-                "uri": item_uri
-            }
-            return result
+            self.schedule_message(0, do_load)
+        except AssertionError:
+            do_load()
+
+        try:
+            return response_queue.get(timeout=30.0)
+        except queue.Empty:
+            return {"status": "error", "message": f"Timeout loading browser item '{item_uri}'"}
+
+    def _verify_load(self, track, devices_before, item_uri, item_name,
+                     response_queue, retries_remaining):
+        """Verify device was loaded; retry once on failure."""
+        try:
+            devices_after = len(track.devices)
+            if devices_after > devices_before:
+                device_chain = [d.name for d in track.devices]
+                response_queue.put({
+                    "status": "success",
+                    "result": {
+                        "loaded": True,
+                        "item_name": item_name,
+                        "track_name": track.name,
+                        "uri": item_uri,
+                        "devices": device_chain,
+                        "device_count": devices_after,
+                    },
+                })
+            elif retries_remaining > 0:
+                self.log_message(f"[WARN] Load verify failed for '{item_uri}', retrying...")
+                app = self.application()
+                item = self._find_browser_item_by_uri(app.browser, item_uri)
+                if item:
+                    def retry_load():
+                        try:
+                            new_before = len(track.devices)
+                            self._song.view.selected_track = track
+                            app.browser.load_item(item)
+                            self.schedule_message(
+                                1,
+                                lambda: self._verify_load(
+                                    track, new_before, item_uri, item_name,
+                                    response_queue, retries_remaining - 1,
+                                ),
+                            )
+                        except Exception as e:
+                            self.log_message(f"[ERROR] retry load: {e}")
+                            response_queue.put({"status": "error", "message": str(e)})
+
+                    self.schedule_message(0, retry_load)
+                else:
+                    response_queue.put({
+                        "status": "error",
+                        "message": f"Retry failed: browser item '{item_uri}' not found",
+                    })
+            else:
+                response_queue.put({
+                    "status": "error",
+                    "message": (
+                        f"Failed to load '{item_name}' on track '{track.name}'. "
+                        f"Device count unchanged at {devices_after}."
+                    ),
+                })
         except Exception as e:
-            self.log_message(f"Error loading browser item: {e}")
+            self.log_message(f"[ERROR] _verify_load: {e}")
             self.log_message(traceback.format_exc())
-            raise
+            response_queue.put({"status": "error", "message": str(e)})
     
     def _find_browser_item_by_uri(self, browser_or_item, uri, max_depth=10, current_depth=0):
-        """Find a browser item by its URI"""
+        """Find a browser item by its URI, using cache when available."""
+        # Check cache first (only at top-level call)
+        if current_depth == 0 and uri in self._browser_path_cache:
+            try:
+                cached = self._browser_path_cache[uri]
+                # Validate cached item is still valid
+                if hasattr(cached, 'uri') and cached.uri == uri:
+                    return cached
+            except (KeyError, AttributeError):
+                pass
+            # Stale entry -- remove it
+            self._browser_path_cache.pop(uri, None)
+
         try:
             # Check if this is the item we're looking for
             if hasattr(browser_or_item, 'uri') and browser_or_item.uri == uri:
+                self._browser_path_cache[uri] = browser_or_item
                 return browser_or_item
-            
+
             # Stop recursion if we've reached max depth
             if current_depth >= max_depth:
                 return None
-            
+
             # Check if this is a browser with root categories
             if hasattr(browser_or_item, 'instruments'):
                 # Check all main categories
@@ -747,23 +864,23 @@ class AbletonMCP(ControlSurface):
                     browser_or_item.sounds,
                     browser_or_item.drums,
                     browser_or_item.audio_effects,
-                    browser_or_item.midi_effects
+                    browser_or_item.midi_effects,
                 ]
-                
+
                 for category in categories:
                     item = self._find_browser_item_by_uri(category, uri, max_depth, current_depth + 1)
                     if item:
                         return item
-                
+
                 return None
-            
+
             # Check if this item has children
             if hasattr(browser_or_item, 'children') and browser_or_item.children:
                 for child in browser_or_item.children:
                     item = self._find_browser_item_by_uri(child, uri, max_depth, current_depth + 1)
                     if item:
                         return item
-            
+
             return None
         except Exception as e:
             self.log_message(f"Error finding browser item by URI: {e}")
@@ -985,22 +1102,15 @@ class AbletonMCP(ControlSurface):
             if not path_parts:
                 raise ValueError("Invalid path")
             
-            # Determine the root category
+            # Determine the root category using dict lookup
             root_category = path_parts[0].lower()
+            attr_name = _CATEGORY_MAP.get(root_category)
             current_item = None
-            
-            # Check standard categories first
-            if root_category == "instruments" and hasattr(app.browser, 'instruments'):
-                current_item = app.browser.instruments
-            elif root_category == "sounds" and hasattr(app.browser, 'sounds'):
-                current_item = app.browser.sounds
-            elif root_category == "drums" and hasattr(app.browser, 'drums'):
-                current_item = app.browser.drums
-            elif root_category == "audio_effects" and hasattr(app.browser, 'audio_effects'):
-                current_item = app.browser.audio_effects
-            elif root_category == "midi_effects" and hasattr(app.browser, 'midi_effects'):
-                current_item = app.browser.midi_effects
-            else:
+
+            if attr_name:
+                current_item = getattr(app.browser, attr_name, None)
+
+            if current_item is None:
                 # Try to find the category in other browser attributes
                 found = False
                 for attr in browser_attrs:
@@ -1011,7 +1121,7 @@ class AbletonMCP(ControlSurface):
                             break
                         except Exception as e:
                             self.log_message(f"Error accessing browser attribute {attr}: {e}")
-                
+
                 if not found:
                     # If we still haven't found the category, return available categories
                     return {
