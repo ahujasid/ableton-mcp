@@ -38,7 +38,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans:** 3 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Python 3 cleanup: strip Py2 code, upgrade to Py3.11 idioms, replace bare excepts, set up test infrastructure
+- [x] 01-01-PLAN.md — Python 3 cleanup: strip Py2 code, upgrade to Py3.11 idioms, replace bare excepts, set up test infrastructure
 - [ ] 01-02-PLAN.md — Protocol and concurrency: length-prefix framing on both sides, threading.Lock, remove time.sleep delays, ping command
 - [ ] 01-03-PLAN.md — Dispatch and reliability: dict-based command router, fix instrument loading, browser typo fix, health-check tool
 
@@ -209,7 +209,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation Repair | 0/3 | Planning complete | - |
+| 1. Foundation Repair | 1/3 | In progress | - |
 | 2. Infrastructure Refactor | 0/4 | Not started | - |
 | 3. Track Management | 0/4 | Not started | - |
 | 4. Mixing Controls | 0/4 | Not started | - |
