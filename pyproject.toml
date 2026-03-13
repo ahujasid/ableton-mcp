@@ -27,6 +27,18 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["MCP_Server"]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-timeout>=2.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+timeout = 10
+
 [project.urls]
 "Homepage" = "https://github.com/ahujasid/ableton-mcp"
 "Bug Tracker" = "https://github.com/ahujasid/ableton-mcp/issues"
