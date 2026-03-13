@@ -3,6 +3,8 @@ from mcp.server.fastmcp import FastMCP, Context
 import socket
 import json
 import logging
+import struct
+import threading
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, List, Union
@@ -11,6 +13,72 @@ from typing import AsyncIterator, Dict, Any, List, Union
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("AbletonMCPServer")
+
+# Timeout constants
+TIMEOUT_READ = 10.0
+TIMEOUT_WRITE = 15.0
+TIMEOUT_BROWSER = 30.0
+TIMEOUT_PING = 5.0
+
+# Browser/load commands that need longer timeouts
+_BROWSER_COMMANDS = frozenset([
+    "get_browser_tree", "get_browser_items_at_path", "get_browser_item",
+    "get_browser_categories", "get_browser_items", "load_browser_item",
+    "load_instrument_or_effect",
+])
+
+# Commands that modify Live's state
+_WRITE_COMMANDS = frozenset([
+    "create_midi_track", "create_audio_track", "set_track_name",
+    "create_clip", "add_notes_to_clip", "set_clip_name",
+    "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
+    "start_playback", "stop_playback",
+])
+
+
+def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
+    """Read exactly n bytes from socket."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def send_message(sock: socket.socket, data: dict) -> None:
+    """Send a length-prefixed JSON message."""
+    payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    header = struct.pack(">I", len(payload))
+    sock.sendall(header + payload)
+
+
+def recv_message(sock: socket.socket, timeout: float = 15.0) -> dict:
+    """Receive a length-prefixed JSON message."""
+    sock.settimeout(timeout)
+    header = _recv_exact(sock, 4)
+    if not header:
+        raise ConnectionError("Connection closed while reading header")
+    length = struct.unpack(">I", header)[0]
+    if length > 10 * 1024 * 1024:  # 10MB safety limit
+        raise ValueError(f"Message too large: {length} bytes")
+    payload = _recv_exact(sock, length)
+    if not payload:
+        raise ConnectionError("Connection closed while reading payload")
+    return json.loads(payload.decode("utf-8"))
+
+
+def _timeout_for(command_type: str) -> float:
+    """Return the appropriate timeout for a command type."""
+    if command_type in _BROWSER_COMMANDS:
+        return TIMEOUT_BROWSER
+    if command_type in _WRITE_COMMANDS:
+        return TIMEOUT_WRITE
+    if command_type == "ping":
+        return TIMEOUT_PING
+    return TIMEOUT_READ
+
 
 @dataclass
 class AbletonConnection:
@@ -43,104 +111,33 @@ class AbletonConnection:
             finally:
                 self.sock = None
 
-    def receive_full_response(self, sock, buffer_size=8192):
-        """Receive the complete response, potentially in multiple chunks"""
-        chunks = []
-        sock.settimeout(15.0)  # Increased timeout for operations that might take longer
-        
-        try:
-            while True:
-                try:
-                    chunk = sock.recv(buffer_size)
-                    if not chunk:
-                        if not chunks:
-                            raise Exception("Connection closed before receiving any data")
-                        break
-                    
-                    chunks.append(chunk)
-                    
-                    # Check if we've received a complete JSON object
-                    try:
-                        data = b''.join(chunks)
-                        json.loads(data.decode('utf-8'))
-                        logger.info(f"Received complete response ({len(data)} bytes)")
-                        return data
-                    except json.JSONDecodeError:
-                        # Incomplete JSON, continue receiving
-                        continue
-                except socket.timeout:
-                    logger.warning("Socket timeout during chunked receive")
-                    break
-                except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
-                    logger.error(f"Socket connection error during receive: {str(e)}")
-                    raise
-        except Exception as e:
-            logger.error(f"Error during receive: {str(e)}")
-            raise
-            
-        # If we get here, we either timed out or broke out of the loop
-        if chunks:
-            data = b''.join(chunks)
-            logger.info(f"Returning data after receive completion ({len(data)} bytes)")
-            try:
-                json.loads(data.decode('utf-8'))
-                return data
-            except json.JSONDecodeError:
-                raise Exception("Incomplete JSON response received")
-        else:
-            raise Exception("No data received")
-
     def send_command(self, command_type: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """Send a command to Ableton and return the response"""
         if not self.sock and not self.connect():
             raise ConnectionError("Not connected to Ableton")
-        
+
         command = {
             "type": command_type,
             "params": params or {}
         }
-        
-        # Check if this is a state-modifying command
-        is_modifying_command = command_type in [
-            "create_midi_track", "create_audio_track", "set_track_name",
-            "create_clip", "add_notes_to_clip", "set_clip_name",
-            "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
-            "start_playback", "stop_playback", "load_instrument_or_effect"
-        ]
-        
+
+        timeout = _timeout_for(command_type)
+
         try:
             logger.info(f"Sending command: {command_type} with params: {params}")
-            
-            # Send the command
-            self.sock.sendall(json.dumps(command).encode('utf-8'))
-            logger.info(f"Command sent, waiting for response...")
-            
-            # For state-modifying commands, add a small delay to give Ableton time to process
-            if is_modifying_command:
-                import time
-                time.sleep(0.1)  # 100ms delay
-            
-            # Set timeout based on command type
-            timeout = 15.0 if is_modifying_command else 10.0
-            self.sock.settimeout(timeout)
-            
-            # Receive the response
-            response_data = self.receive_full_response(self.sock)
-            logger.info(f"Received {len(response_data)} bytes of data")
-            
-            # Parse the response
-            response = json.loads(response_data.decode('utf-8'))
-            logger.info(f"Response parsed, status: {response.get('status', 'unknown')}")
-            
+
+            # Send the command using length-prefix framing
+            send_message(self.sock, command)
+            logger.info("Command sent, waiting for response...")
+
+            # Receive the response using length-prefix framing
+            response = recv_message(self.sock, timeout=timeout)
+            logger.info(f"Response received, status: {response.get('status', 'unknown')}")
+
             if response.get("status") == "error":
                 logger.error(f"Ableton error: {response.get('message')}")
                 raise Exception(response.get("message", "Unknown error from Ableton"))
-            
-            # For state-modifying commands, add another small delay after receiving response
-            if is_modifying_command:
-                import time
-                time.sleep(0.1)  # 100ms delay
-            
+
             return response.get("result", {})
         except socket.timeout:
             logger.error("Socket timeout while waiting for response from Ableton")
@@ -150,12 +147,6 @@ class AbletonConnection:
             logger.error(f"Socket connection error: {str(e)}")
             self.sock = None
             raise Exception(f"Connection to Ableton lost: {str(e)}")
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON response from Ableton: {str(e)}")
-            if 'response_data' in locals() and response_data:
-                logger.error(f"Raw response (first 200 bytes): {response_data[:200]}")
-            self.sock = None
-            raise Exception(f"Invalid response from Ableton: {str(e)}")
         except Exception as e:
             logger.error(f"Error communicating with Ableton: {str(e)}")
             self.sock = None
@@ -177,10 +168,11 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
         yield {}
     finally:
         global _ableton_connection
-        if _ableton_connection:
-            logger.info("Disconnecting from Ableton on shutdown")
-            _ableton_connection.disconnect()
-            _ableton_connection = None
+        with _connection_lock:
+            if _ableton_connection:
+                logger.info("Disconnecting from Ableton on shutdown")
+                _ableton_connection.disconnect()
+                _ableton_connection = None
         logger.info("AbletonMCP server shut down")
 
 # Create the MCP server with lifespan support
@@ -190,69 +182,66 @@ mcp = FastMCP(
 )
 
 # Global connection for resources
-_ableton_connection = None
+_ableton_connection: AbletonConnection | None = None
+_connection_lock = threading.Lock()
 
-def get_ableton_connection():
-    """Get or create a persistent Ableton connection"""
+
+def get_ableton_connection() -> AbletonConnection:
+    """Get or create a persistent Ableton connection.
+
+    Thread-safe: all access is serialized by _connection_lock.
+    Auto-reconnects silently on next tool call when connection drops.
+    """
     global _ableton_connection
-    
-    if _ableton_connection is not None:
-        try:
-            # Test the connection with a simple ping
-            # We'll try to send an empty message, which should fail if the connection is dead
-            # but won't affect Ableton if it's alive
-            _ableton_connection.sock.settimeout(1.0)
-            _ableton_connection.sock.sendall(b'')
-            return _ableton_connection
-        except Exception as e:
-            logger.warning(f"Existing connection is no longer valid: {str(e)}")
+
+    with _connection_lock:
+        if _ableton_connection is not None:
             try:
-                _ableton_connection.disconnect()
+                # Test the connection with a real ping command
+                _ableton_connection.send_command("ping")
+                return _ableton_connection
             except Exception as e:
-                logger.warning(f"Error during connection cleanup: {e}")
-            _ableton_connection = None
-    
-    # Connection doesn't exist or is invalid, create a new one
-    if _ableton_connection is None:
-        # Try to connect up to 3 times with a short delay between attempts
+                logger.warning(f"Existing connection is no longer valid: {e}")
+                try:
+                    _ableton_connection.disconnect()
+                except Exception as cleanup_err:
+                    logger.warning(f"Error during connection cleanup: {cleanup_err}")
+                _ableton_connection = None
+
+        # Connection doesn't exist or is invalid, create a new one
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
                 logger.info(f"Connecting to Ableton (attempt {attempt}/{max_attempts})...")
-                _ableton_connection = AbletonConnection(host="localhost", port=9877)
-                if _ableton_connection.connect():
+                conn = AbletonConnection(host="localhost", port=9877)
+                if conn.connect():
                     logger.info("Created new persistent connection to Ableton")
-                    
-                    # Validate connection with a simple command
+
+                    # Validate connection with a ping command
                     try:
-                        # Get session info as a test
-                        _ableton_connection.send_command("get_session_info")
+                        conn.send_command("ping")
                         logger.info("Connection validated successfully")
+                        _ableton_connection = conn
                         return _ableton_connection
                     except Exception as e:
-                        logger.error(f"Connection validation failed: {str(e)}")
-                        _ableton_connection.disconnect()
-                        _ableton_connection = None
+                        logger.error(f"Connection validation failed: {e}")
+                        conn.disconnect()
                         # Continue to next attempt
                 else:
-                    _ableton_connection = None
+                    conn = None
             except Exception as e:
-                logger.error(f"Connection attempt {attempt} failed: {str(e)}")
-                if _ableton_connection:
-                    _ableton_connection.disconnect()
-                    _ableton_connection = None
-            
+                logger.error(f"Connection attempt {attempt} failed: {e}")
+                if conn:
+                    conn.disconnect()
+
             # Wait before trying again, but only if we have more attempts left
             if attempt < max_attempts:
                 import time
                 time.sleep(1.0)
-        
+
         # If we get here, all connection attempts failed
-        if _ableton_connection is None:
-            logger.error("Failed to connect to Ableton after multiple attempts")
-            raise Exception("Could not connect to Ableton. Make sure the Remote Script is running.")
-    
-    return _ableton_connection
+        logger.error("Failed to connect to Ableton after multiple attempts")
+        raise Exception("Could not connect to Ableton. Make sure the Remote Script is running.")
 
 
 # Core Tool endpoints
