@@ -1,18 +1,11 @@
 # AbletonMCP/init.py
-from __future__ import absolute_import, print_function, unicode_literals
-
 from _Framework.ControlSurface import ControlSurface
 import socket
 import json
 import threading
 import time
 import traceback
-
-# Change queue import for Python 2
-try:
-    import Queue as queue  # Python 2
-except ImportError:
-    import queue  # Python 3
+import queue
 
 # Constants for socket communication
 DEFAULT_PORT = 9877
@@ -27,7 +20,7 @@ class AbletonMCP(ControlSurface):
     
     def __init__(self, c_instance):
         """Initialize the control surface"""
-        ControlSurface.__init__(self, c_instance)
+        super().__init__(c_instance)
         self.log_message("AbletonMCP Remote Script initializing...")
         
         # Socket server for communication
@@ -45,7 +38,7 @@ class AbletonMCP(ControlSurface):
         self.log_message("AbletonMCP initialized")
         
         # Show a message in Ableton
-        self.show_message("AbletonMCP: Listening for commands on port " + str(DEFAULT_PORT))
+        self.show_message(f"AbletonMCP: Listening for commands on port {DEFAULT_PORT}")
     
     def disconnect(self):
         """Called when Ableton closes or the control surface is removed"""
@@ -56,8 +49,8 @@ class AbletonMCP(ControlSurface):
         if self.server:
             try:
                 self.server.close()
-            except:
-                pass
+            except Exception as e:
+                self.log_message(f"[ERROR] Error closing server socket: {e}")
         
         # Wait for the server thread to exit
         if self.server_thread and self.server_thread.is_alive():
@@ -69,7 +62,7 @@ class AbletonMCP(ControlSurface):
                 # We don't join them as they might be stuck
                 self.log_message("Client thread still alive during disconnect")
         
-        ControlSurface.disconnect(self)
+        super().disconnect()
         self.log_message("AbletonMCP disconnected")
     
     def start_server(self):
@@ -85,10 +78,10 @@ class AbletonMCP(ControlSurface):
             self.server_thread.daemon = True
             self.server_thread.start()
             
-            self.log_message("Server started on port " + str(DEFAULT_PORT))
+            self.log_message(f"Server started on port {DEFAULT_PORT}")
         except Exception as e:
-            self.log_message("Error starting server: " + str(e))
-            self.show_message("AbletonMCP: Error starting server - " + str(e))
+            self.log_message(f"Error starting server: {e}")
+            self.show_message(f"AbletonMCP: Error starting server - {e}")
     
     def _server_thread(self):
         """Server thread implementation - handles client connections"""
@@ -101,7 +94,7 @@ class AbletonMCP(ControlSurface):
                 try:
                     # Accept connections with timeout
                     client, address = self.server.accept()
-                    self.log_message("Connection accepted from " + str(address))
+                    self.log_message(f"Connection accepted from {address}")
                     self.show_message("AbletonMCP: Client connected")
                     
                     # Handle client in a separate thread
@@ -123,12 +116,12 @@ class AbletonMCP(ControlSurface):
                     continue
                 except Exception as e:
                     if self.running:  # Only log if still running
-                        self.log_message("Server accept error: " + str(e))
+                        self.log_message(f"Server accept error: {e}")
                     time.sleep(0.5)
             
             self.log_message("Server thread stopped")
         except Exception as e:
-            self.log_message("Server thread error: " + str(e))
+            self.log_message(f"Server thread error: {e}")
     
     def _handle_client(self, client):
         """Handle communication with a connected client"""
@@ -147,37 +140,27 @@ class AbletonMCP(ControlSurface):
                         self.log_message("Client disconnected")
                         break
                     
-                    # Accumulate data in buffer with explicit encoding/decoding
-                    try:
-                        # Python 3: data is bytes, decode to string
-                        buffer += data.decode('utf-8')
-                    except AttributeError:
-                        # Python 2: data is already string
-                        buffer += data
+                    # Accumulate data in buffer
+                    buffer += data.decode('utf-8')
                     
                     try:
                         # Try to parse command from buffer
                         command = json.loads(buffer)  # Removed decode('utf-8')
                         buffer = ''  # Clear buffer after successful parse
                         
-                        self.log_message("Received command: " + str(command.get("type", "unknown")))
+                        self.log_message(f"Received command: {command.get('type', 'unknown')}")
                         
                         # Process the command and get response
                         response = self._process_command(command)
                         
-                        # Send the response with explicit encoding
-                        try:
-                            # Python 3: encode string to bytes
-                            client.sendall(json.dumps(response).encode('utf-8'))
-                        except AttributeError:
-                            # Python 2: string is already bytes
-                            client.sendall(json.dumps(response))
+                        # Send the response
+                        client.sendall(json.dumps(response).encode('utf-8'))
                     except ValueError:
                         # Incomplete data, wait for more
                         continue
                         
                 except Exception as e:
-                    self.log_message("Error handling client data: " + str(e))
+                    self.log_message(f"Error handling client data: {e}")
                     self.log_message(traceback.format_exc())
                     
                     # Send error response if possible
@@ -186,25 +169,21 @@ class AbletonMCP(ControlSurface):
                         "message": str(e)
                     }
                     try:
-                        # Python 3: encode string to bytes
                         client.sendall(json.dumps(error_response).encode('utf-8'))
-                    except AttributeError:
-                        # Python 2: string is already bytes
-                        client.sendall(json.dumps(error_response))
-                    except:
-                        # If we can't send the error, the connection is probably dead
+                    except Exception as e2:
+                        self.log_message(f"[ERROR] Failed to send error response, connection dead: {e2}")
                         break
                     
                     # For serious errors, break the loop
                     if not isinstance(e, ValueError):
                         break
         except Exception as e:
-            self.log_message("Error in client handler: " + str(e))
+            self.log_message(f"Error in client handler: {e}")
         finally:
             try:
                 client.close()
-            except:
-                pass
+            except Exception as e:
+                self.log_message(f"[ERROR] Error closing client socket: {e}")
             self.log_message("Client handler stopped")
     
     def _process_command(self, command):
@@ -286,7 +265,7 @@ class AbletonMCP(ControlSurface):
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
-                        self.log_message("Error in main thread task: " + str(e))
+                        self.log_message(f"Error in main thread task: {e}")
                         self.log_message(traceback.format_exc())
                         response_queue.put({"status": "error", "message": str(e)})
                 
@@ -328,9 +307,9 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self.get_browser_items_at_path(path)
             else:
                 response["status"] = "error"
-                response["message"] = "Unknown command: " + command_type
+                response["message"] = f"Unknown command: {command_type}"
         except Exception as e:
-            self.log_message("Error processing command: " + str(e))
+            self.log_message(f"Error processing command: {e}")
             self.log_message(traceback.format_exc())
             response["status"] = "error"
             response["message"] = str(e)
@@ -356,7 +335,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error getting session info: " + str(e))
+            self.log_message(f"Error getting session info: {e}")
             raise
     
     def _get_track_info(self, track_index):
@@ -411,7 +390,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error getting track info: " + str(e))
+            self.log_message(f"Error getting track info: {e}")
             raise
     
     def _create_midi_track(self, index):
@@ -430,7 +409,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error creating MIDI track: " + str(e))
+            self.log_message(f"Error creating MIDI track: {e}")
             raise
     
     
@@ -449,7 +428,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error setting track name: " + str(e))
+            self.log_message(f"Error setting track name: {e}")
             raise
     
     def _create_clip(self, track_index, clip_index, length):
@@ -478,7 +457,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error creating clip: " + str(e))
+            self.log_message(f"Error creating clip: {e}")
             raise
     
     def _add_notes_to_clip(self, track_index, clip_index, notes):
@@ -518,7 +497,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error adding notes to clip: " + str(e))
+            self.log_message(f"Error adding notes to clip: {e}")
             raise
     
     def _set_clip_name(self, track_index, clip_index, name):
@@ -545,7 +524,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error setting clip name: " + str(e))
+            self.log_message(f"Error setting clip name: {e}")
             raise
     
     def _set_tempo(self, tempo):
@@ -558,7 +537,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error setting tempo: " + str(e))
+            self.log_message(f"Error setting tempo: {e}")
             raise
     
     def _fire_clip(self, track_index, clip_index):
@@ -584,7 +563,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error firing clip: " + str(e))
+            self.log_message(f"Error firing clip: {e}")
             raise
     
     def _stop_clip(self, track_index, clip_index):
@@ -607,7 +586,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error stopping clip: " + str(e))
+            self.log_message(f"Error stopping clip: {e}")
             raise
     
     
@@ -621,7 +600,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error starting playback: " + str(e))
+            self.log_message(f"Error starting playback: {e}")
             raise
     
     def _stop_playback(self):
@@ -634,7 +613,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error stopping playback: " + str(e))
+            self.log_message(f"Error stopping playback: {e}")
             raise
     
     def _get_browser_item(self, uri, path):
@@ -702,7 +681,7 @@ class AbletonMCP(ControlSurface):
                             break
                     
                     if not found:
-                        result["error"] = "Path part '{0}' not found".format(part)
+                        result["error"] = f"Path part '{part}' not found"
                         return result
                 
                 # Found the item
@@ -717,7 +696,7 @@ class AbletonMCP(ControlSurface):
             
             return result
         except Exception as e:
-            self.log_message("Error getting browser item: " + str(e))
+            self.log_message(f"Error getting browser item: {e}")
             self.log_message(traceback.format_exc())
             raise   
     
@@ -738,7 +717,7 @@ class AbletonMCP(ControlSurface):
             item = self._find_browser_item_by_uri(app.browser, item_uri)
             
             if not item:
-                raise ValueError("Browser item with URI '{0}' not found".format(item_uri))
+                raise ValueError(f"Browser item with URI '{item_uri}' not found")
             
             # Select the track
             self._song.view.selected_track = track
@@ -754,7 +733,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error loading browser item: {0}".format(str(e)))
+            self.log_message(f"Error loading browser item: {e}")
             self.log_message(traceback.format_exc())
             raise
     
@@ -796,7 +775,7 @@ class AbletonMCP(ControlSurface):
             
             return None
         except Exception as e:
-            self.log_message("Error finding browser item by URI: {0}".format(str(e)))
+            self.log_message(f"Error finding browser item by URI: {e}")
             return None
     
     # Helper methods
@@ -817,7 +796,8 @@ class AbletonMCP(ControlSurface):
                 return "midi_effect"
             else:
                 return "unknown"
-        except:
+        except Exception as e:
+            self.log_message(f"[ERROR] Could not determine device type: {e}")
             return "unknown"
     
     def get_browser_tree(self, category_type="all"):
@@ -842,7 +822,7 @@ class AbletonMCP(ControlSurface):
             
             # Log available browser attributes to help diagnose issues
             browser_attrs = [attr for attr in dir(app.browser) if not attr.startswith('_')]
-            self.log_message("Available browser attributes: {0}".format(browser_attrs))
+            self.log_message(f"Available browser attributes: {browser_attrs}")
             
             result = {
                 "type": category_type,
@@ -875,7 +855,7 @@ class AbletonMCP(ControlSurface):
                         instruments["name"] = "Instruments"  # Ensure consistent naming
                         result["categories"].append(instruments)
                 except Exception as e:
-                    self.log_message("Error processing instruments: {0}".format(str(e)))
+                    self.log_message(f"Error processing instruments: {e}")
             
             if (category_type == "all" or category_type == "sounds") and hasattr(app.browser, 'sounds'):
                 try:
@@ -884,7 +864,7 @@ class AbletonMCP(ControlSurface):
                         sounds["name"] = "Sounds"  # Ensure consistent naming
                         result["categories"].append(sounds)
                 except Exception as e:
-                    self.log_message("Error processing sounds: {0}".format(str(e)))
+                    self.log_message(f"Error processing sounds: {e}")
             
             if (category_type == "all" or category_type == "drums") and hasattr(app.browser, 'drums'):
                 try:
@@ -893,7 +873,7 @@ class AbletonMCP(ControlSurface):
                         drums["name"] = "Drums"  # Ensure consistent naming
                         result["categories"].append(drums)
                 except Exception as e:
-                    self.log_message("Error processing drums: {0}".format(str(e)))
+                    self.log_message(f"Error processing drums: {e}")
             
             if (category_type == "all" or category_type == "audio_effects") and hasattr(app.browser, 'audio_effects'):
                 try:
@@ -902,7 +882,7 @@ class AbletonMCP(ControlSurface):
                         audio_effects["name"] = "Audio Effects"  # Ensure consistent naming
                         result["categories"].append(audio_effects)
                 except Exception as e:
-                    self.log_message("Error processing audio_effects: {0}".format(str(e)))
+                    self.log_message(f"Error processing audio_effects: {e}")
             
             if (category_type == "all" or category_type == "midi_effects") and hasattr(app.browser, 'midi_effects'):
                 try:
@@ -911,7 +891,7 @@ class AbletonMCP(ControlSurface):
                         midi_effects["name"] = "MIDI Effects"
                         result["categories"].append(midi_effects)
                 except Exception as e:
-                    self.log_message("Error processing midi_effects: {0}".format(str(e)))
+                    self.log_message(f"Error processing midi_effects: {e}")
             
             # Try to process other potentially available categories
             for attr in browser_attrs:
@@ -925,14 +905,13 @@ class AbletonMCP(ControlSurface):
                                 category["name"] = attr.capitalize()
                                 result["categories"].append(category)
                     except Exception as e:
-                        self.log_message("Error processing {0}: {1}".format(attr, str(e)))
+                        self.log_message(f"Error processing {attr}: {e}")
             
-            self.log_message("Browser tree generated for {0} with {1} root categories".format(
-                category_type, len(result['categories'])))
+            self.log_message(f"Browser tree generated for {category_type} with {len(result['categories'])} root categories")
             return result
             
         except Exception as e:
-            self.log_message("Error getting browser tree: {0}".format(str(e)))
+            self.log_message(f"Error getting browser tree: {e}")
             self.log_message(traceback.format_exc())
             raise
     
@@ -960,7 +939,7 @@ class AbletonMCP(ControlSurface):
             
             # Log available browser attributes to help diagnose issues
             browser_attrs = [attr for attr in dir(app.browser) if not attr.startswith('_')]
-            self.log_message("Available browser attributes: {0}".format(browser_attrs))
+            self.log_message(f"Available browser attributes: {browser_attrs}")
                 
             # Parse the path
             path_parts = path.split("/")
@@ -992,13 +971,13 @@ class AbletonMCP(ControlSurface):
                             found = True
                             break
                         except Exception as e:
-                            self.log_message("Error accessing browser attribute {0}: {1}".format(attr, str(e)))
+                            self.log_message(f"Error accessing browser attribute {attr}: {e}")
                 
                 if not found:
                     # If we still haven't found the category, return available categories
                     return {
                         "path": path,
-                        "error": "Unknown or unavailable category: {0}".format(root_category),
+                        "error": f"Unknown or unavailable category: {root_category}",
                         "available_categories": browser_attrs,
                         "items": []
                     }
@@ -1012,7 +991,7 @@ class AbletonMCP(ControlSurface):
                 if not hasattr(current_item, 'children'):
                     return {
                         "path": path,
-                        "error": "Item at '{0}' has no children".format('/'.join(path_parts[:i])),
+                        "error": f"Item at '{'/'.join(path_parts[:i])}' has no children",
                         "items": []
                     }
                 
@@ -1026,7 +1005,7 @@ class AbletonMCP(ControlSurface):
                 if not found:
                     return {
                         "path": path,
-                        "error": "Path part '{0}' not found".format(part),
+                        "error": f"Path part '{part}' not found",
                         "items": []
                     }
             
@@ -1053,10 +1032,10 @@ class AbletonMCP(ControlSurface):
                 "items": items
             }
             
-            self.log_message("Retrieved {0} items at path: {1}".format(len(items), path))
+            self.log_message(f"Retrieved {len(items)} items at path: {path}")
             return result
             
         except Exception as e:
-            self.log_message("Error getting browser items at path: {0}".format(str(e)))
+            self.log_message(f"Error getting browser items at path: {e}")
             self.log_message(traceback.format_exc())
             raise

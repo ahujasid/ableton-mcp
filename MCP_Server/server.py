@@ -208,8 +208,8 @@ def get_ableton_connection():
             logger.warning(f"Existing connection is no longer valid: {str(e)}")
             try:
                 _ableton_connection.disconnect()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Error during connection cleanup: {e}")
             _ableton_connection = None
     
     # Connection doesn't exist or is invalid, create a new one
