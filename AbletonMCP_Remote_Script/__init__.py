@@ -70,7 +70,10 @@ class AbletonMCP(ControlSurface):
         
         # Cache the song reference for easier access
         self._song = self.song()
-        
+
+        # Build command dispatch tables
+        self._build_command_table()
+
         # Start the socket server
         self.start_server()
         
@@ -194,137 +197,81 @@ class AbletonMCP(ControlSurface):
                 self.log_message(f"[ERROR] Error closing client socket: {e}")
             self.log_message("Client handler stopped")
     
+    def _build_command_table(self):
+        """Build command dispatch tables. Read commands run on socket thread, write commands on main thread."""
+        self._read_commands = {
+            "get_session_info": self._get_session_info,
+            "get_track_info": self._get_track_info,
+            "get_browser_tree": self.get_browser_tree,
+            "get_browser_items_at_path": self.get_browser_items_at_path,
+            "get_browser_item": self._get_browser_item,
+            "get_browser_categories": self._get_browser_categories,
+            "get_browser_items": self._get_browser_items,
+            "ping": self._ping,
+        }
+        self._write_commands = {
+            "create_midi_track": self._create_midi_track,
+            "set_track_name": self._set_track_name,
+            "create_clip": self._create_clip,
+            "add_notes_to_clip": self._add_notes_to_clip,
+            "set_clip_name": self._set_clip_name,
+            "set_tempo": self._set_tempo,
+            "fire_clip": self._fire_clip,
+            "stop_clip": self._stop_clip,
+            "start_playback": self._start_playback,
+            "stop_playback": self._stop_playback,
+            "load_browser_item": self._load_browser_item,
+            "set_device_parameter": self._set_device_parameter,
+            "load_instrument_or_effect": self._load_instrument_or_effect,
+        }
+
     def _process_command(self, command):
-        """Process a command from the client and return a response"""
+        """Dispatch command to handler via dict lookup."""
         command_type = command.get("type", "")
         params = command.get("params", {})
-        
-        # Initialize response
-        response = {
-            "status": "success",
-            "result": {}
-        }
-        
+
+        # Read commands -- run directly on socket thread
+        if command_type in self._read_commands:
+            handler = self._read_commands[command_type]
+            try:
+                result = handler(params)
+                return {"status": "success", "result": result}
+            except Exception as e:
+                self.log_message(f"[ERROR] {command_type}: {e}")
+                self.log_message(traceback.format_exc())
+                return {"status": "error", "message": str(e)}
+
+        # Write commands -- schedule on main thread
+        if command_type in self._write_commands:
+            return self._dispatch_write_command(command_type, params)
+
+        # Unknown command
+        return {"status": "error", "message": f"Unknown command: {command_type}"}
+
+    def _dispatch_write_command(self, command_type, params):
+        """Execute a write command on the main thread via schedule_message."""
+        handler = self._write_commands[command_type]
+        response_queue = queue.Queue()
+
+        def main_thread_task():
+            try:
+                result = handler(params)
+                response_queue.put({"status": "success", "result": result})
+            except Exception as e:
+                self.log_message(f"[ERROR] {command_type}: {e}")
+                self.log_message(traceback.format_exc())
+                response_queue.put({"status": "error", "message": str(e)})
+
         try:
-            # Route the command to the appropriate handler
-            if command_type == "ping":
-                response["result"] = self._ping(params)
-            elif command_type == "get_session_info":
-                response["result"] = self._get_session_info()
-            elif command_type == "get_track_info":
-                track_index = params.get("track_index", 0)
-                response["result"] = self._get_track_info(track_index)
-            # Commands that modify Live's state should be scheduled on the main thread
-            elif command_type in ["create_midi_track", "set_track_name", 
-                                 "create_clip", "add_notes_to_clip", "set_clip_name", 
-                                 "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item"]:
-                # Use a thread-safe approach with a response queue
-                response_queue = queue.Queue()
-                
-                # Define a function to execute on the main thread
-                def main_thread_task():
-                    try:
-                        result = None
-                        if command_type == "create_midi_track":
-                            index = params.get("index", -1)
-                            result = self._create_midi_track(index)
-                        elif command_type == "set_track_name":
-                            track_index = params.get("track_index", 0)
-                            name = params.get("name", "")
-                            result = self._set_track_name(track_index, name)
-                        elif command_type == "create_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            length = params.get("length", 4.0)
-                            result = self._create_clip(track_index, clip_index, length)
-                        elif command_type == "add_notes_to_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            notes = params.get("notes", [])
-                            result = self._add_notes_to_clip(track_index, clip_index, notes)
-                        elif command_type == "set_clip_name":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            name = params.get("name", "")
-                            result = self._set_clip_name(track_index, clip_index, name)
-                        elif command_type == "set_tempo":
-                            tempo = params.get("tempo", 120.0)
-                            result = self._set_tempo(tempo)
-                        elif command_type == "fire_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            result = self._fire_clip(track_index, clip_index)
-                        elif command_type == "stop_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            result = self._stop_clip(track_index, clip_index)
-                        elif command_type == "start_playback":
-                            result = self._start_playback()
-                        elif command_type == "stop_playback":
-                            result = self._stop_playback()
-                        elif command_type == "load_instrument_or_effect":
-                            track_index = params.get("track_index", 0)
-                            uri = params.get("uri", "")
-                            result = self._load_instrument_or_effect(track_index, uri)
-                        elif command_type == "load_browser_item":
-                            track_index = params.get("track_index", 0)
-                            item_uri = params.get("item_uri", "")
-                            result = self._load_browser_item(track_index, item_uri)
-                        
-                        # Put the result in the queue
-                        response_queue.put({"status": "success", "result": result})
-                    except Exception as e:
-                        self.log_message(f"Error in main thread task: {e}")
-                        self.log_message(traceback.format_exc())
-                        response_queue.put({"status": "error", "message": str(e)})
-                
-                # Schedule the task to run on the main thread
-                try:
-                    self.schedule_message(0, main_thread_task)
-                except AssertionError:
-                    # If we're already on the main thread, execute directly
-                    main_thread_task()
-                
-                # Wait for the response with a timeout
-                try:
-                    task_response = response_queue.get(timeout=10.0)
-                    if task_response.get("status") == "error":
-                        response["status"] = "error"
-                        response["message"] = task_response.get("message", "Unknown error")
-                    else:
-                        response["result"] = task_response.get("result", {})
-                except queue.Empty:
-                    response["status"] = "error"
-                    response["message"] = "Timeout waiting for operation to complete"
-            elif command_type == "get_browser_item":
-                uri = params.get("uri", None)
-                path = params.get("path", None)
-                response["result"] = self._get_browser_item(uri, path)
-            elif command_type == "get_browser_categories":
-                category_type = params.get("category_type", "all")
-                response["result"] = self._get_browser_categories(category_type)
-            elif command_type == "get_browser_items":
-                path = params.get("path", "")
-                item_type = params.get("item_type", "all")
-                response["result"] = self._get_browser_items(path, item_type)
-            # Add the new browser commands
-            elif command_type == "get_browser_tree":
-                category_type = params.get("category_type", "all")
-                response["result"] = self.get_browser_tree(category_type)
-            elif command_type == "get_browser_items_at_path":
-                path = params.get("path", "")
-                response["result"] = self.get_browser_items_at_path(path)
-            else:
-                response["status"] = "error"
-                response["message"] = f"Unknown command: {command_type}"
-        except Exception as e:
-            self.log_message(f"Error processing command: {e}")
-            self.log_message(traceback.format_exc())
-            response["status"] = "error"
-            response["message"] = str(e)
-        
-        return response
+            self.schedule_message(0, main_thread_task)
+        except AssertionError:
+            main_thread_task()
+
+        timeout = 30.0 if command_type in ("load_browser_item", "load_instrument_or_effect") else 10.0
+        try:
+            return response_queue.get(timeout=timeout)
+        except queue.Empty:
+            return {"status": "error", "message": f"Timeout waiting for {command_type} to complete"}
     
     # Command implementations
 
@@ -332,7 +279,7 @@ class AbletonMCP(ControlSurface):
         """Respond to health check."""
         return {"pong": True, "version": "1.0"}
 
-    def _get_session_info(self):
+    def _get_session_info(self, params=None):
         """Get information about the current session"""
         try:
             result = {
@@ -352,9 +299,10 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"Error getting session info: {e}")
             raise
     
-    def _get_track_info(self, track_index):
+    def _get_track_info(self, params=None):
         """Get information about a track"""
         try:
+            track_index = (params or {}).get("track_index", 0)
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
             
@@ -407,9 +355,10 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"Error getting track info: {e}")
             raise
     
-    def _create_midi_track(self, index):
+    def _create_midi_track(self, params=None):
         """Create a new MIDI track at the specified index"""
         try:
+            index = (params or {}).get("index", -1)
             # Create the track
             self._song.create_midi_track(index)
             
@@ -427,12 +376,15 @@ class AbletonMCP(ControlSurface):
             raise
     
     
-    def _set_track_name(self, track_index, name):
+    def _set_track_name(self, params=None):
         """Set the name of a track"""
         try:
+            params = params or {}
+            track_index = params.get("track_index", 0)
+            name = params.get("name", "")
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
-            
+
             # Set the name
             track = self._song.tracks[track_index]
             track.name = name
@@ -445,14 +397,18 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"Error setting track name: {e}")
             raise
     
-    def _create_clip(self, track_index, clip_index, length):
+    def _create_clip(self, params=None):
         """Create a new MIDI clip in the specified track and clip slot"""
         try:
+            params = params or {}
+            track_index = params.get("track_index", 0)
+            clip_index = params.get("clip_index", 0)
+            length = params.get("length", 4.0)
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
-            
+
             track = self._song.tracks[track_index]
-            
+
             if clip_index < 0 or clip_index >= len(track.clip_slots):
                 raise IndexError("Clip index out of range")
             
@@ -474,14 +430,18 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"Error creating clip: {e}")
             raise
     
-    def _add_notes_to_clip(self, track_index, clip_index, notes):
+    def _add_notes_to_clip(self, params=None):
         """Add MIDI notes to a clip"""
         try:
+            params = params or {}
+            track_index = params.get("track_index", 0)
+            clip_index = params.get("clip_index", 0)
+            notes = params.get("notes", [])
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
-            
+
             track = self._song.tracks[track_index]
-            
+
             if clip_index < 0 or clip_index >= len(track.clip_slots):
                 raise IndexError("Clip index out of range")
             
@@ -514,14 +474,18 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"Error adding notes to clip: {e}")
             raise
     
-    def _set_clip_name(self, track_index, clip_index, name):
+    def _set_clip_name(self, params=None):
         """Set the name of a clip"""
         try:
+            params = params or {}
+            track_index = params.get("track_index", 0)
+            clip_index = params.get("clip_index", 0)
+            name = params.get("name", "")
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
-            
+
             track = self._song.tracks[track_index]
-            
+
             if clip_index < 0 or clip_index >= len(track.clip_slots):
                 raise IndexError("Clip index out of range")
             
@@ -541,9 +505,10 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"Error setting clip name: {e}")
             raise
     
-    def _set_tempo(self, tempo):
+    def _set_tempo(self, params=None):
         """Set the tempo of the session"""
         try:
+            tempo = (params or {}).get("tempo", 120.0)
             self._song.tempo = tempo
             
             result = {
@@ -554,22 +519,25 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"Error setting tempo: {e}")
             raise
     
-    def _fire_clip(self, track_index, clip_index):
+    def _fire_clip(self, params=None):
         """Fire a clip"""
         try:
+            params = params or {}
+            track_index = params.get("track_index", 0)
+            clip_index = params.get("clip_index", 0)
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
-            
+
             track = self._song.tracks[track_index]
-            
+
             if clip_index < 0 or clip_index >= len(track.clip_slots):
                 raise IndexError("Clip index out of range")
-            
+
             clip_slot = track.clip_slots[clip_index]
-            
+
             if not clip_slot.has_clip:
                 raise Exception("No clip in slot")
-            
+
             clip_slot.fire()
             
             result = {
@@ -580,19 +548,22 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"Error firing clip: {e}")
             raise
     
-    def _stop_clip(self, track_index, clip_index):
+    def _stop_clip(self, params=None):
         """Stop a clip"""
         try:
+            params = params or {}
+            track_index = params.get("track_index", 0)
+            clip_index = params.get("clip_index", 0)
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
-            
+
             track = self._song.tracks[track_index]
-            
+
             if clip_index < 0 or clip_index >= len(track.clip_slots):
                 raise IndexError("Clip index out of range")
-            
+
             clip_slot = track.clip_slots[clip_index]
-            
+
             clip_slot.stop()
             
             result = {
@@ -604,7 +575,7 @@ class AbletonMCP(ControlSurface):
             raise
     
     
-    def _start_playback(self):
+    def _start_playback(self, params=None):
         """Start playing the session"""
         try:
             self._song.start_playing()
@@ -617,7 +588,7 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"Error starting playback: {e}")
             raise
     
-    def _stop_playback(self):
+    def _stop_playback(self, params=None):
         """Stop playing the session"""
         try:
             self._song.stop_playing()
@@ -630,14 +601,17 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"Error stopping playback: {e}")
             raise
     
-    def _get_browser_item(self, uri, path):
+    def _get_browser_item(self, params=None):
         """Get a browser item by URI or path"""
         try:
+            params = params or {}
+            uri = params.get("uri", None)
+            path = params.get("path", None)
             # Access the application's browser instance instead of creating a new one
             app = self.application()
             if not app:
                 raise RuntimeError("Could not access Live application")
-                
+
             result = {
                 "uri": uri,
                 "path": path,
@@ -716,9 +690,12 @@ class AbletonMCP(ControlSurface):
     
     
     
-    def _load_browser_item(self, track_index, item_uri):
+    def _load_browser_item(self, params=None):
         """Load a browser item onto a track by its URI"""
         try:
+            params = params or {}
+            track_index = params.get("track_index", 0)
+            item_uri = params.get("item_uri", "")
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
             
@@ -792,8 +769,55 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"Error finding browser item by URI: {e}")
             return None
     
+    def _get_browser_categories(self, params=None):
+        """Get available browser categories. Delegates to get_browser_tree."""
+        return self.get_browser_tree(params)
+
+    def _get_browser_items(self, params=None):
+        """Get browser items at a path. Delegates to get_browser_items_at_path."""
+        return self.get_browser_items_at_path(params)
+
+    def _load_instrument_or_effect(self, params=None):
+        """Load an instrument or effect by URI. Delegates to _load_browser_item."""
+        return self._load_browser_item(params)
+
+    def _set_device_parameter(self, params=None):
+        """Set a parameter on a device"""
+        try:
+            params = params or {}
+            track_index = params.get("track_index", 0)
+            device_index = params.get("device_index", 0)
+            parameter_index = params.get("parameter_index", 0)
+            value = params.get("value", 0.0)
+
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+
+            device = track.devices[device_index]
+            parameters = device.parameters
+
+            if parameter_index < 0 or parameter_index >= len(parameters):
+                raise IndexError("Parameter index out of range")
+
+            param = parameters[parameter_index]
+            param.value = value
+
+            return {
+                "device_name": device.name,
+                "parameter_name": param.name,
+                "value": param.value,
+            }
+        except Exception as e:
+            self.log_message(f"Error setting device parameter: {e}")
+            raise
+
     # Helper methods
-    
+
     def _get_device_type(self, device):
         """Get the type of a device"""
         try:
@@ -814,16 +838,17 @@ class AbletonMCP(ControlSurface):
             self.log_message(f"[ERROR] Could not determine device type: {e}")
             return "unknown"
     
-    def get_browser_tree(self, category_type="all"):
+    def get_browser_tree(self, params=None):
         """
         Get a simplified tree of browser categories.
-        
+
         Args:
-            category_type: Type of categories to get ('all', 'instruments', 'sounds', etc.)
-            
+            params: Dict with optional 'category_type' key ('all', 'instruments', 'sounds', etc.)
+
         Returns:
             Dictionary with the browser tree structure
         """
+        category_type = (params or {}).get("category_type", "all")
         try:
             # Access the application's browser instance instead of creating a new one
             app = self.application()
@@ -929,18 +954,18 @@ class AbletonMCP(ControlSurface):
             self.log_message(traceback.format_exc())
             raise
     
-    def get_browser_items_at_path(self, path):
+    def get_browser_items_at_path(self, params=None):
         """
         Get browser items at a specific path.
-        
+
         Args:
-            path: Path in the format "category/folder/subfolder"
-                 where category is one of: instruments, sounds, drums, audio_effects, midi_effects
-                 or any other available browser category
-                 
+            params: Dict with 'path' key in format "category/folder/subfolder"
+                   where category is one of: instruments, sounds, drums, audio_effects, midi_effects
+
         Returns:
             Dictionary with items at the specified path
         """
+        path = (params or {}).get("path", "")
         try:
             # Access the application's browser instance instead of creating a new one
             app = self.application()
