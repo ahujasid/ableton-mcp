@@ -14,7 +14,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **FNDN-03**: Socket protocol uses length-prefix framing instead of JSON-completeness parsing
 - [x] **FNDN-04**: Global connection protected by threading.Lock for concurrent tool invocations
 - [x] **FNDN-05**: All error handling uses specific exception types — no bare except:pass blocks
-- [ ] **FNDN-06**: Remote Script command dispatch uses dict-based router instead of if/elif chain
+- [x] **FNDN-06**: Remote Script command dispatch uses dict-based router instead of if/elif chain
 - [ ] **FNDN-07**: MCP tools organized into domain modules (tracks, clips, mixing, etc.)
 - [ ] **FNDN-08**: Remote Script handlers organized into domain modules with @main_thread decorator
 - [ ] **FNDN-09**: Linting configured with ruff (target Python 3.11, PEP 8, import ordering)
@@ -159,7 +159,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FNDN-03 | Phase 1 | Complete |
 | FNDN-04 | Phase 1 | Complete |
 | FNDN-05 | Phase 1 | Complete |
-| FNDN-06 | Phase 1 | Pending |
+| FNDN-06 | Phase 1 | Complete |
 | FNDN-07 | Phase 2 | Pending |
 | FNDN-08 | Phase 2 | Pending |
 | FNDN-09 | Phase 2 | Pending |
