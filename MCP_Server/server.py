@@ -651,6 +651,51 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) 
         logger.error(f"Error loading drum kit: {str(e)}")
         return f"Error loading drum kit: {str(e)}"
 
+@mcp.tool()
+def get_notes_from_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Read all MIDI notes from a clip and return them as a list.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the clip slot containing the clip
+
+    Each note has: pitch (0-127), start_time (beats), duration (beats), velocity (0-127), mute (bool).
+    Notes are sorted by start_time ascending.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_notes_from_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting notes from clip: {str(e)}")
+        return f"Error getting notes from clip: {str(e)}"
+
+@mcp.tool()
+def delete_notes_from_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Delete all MIDI notes from a clip without deleting the clip itself.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the clip slot containing the clip
+
+    Use this before add_notes_to_clip when you want to fully replace the contents of a clip.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_notes_from_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error deleting notes from clip: {str(e)}")
+        return f"Error deleting notes from clip: {str(e)}"
+
 # Main execution
 def main():
     """Run the MCP server"""

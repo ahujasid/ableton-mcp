@@ -226,10 +226,11 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
             # Commands that modify Live's state should be scheduled on the main thread
-            elif command_type in ["create_midi_track", "set_track_name", 
-                                 "create_clip", "add_notes_to_clip", "set_clip_name", 
+            elif command_type in ["create_midi_track", "set_track_name",
+                                 "create_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item"]:
+                                 "start_playback", "stop_playback", "load_browser_item",
+                                 "delete_notes_from_clip"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -282,7 +283,11 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
                             result = self._load_browser_item(track_index, item_uri)
-                        
+                        elif command_type == "delete_notes_from_clip":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            result = self._delete_notes_from_clip(track_index, clip_index)
+
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
@@ -326,6 +331,10 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_browser_items_at_path":
                 path = params.get("path", "")
                 response["result"] = self.get_browser_items_at_path(path)
+            elif command_type == "get_notes_from_clip":
+                track_index = params.get("track_index", 0)
+                clip_index = params.get("clip_index", 0)
+                response["result"] = self._get_notes_from_clip(track_index, clip_index)
             else:
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
@@ -1059,4 +1068,68 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error getting browser items at path: {0}".format(str(e)))
             self.log_message(traceback.format_exc())
+            raise
+
+    def _get_notes_from_clip(self, track_index, clip_index):
+        """Return all MIDI notes in a clip as a list of dicts."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+            clip_slot = track.clip_slots[clip_index]
+            if not clip_slot.has_clip:
+                raise Exception("No clip at track {0}, slot {1}".format(track_index, clip_index))
+            clip = clip_slot.clip
+            if not clip.is_midi_clip:
+                raise Exception("Clip is not a MIDI clip")
+
+            notes_raw = clip.get_notes(clip.loop_start, 0, clip.loop_end, 128)
+            notes = []
+            for n in notes_raw:
+                notes.append({
+                    "pitch": int(n[0]),
+                    "start_time": float(n[1]),
+                    "duration": float(n[2]),
+                    "velocity": int(n[3]),
+                    "mute": bool(n[4]),
+                })
+            notes.sort(key=lambda n: (n["start_time"], n["pitch"]))
+
+            return {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "clip_length": float(clip.length),
+                "note_count": len(notes),
+                "notes": notes,
+            }
+        except Exception as e:
+            self.log_message("Error getting notes from clip: " + str(e))
+            raise
+
+    def _delete_notes_from_clip(self, track_index, clip_index):
+        """Remove every MIDI note from a clip, leaving the clip intact."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+            clip_slot = track.clip_slots[clip_index]
+            if not clip_slot.has_clip:
+                raise Exception("No clip at track {0}, slot {1}".format(track_index, clip_index))
+            clip = clip_slot.clip
+            if not clip.is_midi_clip:
+                raise Exception("Clip is not a MIDI clip")
+
+            clip.remove_notes(clip.loop_start, 0, clip.loop_end, 128)
+
+            return {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "status": "all notes deleted",
+            }
+        except Exception as e:
+            self.log_message("Error deleting notes from clip: " + str(e))
             raise
