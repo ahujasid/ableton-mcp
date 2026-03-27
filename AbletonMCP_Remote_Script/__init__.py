@@ -225,17 +225,31 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "get_clip_notes":
+                # Read-only operation, safe to execute directly like get_track_info
+                track_index = params.get("track_index", 0)
+                clip_index = params.get("clip_index", 0)
+                response["result"] = self._get_clip_notes(track_index, clip_index)
             # Commands that modify Live's state should be scheduled on the main thread
-            elif command_type in ["create_midi_track", "set_track_name", 
-                                 "create_clip", "add_notes_to_clip", "set_clip_name", 
+            elif command_type in ["create_midi_track", "set_track_name",
+                                 "create_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item"]:
+                                 "start_playback", "stop_playback", "load_browser_item",
+                                 "remove_notes_from_clip", "delete_clip",
+                                 "duplicate_clip_to", "set_track_volume", "set_track_pan",
+                                 "set_track_send", "fire_scene", "create_audio_track", "undo"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
-                
+                # Cancellation flag: if the wait times out, prevent late execution
+                # of destructive operations that haven't started yet
+                cancelled = [False]
+
                 # Define a function to execute on the main thread
                 def main_thread_task():
                     try:
+                        if cancelled[0]:
+                            self.log_message("Skipping cancelled command: " + command_type)
+                            return
                         result = None
                         if command_type == "create_midi_track":
                             index = params.get("index", -1)
@@ -282,6 +296,44 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
                             result = self._load_browser_item(track_index, item_uri)
+                        elif command_type == "remove_notes_from_clip":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            from_time = params.get("from_time", 0.0)
+                            from_pitch = params.get("from_pitch", 0)
+                            time_span = params.get("time_span", 99999.0)
+                            pitch_span = params.get("pitch_span", 128)
+                            result = self._remove_notes_from_clip(track_index, clip_index, from_time, from_pitch, time_span, pitch_span)
+                        elif command_type == "delete_clip":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            result = self._delete_clip(track_index, clip_index)
+                        elif command_type == "duplicate_clip_to":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            target_clip_index = params.get("target_clip_index", 0)
+                            result = self._duplicate_clip_to(track_index, clip_index, target_clip_index)
+                        elif command_type == "set_track_volume":
+                            track_index = params.get("track_index", 0)
+                            volume = params.get("volume", 0.85)
+                            result = self._set_track_volume(track_index, volume)
+                        elif command_type == "set_track_pan":
+                            track_index = params.get("track_index", 0)
+                            pan = params.get("pan", 0.0)
+                            result = self._set_track_pan(track_index, pan)
+                        elif command_type == "set_track_send":
+                            track_index = params.get("track_index", 0)
+                            send_index = params.get("send_index", 0)
+                            value = params.get("value", 0.0)
+                            result = self._set_track_send(track_index, send_index, value)
+                        elif command_type == "fire_scene":
+                            scene_index = params.get("scene_index", 0)
+                            result = self._fire_scene(scene_index)
+                        elif command_type == "create_audio_track":
+                            index = params.get("index", -1)
+                            result = self._create_audio_track(index)
+                        elif command_type == "undo":
+                            result = self._undo()
                         
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -306,8 +358,10 @@ class AbletonMCP(ControlSurface):
                     else:
                         response["result"] = task_response.get("result", {})
                 except queue.Empty:
+                    cancelled[0] = True
+                    self.log_message("Timeout for command: " + command_type + " - marking cancelled")
                     response["status"] = "error"
-                    response["message"] = "Timeout waiting for operation to complete"
+                    response["message"] = "Timeout waiting for operation to complete. The operation was cancelled to prevent unintended side effects."
             elif command_type == "get_browser_item":
                 uri = params.get("uri", None)
                 path = params.get("path", None)
@@ -637,6 +691,248 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error stopping playback: " + str(e))
             raise
     
+    def _get_clip_notes(self, track_index, clip_index):
+        """Get all notes from a clip"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            # Get all notes from the clip
+            # get_notes(from_time, from_pitch, time_span, pitch_span)
+            notes_tuple = clip.get_notes(0.0, 0, clip.length, 128)
+
+            notes = []
+            for note in notes_tuple:
+                notes.append({
+                    "pitch": note[0],
+                    "start_time": note[1],
+                    "duration": note[2],
+                    "velocity": note[3],
+                    "mute": note[4]
+                })
+
+            result = {
+                "note_count": len(notes),
+                "clip_length": clip.length,
+                "notes": notes
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error getting clip notes: " + str(e))
+            raise
+
+    def _remove_notes_from_clip(self, track_index, clip_index, from_time, from_pitch, time_span, pitch_span):
+        """Remove notes from a clip within the specified range"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            # Remove notes in the specified range
+            clip.remove_notes(from_time, from_pitch, time_span, pitch_span)
+
+            result = {
+                "removed": True,
+                "from_time": from_time,
+                "from_pitch": from_pitch,
+                "time_span": time_span,
+                "pitch_span": pitch_span
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error removing notes from clip: " + str(e))
+            raise
+
+    def _delete_clip(self, track_index, clip_index):
+        """Delete a clip from a clip slot"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip_slot.delete_clip()
+
+            result = {
+                "deleted": True
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error deleting clip: " + str(e))
+            raise
+
+    def _duplicate_clip_to(self, track_index, clip_index, target_clip_index):
+        """Duplicate a clip to another clip slot on the same track"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Source clip index out of range")
+
+            if target_clip_index < 0 or target_clip_index >= len(track.clip_slots):
+                raise IndexError("Target clip index out of range")
+
+            source_slot = track.clip_slots[clip_index]
+            target_slot = track.clip_slots[target_clip_index]
+
+            if not source_slot.has_clip:
+                raise Exception("No clip in source slot")
+
+            if target_slot.has_clip:
+                raise Exception("Target slot already has a clip")
+
+            source_slot.duplicate_clip_to(target_slot)
+
+            result = {
+                "duplicated": True,
+                "source_slot": clip_index,
+                "target_slot": target_clip_index
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error duplicating clip: " + str(e))
+            raise
+
+    def _set_track_volume(self, track_index, volume):
+        """Set the volume of a track (0.0 to 1.0)"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+            track.mixer_device.volume.value = max(0.0, min(1.0, volume))
+
+            result = {
+                "volume": track.mixer_device.volume.value
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting track volume: " + str(e))
+            raise
+
+    def _set_track_pan(self, track_index, pan):
+        """Set the panning of a track (-1.0 to 1.0)"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+            track.mixer_device.panning.value = max(-1.0, min(1.0, pan))
+
+            result = {
+                "panning": track.mixer_device.panning.value
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting track panning: " + str(e))
+            raise
+
+    def _set_track_send(self, track_index, send_index, value):
+        """Set a send amount on a track (0.0 to 1.0)"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+            sends = track.mixer_device.sends
+
+            if send_index < 0 or send_index >= len(sends):
+                raise IndexError("Send index out of range (track has {0} sends)".format(len(sends)))
+
+            sends[send_index].value = max(0.0, min(1.0, value))
+
+            result = {
+                "send_index": send_index,
+                "value": sends[send_index].value
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting track send: " + str(e))
+            raise
+
+    def _fire_scene(self, scene_index):
+        """Fire (launch) a scene, triggering all clips in that row"""
+        try:
+            scenes = self._song.scenes
+            if scene_index < 0 or scene_index >= len(scenes):
+                raise IndexError("Scene index out of range (session has {0} scenes)".format(len(scenes)))
+
+            scenes[scene_index].fire()
+
+            result = {
+                "fired": True,
+                "scene_index": scene_index,
+                "scene_name": scenes[scene_index].name
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error firing scene: " + str(e))
+            raise
+
+    def _create_audio_track(self, index):
+        """Create a new audio track at the specified index"""
+        try:
+            self._song.create_audio_track(index)
+
+            new_track_index = len(self._song.tracks) - 1 if index == -1 else index
+            new_track = self._song.tracks[new_track_index]
+
+            result = {
+                "index": new_track_index,
+                "name": new_track.name
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error creating audio track: " + str(e))
+            raise
+
+    def _undo(self):
+        """Undo the last action"""
+        try:
+            self._song.undo()
+
+            result = {
+                "undone": True
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error undoing: " + str(e))
+            raise
+
     def _get_browser_item(self, uri, path):
         """Get a browser item by URI or path"""
         try:
