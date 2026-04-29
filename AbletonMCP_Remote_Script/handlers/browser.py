@@ -5,38 +5,106 @@ from __future__ import absolute_import, print_function, unicode_literals
 import traceback
 
 
+def _iter_browser_root_categories(browser):
+    """Yield every top-level browseable item.
+
+    Some categories on the root browser are single BrowserItem (instruments,
+    samples, user_library, ...). Others are BrowserItemVector (user_folders,
+    legacy_libraries) — those need to be unpacked because BrowserItemVector
+    is a sequence, not a node with .children. We yield each contained item
+    so callers can recurse into them uniformly.
+    """
+    single_attrs = [
+        "instruments",
+        "sounds",
+        "drums",
+        "audio_effects",
+        "midi_effects",
+        "plugins",
+        "samples",
+        "clips",
+        "user_library",
+        "current_project",
+        "packs",
+        "max_for_live",
+    ]
+    vector_attrs = ["user_folders", "legacy_libraries"]
+    for attr in single_attrs:
+        cat = getattr(browser, attr, None)
+        if cat is not None:
+            yield cat
+    for attr in vector_attrs:
+        vec = getattr(browser, attr, None)
+        if vec is None:
+            continue
+        try:
+            for item in vec:
+                yield item
+        except Exception:
+            continue
+
+
 def find_browser_item_by_uri(
-    browser_or_item, uri, max_depth=10, current_depth=0, ctrl=None
+    browser_or_item, uri, max_depth=20, current_depth=0, ctrl=None
 ):
-    """Find a browser item by its URI."""
+    """Find a browser item by its URI.
+
+    Uses an iterative BFS so we don't blow the recursion stack on deep
+    sample trees. Searches all top-level categories from the root browser
+    (instruments, drums, samples, user_library, packs, ...) plus follows
+    `children` for sub-folders.
+    """
     try:
+        # Direct hit on the passed-in item
         if hasattr(browser_or_item, "uri") and browser_or_item.uri == uri:
             return browser_or_item
-        if current_depth >= max_depth:
-            return None
+        # Build the BFS frontier from either root categories or .children
+        frontier = []
         if hasattr(browser_or_item, "instruments"):
-            categories = [
-                browser_or_item.instruments,
-                browser_or_item.sounds,
-                browser_or_item.drums,
-                browser_or_item.audio_effects,
-                browser_or_item.midi_effects,
-                browser_or_item.plugins,
-            ]
-            for category in categories:
-                item = find_browser_item_by_uri(
-                    category, uri, max_depth, current_depth + 1, ctrl
+            frontier.extend(_iter_browser_root_categories(browser_or_item))
+        elif hasattr(browser_or_item, "children"):
+            try:
+                frontier.extend(list(browser_or_item.children))
+            except Exception:
+                pass
+        # BFS
+        depth = 0
+        nodes_checked = 0
+        first_uri_seen = None
+        while frontier and depth < max_depth:
+            next_level = []
+            for node in frontier:
+                nodes_checked += 1
+                try:
+                    if hasattr(node, "uri"):
+                        nu = node.uri
+                        if first_uri_seen is None and nu:
+                            first_uri_seen = nu
+                        if nu == uri:
+                            if ctrl:
+                                ctrl.log_message(
+                                    "[find_uri] HIT at depth {0} after {1} nodes".format(
+                                        depth, nodes_checked
+                                    )
+                                )
+                            return node
+                except Exception:
+                    pass
+                try:
+                    if hasattr(node, "children"):
+                        children = node.children
+                        if children:
+                            next_level.extend(list(children))
+                except Exception:
+                    pass
+            frontier = next_level
+            depth += 1
+        if ctrl:
+            ctrl.log_message(
+                "[find_uri] MISS uri={0!r} depth_reached={1} nodes={2} first_uri_seen={3!r}".format(
+                    uri, depth, nodes_checked, first_uri_seen
                 )
-                if item:
-                    return item
-            return None
-        if hasattr(browser_or_item, "children") and browser_or_item.children:
-            for child in browser_or_item.children:
-                item = find_browser_item_by_uri(
-                    child, uri, max_depth, current_depth + 1, ctrl
-                )
-                if item:
-                    return item
+            )
         return None
     except Exception as e:
         if ctrl:
@@ -329,6 +397,77 @@ def get_browser_tree(song, category_type, ctrl=None):
         raise
 
 
+def debug_browser_introspect(song, ctrl=None):
+    """Dump everything we can find about the browser's top-level structure."""
+    try:
+        if ctrl is None:
+            raise RuntimeError("debug_browser_introspect requires ctrl")
+        app = ctrl.application()
+        b = app.browser
+        out = {"top_attrs": {}, "find_user_samples": {}}
+        for attr in sorted(dir(b)):
+            if attr.startswith("_"):
+                continue
+            try:
+                v = getattr(b, attr)
+            except Exception as e:
+                out["top_attrs"][attr] = "ERR: {0}".format(e)
+                continue
+            info = {"type": type(v).__name__}
+            try:
+                if hasattr(v, "name"):
+                    info["name"] = v.name
+            except Exception:
+                pass
+            try:
+                if hasattr(v, "uri"):
+                    info["uri"] = v.uri
+            except Exception:
+                pass
+            try:
+                if hasattr(v, "children"):
+                    children = list(v.children)
+                    info["child_count"] = len(children)
+                    info["first_5_children"] = [
+                        {
+                            "name": getattr(c, "name", None),
+                            "uri": getattr(c, "uri", None),
+                            "is_loadable": getattr(c, "is_loadable", None),
+                        }
+                        for c in children[:5]
+                    ]
+            except Exception as e:
+                info["children_err"] = str(e)
+            out["top_attrs"][attr] = info
+        # Lightweight: just expose direct attrs of user_folders (don't walk deep)
+        try:
+            uf = getattr(b, "user_folders", None)
+            if uf is not None:
+                uf_info = {
+                    "type": type(uf).__name__,
+                    "dir": [a for a in dir(uf) if not a.startswith("_")][:40],
+                    "name": getattr(uf, "name", None),
+                    "uri": getattr(uf, "uri", None),
+                }
+                try:
+                    chs = list(uf.children)
+                    uf_info["child_count"] = len(chs)
+                    uf_info["child_samples"] = [
+                        {"name": getattr(c, "name", None), "uri": getattr(c, "uri", None)}
+                        for c in chs[:10]
+                    ]
+                except Exception as e:
+                    uf_info["children_err"] = str(e)
+                out["user_folders_detail"] = uf_info
+        except Exception as e:
+            out["user_folders_detail_err"] = str(e)
+        return out
+    except Exception as e:
+        if ctrl:
+            ctrl.log_message("debug introspect error: " + str(e))
+        raise
+
+
 def get_browser_items_at_path(song, path, ctrl=None):
     """Get browser items at a specific path."""
     try:
@@ -343,6 +482,96 @@ def get_browser_items_at_path(song, path, ctrl=None):
             raise RuntimeError(
                 "Browser is not available in the Live application"
             )
+        # Debug shortcut routed through normal endpoint so it works without
+        # restarting Live (handler hot-reload is enough)
+        if path == "__debug__":
+            return debug_browser_introspect(song, ctrl)
+        # Vector-type categories (user_folders, legacy_libraries) — list places
+        if path == "user_folders":
+            uf = getattr(app.browser, "user_folders", None)
+            items = []
+            if uf is not None:
+                try:
+                    for child in uf:
+                        items.append({
+                            "name": getattr(child, "name", None),
+                            "is_folder": True,
+                            "is_device": False,
+                            "is_loadable": getattr(child, "is_loadable", False),
+                            "uri": getattr(child, "uri", None),
+                        })
+                except Exception:
+                    pass
+            return {
+                "path": path,
+                "name": "User Folders",
+                "uri": None,
+                "is_folder": True,
+                "is_device": False,
+                "is_loadable": False,
+                "items": items,
+            }
+        # path of form "user_folders/<index>" or "user_folders/<NAME>" — descend
+        if path.startswith("user_folders/"):
+            uf = getattr(app.browser, "user_folders", None)
+            if uf is None:
+                return {"path": path, "items": [], "error": "user_folders unavailable"}
+            rest = path[len("user_folders/"):]
+            seg, _, sub = rest.partition("/")
+            target = None
+            try:
+                idx = int(seg)
+                vec_list = list(uf)
+                if 0 <= idx < len(vec_list):
+                    target = vec_list[idx]
+            except ValueError:
+                for child in uf:
+                    if getattr(child, "name", None) == seg or (
+                        getattr(child, "name", "") or ""
+                    ).lower() == seg.lower():
+                        target = child
+                        break
+            if target is None:
+                return {"path": path, "items": [], "error": "Place not found: " + seg}
+            # Drill down through any sub-path
+            current_item = target
+            if sub:
+                for part in sub.split("/"):
+                    if not part:
+                        continue
+                    found = False
+                    if hasattr(current_item, "children"):
+                        for c in current_item.children:
+                            if (getattr(c, "name", "") or "").lower() == part.lower():
+                                current_item = c
+                                found = True
+                                break
+                    if not found:
+                        return {
+                            "path": path,
+                            "items": [],
+                            "error": "Subpath part not found: " + part,
+                        }
+            items = []
+            if hasattr(current_item, "children"):
+                for child in current_item.children:
+                    items.append({
+                        "name": getattr(child, "name", None),
+                        "is_folder": hasattr(child, "children")
+                        and bool(child.children),
+                        "is_device": getattr(child, "is_device", False),
+                        "is_loadable": getattr(child, "is_loadable", False),
+                        "uri": getattr(child, "uri", None),
+                    })
+            return {
+                "path": path,
+                "name": getattr(current_item, "name", None),
+                "uri": getattr(current_item, "uri", None),
+                "is_folder": True,
+                "is_device": False,
+                "is_loadable": getattr(current_item, "is_loadable", False),
+                "items": items,
+            }
         browser_attrs = [
             attr
             for attr in dir(app.browser)

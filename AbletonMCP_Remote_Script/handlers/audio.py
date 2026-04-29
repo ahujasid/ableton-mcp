@@ -22,6 +22,21 @@ def load_audio_sample(
         app = ctrl.application()
         if not app:
             raise RuntimeError("Could not access Live application")
+        # Live's browser.load_item targets the focused location in the UI.
+        # For an audio sample to land in the *clip slot* (rather than the
+        # device chain or some hotswap target), we must set both the
+        # selected_track AND highlighted_clip_slot. Setting only the
+        # clip slot caused loads to silently drop.
+        try:
+            song.view.selected_track = track
+        except Exception:
+            pass
+        # Selected scene drives "selected clip slot" together with selected_track
+        try:
+            if clip_index < len(song.scenes):
+                song.view.selected_scene = song.scenes[clip_index]
+        except Exception:
+            pass
         song.view.highlighted_clip_slot = clip_slot
         if browser_uri:
             from . import browser as browser_mod
@@ -32,7 +47,25 @@ def load_audio_sample(
                 raise ValueError(
                     "Browser item with URI '{0}' not found".format(browser_uri)
                 )
-            app.browser.load_item(item)
+            # Live's Browser exposes a dedicated method for putting samples
+            # into the *selected* clip slot — use it when available, fall
+            # back to plain load_item otherwise (older Live versions).
+            if hasattr(app.browser, "load_item_into_selected_clipslot"):
+                app.browser.load_item_into_selected_clipslot(item)
+            else:
+                app.browser.load_item(item)
+            # Sample import can take a moment for larger files / first-touch
+            for _ in range(20):
+                time.sleep(0.1)
+                if clip_slot.has_clip:
+                    break
+            if not clip_slot.has_clip:
+                raise RuntimeError(
+                    "load_item ran but no clip materialized in slot {0} of track {1} "
+                    "(uri={2}).".format(
+                        clip_index, track_index, browser_uri
+                    )
+                )
         elif file_path:
             if ctrl:
                 ctrl.log_message(

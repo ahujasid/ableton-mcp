@@ -306,6 +306,10 @@ class AbletonMCP(ControlSurface):
                 response["result"] = handlers.browser.get_browser_items_at_path(
                     song, params.get("path", ""), ctrl
                 )
+            elif command_type == "debug_browser_introspect":
+                response["result"] = handlers.browser.debug_browser_introspect(
+                    song, ctrl
+                )
             elif command_type == "get_recording_status":
                 response["result"] = handlers.session.get_recording_status(song, ctrl)
             elif command_type == "get_all_tracks_info":
