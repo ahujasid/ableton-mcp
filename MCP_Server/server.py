@@ -105,7 +105,8 @@ class AbletonConnection:
             "create_midi_track", "create_audio_track", "set_track_name",
             "create_clip", "add_notes_to_clip", "set_clip_name",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
-            "start_playback", "stop_playback", "load_instrument_or_effect"
+            "start_playback", "stop_playback", "load_instrument_or_effect",
+            "load_browser_item"
         ]
         
         try:
@@ -497,6 +498,56 @@ def stop_playback(ctx: Context) -> str:
     except Exception as e:
         logger.error(f"Error stopping playback: {str(e)}")
         return f"Error stopping playback: {str(e)}"
+
+@mcp.tool()
+def get_track_devices(ctx: Context, track_index: int) -> str:
+    """
+    Get all devices on a track along with their parameters and current values.
+    For rack devices this includes all macro knobs (Macro 1–8).
+
+    Parameters:
+    - track_index: The index of the track to inspect
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_track_devices", {"track_index": track_index})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting track devices: {str(e)}")
+        return f"Error getting track devices: {str(e)}"
+
+@mcp.tool()
+def set_device_parameter(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    parameter_index: int,
+    value: float
+) -> str:
+    """
+    Set a parameter value on a device. Use get_track_devices first to find the
+    correct device_index and parameter_index. For rack devices the macro knobs
+    are parameter indices 1–8 (index 0 is the Device On/Off toggle).
+
+    Parameters:
+    - track_index: The index of the track containing the device
+    - device_index: The index of the device on the track
+    - parameter_index: The index of the parameter to set
+    - value: The new value (will be clamped to the parameter's min/max range)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_device_parameter", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameter_index": parameter_index,
+            "value": value
+        })
+        return (f"Set '{result.get('parameter_name')}' on '{result.get('device_name')}' "
+                f"to {result.get('value')}")
+    except Exception as e:
+        logger.error(f"Error setting device parameter: {str(e)}")
+        return f"Error setting device parameter: {str(e)}"
 
 @mcp.tool()
 def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
