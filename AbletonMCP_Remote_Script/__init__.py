@@ -226,10 +226,12 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
             # Commands that modify Live's state should be scheduled on the main thread
-            elif command_type in ["create_midi_track", "set_track_name", 
-                                 "create_clip", "add_notes_to_clip", "set_clip_name", 
+            elif command_type in ["create_midi_track", "set_track_name",
+                                 "create_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item"]:
+                                 "start_playback", "stop_playback", "load_browser_item",
+                                 "create_return_track", "set_send", "set_return_track_name",
+                                 "load_device_on_return"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -282,7 +284,22 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
                             result = self._load_browser_item(track_index, item_uri)
-                        
+                        elif command_type == "create_return_track":
+                            result = self._create_return_track()
+                        elif command_type == "set_send":
+                            source_track_index = params.get("source_track_index", 0)
+                            return_track_index = params.get("return_track_index", 0)
+                            send_amount = params.get("send_amount", 0.0)
+                            result = self._set_send(source_track_index, return_track_index, send_amount)
+                        elif command_type == "set_return_track_name":
+                            return_track_index = params.get("return_track_index", 0)
+                            name = params.get("name", "")
+                            result = self._set_return_track_name(return_track_index, name)
+                        elif command_type == "load_device_on_return":
+                            return_track_index = params.get("return_track_index", 0)
+                            item_uri = params.get("item_uri", "")
+                            result = self._load_device_on_return(return_track_index, item_uri)
+
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
@@ -319,6 +336,8 @@ class AbletonMCP(ControlSurface):
                 path = params.get("path", "")
                 item_type = params.get("item_type", "all")
                 response["result"] = self._get_browser_items(path, item_type)
+            elif command_type == "get_return_tracks":
+                response["result"] = self._get_return_tracks()
             # Add the new browser commands
             elif command_type == "get_browser_tree":
                 category_type = params.get("category_type", "all")
@@ -820,6 +839,102 @@ class AbletonMCP(ControlSurface):
         except:
             return "unknown"
     
+    def _get_return_tracks(self):
+        """Get information about all return tracks"""
+        try:
+            return_tracks = []
+            for index, track in enumerate(self._song.return_tracks):
+                devices = []
+                for device_index, device in enumerate(track.devices):
+                    devices.append({
+                        "index": device_index,
+                        "name": device.name,
+                        "class_name": device.class_name,
+                        "type": self._get_device_type(device)
+                    })
+                return_tracks.append({
+                    "index": index,
+                    "name": track.name,
+                    "mute": track.mute,
+                    "volume": track.mixer_device.volume.value,
+                    "panning": track.mixer_device.panning.value,
+                    "devices": devices
+                })
+            return {
+                "return_track_count": len(return_tracks),
+                "return_tracks": return_tracks
+            }
+        except Exception as e:
+            self.log_message("Error getting return tracks: " + str(e))
+            raise
+
+    def _create_return_track(self):
+        """Create a new return track"""
+        try:
+            self._song.create_return_track()
+            new_track = self._song.return_tracks[-1]
+            return {
+                "index": len(self._song.return_tracks) - 1,
+                "name": new_track.name
+            }
+        except Exception as e:
+            self.log_message("Error creating return track: " + str(e))
+            raise
+
+    def _set_return_track_name(self, return_track_index, name):
+        """Set the name of a return track"""
+        try:
+            if return_track_index < 0 or return_track_index >= len(self._song.return_tracks):
+                raise IndexError("Return track index out of range")
+            track = self._song.return_tracks[return_track_index]
+            track.name = name
+            return {"name": track.name}
+        except Exception as e:
+            self.log_message("Error setting return track name: " + str(e))
+            raise
+
+    def _set_send(self, source_track_index, return_track_index, send_amount):
+        """Set the send amount from a source track to a return track"""
+        try:
+            if source_track_index < 0 or source_track_index >= len(self._song.tracks):
+                raise IndexError("Source track index out of range")
+            if return_track_index < 0 or return_track_index >= len(self._song.return_tracks):
+                raise IndexError("Return track index out of range")
+            send_amount = max(0.0, min(1.0, float(send_amount)))
+            source_track = self._song.tracks[source_track_index]
+            source_track.mixer_device.sends[return_track_index].value = send_amount
+            return {
+                "source_track": source_track.name,
+                "return_track_index": return_track_index,
+                "send_amount": source_track.mixer_device.sends[return_track_index].value
+            }
+        except Exception as e:
+            self.log_message("Error setting send: " + str(e))
+            raise
+
+    def _load_device_on_return(self, return_track_index, item_uri):
+        """Load an instrument or effect onto a return track by its URI"""
+        try:
+            if return_track_index < 0 or return_track_index >= len(self._song.return_tracks):
+                raise IndexError("Return track index out of range")
+            return_track = self._song.return_tracks[return_track_index]
+            app = self.application()
+            item = self._find_browser_item_by_uri(app.browser, item_uri)
+            if not item:
+                raise ValueError("Browser item with URI '{0}' not found".format(item_uri))
+            self._song.view.selected_track = return_track
+            app.browser.load_item(item)
+            return {
+                "loaded": True,
+                "device_name": item.name,
+                "return_track_name": return_track.name,
+                "return_track_index": return_track_index,
+                "uri": item_uri
+            }
+        except Exception as e:
+            self.log_message("Error loading device on return track: " + str(e))
+            raise
+
     def get_browser_tree(self, category_type="all"):
         """
         Get a simplified tree of browser categories.

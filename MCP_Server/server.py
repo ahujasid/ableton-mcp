@@ -105,7 +105,9 @@ class AbletonConnection:
             "create_midi_track", "create_audio_track", "set_track_name",
             "create_clip", "add_notes_to_clip", "set_clip_name",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
-            "start_playback", "stop_playback", "load_instrument_or_effect"
+            "start_playback", "stop_playback", "load_instrument_or_effect",
+            "create_return_track", "set_send", "set_return_track_name",
+            "load_device_on_return"
         ]
         
         try:
@@ -650,6 +652,92 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) 
     except Exception as e:
         logger.error(f"Error loading drum kit: {str(e)}")
         return f"Error loading drum kit: {str(e)}"
+
+@mcp.tool()
+def get_return_tracks(ctx: Context) -> str:
+    """Get information about all return tracks in the Ableton session."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_return_tracks")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting return tracks: {str(e)}")
+        return f"Error getting return tracks: {str(e)}"
+
+@mcp.tool()
+def create_return_track(ctx: Context) -> str:
+    """Create a new return track in the Ableton session."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_return_track")
+        return f"Created return track '{result.get('name', 'unknown')}' at index {result.get('index', '?')}"
+    except Exception as e:
+        logger.error(f"Error creating return track: {str(e)}")
+        return f"Error creating return track: {str(e)}"
+
+@mcp.tool()
+def set_return_track_name(ctx: Context, return_track_index: int, name: str) -> str:
+    """
+    Set the name of a return track.
+
+    Parameters:
+    - return_track_index: The index of the return track to rename (0-based)
+    - name: The new name for the return track
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_return_track_name", {
+            "return_track_index": return_track_index,
+            "name": name
+        })
+        return f"Renamed return track {return_track_index} to '{result.get('name', name)}'"
+    except Exception as e:
+        logger.error(f"Error setting return track name: {str(e)}")
+        return f"Error setting return track name: {str(e)}"
+
+@mcp.tool()
+def set_send(ctx: Context, source_track_index: int, return_track_index: int, send_amount: float) -> str:
+    """
+    Set the send amount from a source track to a return track.
+
+    Parameters:
+    - source_track_index: Index of the source track
+    - return_track_index: Index of the return track (0-based)
+    - send_amount: Send level from 0.0 (off) to 1.0 (full)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_send", {
+            "source_track_index": source_track_index,
+            "return_track_index": return_track_index,
+            "send_amount": send_amount
+        })
+        return (f"Set send from '{result.get('source_track')}' to return {return_track_index} "
+                f"-> {result.get('send_amount', send_amount):.2f}")
+    except Exception as e:
+        logger.error(f"Error setting send: {str(e)}")
+        return f"Error setting send: {str(e)}"
+
+@mcp.tool()
+def load_device_on_return(ctx: Context, return_track_index: int, uri: str) -> str:
+    """
+    Load an instrument or effect onto a return track using its URI.
+
+    Parameters:
+    - return_track_index: Index of the return track (0-based)
+    - uri: The URI of the device to load (e.g. 'query:AudioFx#Hybrid%20Reverb')
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("load_device_on_return", {
+            "return_track_index": return_track_index,
+            "item_uri": uri
+        })
+        return (f"Loaded '{result.get('device_name')}' onto return track "
+                f"'{result.get('return_track_name')}' (index {return_track_index})")
+    except Exception as e:
+        logger.error(f"Error loading device on return track: {str(e)}")
+        return f"Error loading device on return track: {str(e)}"
 
 # Main execution
 def main():
