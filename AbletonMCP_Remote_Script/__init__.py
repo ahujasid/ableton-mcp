@@ -231,7 +231,13 @@ class AbletonMCP(ControlSurface):
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback", "load_browser_item",
                                  "create_return_track", "set_send", "set_return_track_name",
-                                 "load_device_on_return"]:
+                                 "load_device_on_return",
+                                 "set_track_volume", "set_track_panning",
+                                 "set_track_mute", "set_track_solo", "set_track_arm",
+                                 "set_track_color",
+                                 "set_return_track_volume", "set_return_track_panning",
+                                 "set_return_track_mute", "set_return_track_color",
+                                 "set_master_volume", "set_master_panning"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -299,6 +305,30 @@ class AbletonMCP(ControlSurface):
                             return_track_index = params.get("return_track_index", 0)
                             item_uri = params.get("item_uri", "")
                             result = self._load_device_on_return(return_track_index, item_uri)
+                        elif command_type == "set_track_volume":
+                            result = self._set_track_volume(params.get("track_index", 0), params.get("volume", 0.85))
+                        elif command_type == "set_track_panning":
+                            result = self._set_track_panning(params.get("track_index", 0), params.get("panning", 0.0))
+                        elif command_type == "set_track_mute":
+                            result = self._set_track_mute(params.get("track_index", 0), params.get("mute", False))
+                        elif command_type == "set_track_solo":
+                            result = self._set_track_solo(params.get("track_index", 0), params.get("solo", False))
+                        elif command_type == "set_track_arm":
+                            result = self._set_track_arm(params.get("track_index", 0), params.get("arm", False))
+                        elif command_type == "set_track_color":
+                            result = self._set_track_color(params.get("track_index", 0), params.get("color", 0))
+                        elif command_type == "set_return_track_volume":
+                            result = self._set_return_track_volume(params.get("return_track_index", 0), params.get("volume", 0.85))
+                        elif command_type == "set_return_track_panning":
+                            result = self._set_return_track_panning(params.get("return_track_index", 0), params.get("panning", 0.0))
+                        elif command_type == "set_return_track_mute":
+                            result = self._set_return_track_mute(params.get("return_track_index", 0), params.get("mute", False))
+                        elif command_type == "set_return_track_color":
+                            result = self._set_return_track_color(params.get("return_track_index", 0), params.get("color", 0))
+                        elif command_type == "set_master_volume":
+                            result = self._set_master_volume(params.get("volume", 0.85))
+                        elif command_type == "set_master_panning":
+                            result = self._set_master_panning(params.get("panning", 0.0))
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -415,6 +445,10 @@ class AbletonMCP(ControlSurface):
                     "type": self._get_device_type(device)
                 })
             
+            sends = []
+            for send in track.mixer_device.sends:
+                sends.append(send.value)
+
             result = {
                 "index": track_index,
                 "name": track.name,
@@ -425,6 +459,8 @@ class AbletonMCP(ControlSurface):
                 "arm": track.arm,
                 "volume": track.mixer_device.volume.value,
                 "panning": track.mixer_device.panning.value,
+                "color": track.color,
+                "sends": sends,
                 "clip_slots": clip_slots,
                 "devices": devices
             }
@@ -887,6 +923,9 @@ class AbletonMCP(ControlSurface):
             if return_track_index < 0 or return_track_index >= len(self._song.return_tracks):
                 raise IndexError("Return track index out of range")
             track = self._song.return_tracks[return_track_index]
+            # Live auto-prepends the letter prefix (A-, B-, …); strip it if caller included it
+            if len(name) > 2 and name[1] == '-' and name[0].isupper():
+                name = name[2:]
             track.name = name
             return {"name": track.name}
         except Exception as e:
@@ -934,6 +973,84 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error loading device on return track: " + str(e))
             raise
+
+    def _set_track_volume(self, track_index, volume):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        track.mixer_device.volume.value = max(0.0, min(1.0, float(volume)))
+        return {"track": track.name, "volume": track.mixer_device.volume.value}
+
+    def _set_track_panning(self, track_index, panning):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        track.mixer_device.panning.value = max(-1.0, min(1.0, float(panning)))
+        return {"track": track.name, "panning": track.mixer_device.panning.value}
+
+    def _set_track_mute(self, track_index, mute):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        track.mute = bool(mute)
+        return {"track": track.name, "mute": track.mute}
+
+    def _set_track_solo(self, track_index, solo):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        track.solo = bool(solo)
+        return {"track": track.name, "solo": track.solo}
+
+    def _set_track_arm(self, track_index, arm):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        track.arm = bool(arm)
+        return {"track": track.name, "arm": track.arm}
+
+    def _set_track_color(self, track_index, color):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        track.color = int(color)
+        return {"track": track.name, "color": track.color}
+
+    def _set_return_track_volume(self, return_track_index, volume):
+        if return_track_index < 0 or return_track_index >= len(self._song.return_tracks):
+            raise IndexError("Return track index out of range")
+        track = self._song.return_tracks[return_track_index]
+        track.mixer_device.volume.value = max(0.0, min(1.0, float(volume)))
+        return {"track": track.name, "volume": track.mixer_device.volume.value}
+
+    def _set_return_track_panning(self, return_track_index, panning):
+        if return_track_index < 0 or return_track_index >= len(self._song.return_tracks):
+            raise IndexError("Return track index out of range")
+        track = self._song.return_tracks[return_track_index]
+        track.mixer_device.panning.value = max(-1.0, min(1.0, float(panning)))
+        return {"track": track.name, "panning": track.mixer_device.panning.value}
+
+    def _set_return_track_mute(self, return_track_index, mute):
+        if return_track_index < 0 or return_track_index >= len(self._song.return_tracks):
+            raise IndexError("Return track index out of range")
+        track = self._song.return_tracks[return_track_index]
+        track.mute = bool(mute)
+        return {"track": track.name, "mute": track.mute}
+
+    def _set_return_track_color(self, return_track_index, color):
+        if return_track_index < 0 or return_track_index >= len(self._song.return_tracks):
+            raise IndexError("Return track index out of range")
+        track = self._song.return_tracks[return_track_index]
+        track.color = int(color)
+        return {"track": track.name, "color": track.color}
+
+    def _set_master_volume(self, volume):
+        self._song.master_track.mixer_device.volume.value = max(0.0, min(1.0, float(volume)))
+        return {"volume": self._song.master_track.mixer_device.volume.value}
+
+    def _set_master_panning(self, panning):
+        self._song.master_track.mixer_device.panning.value = max(-1.0, min(1.0, float(panning)))
+        return {"panning": self._song.master_track.mixer_device.panning.value}
 
     def get_browser_tree(self, category_type="all"):
         """

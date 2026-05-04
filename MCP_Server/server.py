@@ -107,7 +107,12 @@ class AbletonConnection:
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "start_playback", "stop_playback", "load_instrument_or_effect",
             "create_return_track", "set_send", "set_return_track_name",
-            "load_device_on_return"
+            "load_device_on_return",
+            "set_track_volume", "set_track_panning", "set_track_mute",
+            "set_track_solo", "set_track_arm", "set_track_color",
+            "set_return_track_volume", "set_return_track_panning",
+            "set_return_track_mute", "set_return_track_color",
+            "set_master_volume", "set_master_panning"
         ]
         
         try:
@@ -717,6 +722,200 @@ def set_send(ctx: Context, source_track_index: int, return_track_index: int, sen
     except Exception as e:
         logger.error(f"Error setting send: {str(e)}")
         return f"Error setting send: {str(e)}"
+
+@mcp.tool()
+def set_track_volume(ctx: Context, track_index: int, volume: float) -> str:
+    """
+    Set the volume of a track.
+
+    Parameters:
+    - track_index: Index of the track
+    - volume: Volume level from 0.0 (silent) to 1.0 (full). Default unity is ~0.85.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_volume", {"track_index": track_index, "volume": volume})
+        return f"Set volume of '{result.get('track')}' to {result.get('volume'):.3f}"
+    except Exception as e:
+        return f"Error setting track volume: {str(e)}"
+
+@mcp.tool()
+def set_track_panning(ctx: Context, track_index: int, panning: float) -> str:
+    """
+    Set the panning of a track.
+
+    Parameters:
+    - track_index: Index of the track
+    - panning: Pan position from -1.0 (full left) to 1.0 (full right), 0.0 = center
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_panning", {"track_index": track_index, "panning": panning})
+        return f"Set panning of '{result.get('track')}' to {result.get('panning'):.3f}"
+    except Exception as e:
+        return f"Error setting track panning: {str(e)}"
+
+@mcp.tool()
+def set_track_mute(ctx: Context, track_index: int, mute: bool) -> str:
+    """
+    Mute or unmute a track.
+
+    Parameters:
+    - track_index: Index of the track
+    - mute: True to mute, False to unmute
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_mute", {"track_index": track_index, "mute": mute})
+        state = "muted" if result.get("mute") else "unmuted"
+        return f"Track '{result.get('track')}' {state}"
+    except Exception as e:
+        return f"Error setting track mute: {str(e)}"
+
+@mcp.tool()
+def set_track_solo(ctx: Context, track_index: int, solo: bool) -> str:
+    """
+    Solo or unsolo a track.
+
+    Parameters:
+    - track_index: Index of the track
+    - solo: True to solo, False to unsolo
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_solo", {"track_index": track_index, "solo": solo})
+        state = "soloed" if result.get("solo") else "unsoloed"
+        return f"Track '{result.get('track')}' {state}"
+    except Exception as e:
+        return f"Error setting track solo: {str(e)}"
+
+@mcp.tool()
+def set_track_arm(ctx: Context, track_index: int, arm: bool) -> str:
+    """
+    Arm or disarm a track for recording.
+
+    Parameters:
+    - track_index: Index of the track
+    - arm: True to arm, False to disarm
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_arm", {"track_index": track_index, "arm": arm})
+        state = "armed" if result.get("arm") else "disarmed"
+        return f"Track '{result.get('track')}' {state}"
+    except Exception as e:
+        return f"Error setting track arm: {str(e)}"
+
+@mcp.tool()
+def set_track_color(ctx: Context, track_index: int, color: int) -> str:
+    """
+    Set the color of a track.
+
+    Parameters:
+    - track_index: Index of the track
+    - color: RGB color as an integer (e.g. 0xFF0000 for red)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_color", {"track_index": track_index, "color": color})
+        return f"Set color of '{result.get('track')}' to {hex(result.get('color', 0))}"
+    except Exception as e:
+        return f"Error setting track color: {str(e)}"
+
+@mcp.tool()
+def set_return_track_volume(ctx: Context, return_track_index: int, volume: float) -> str:
+    """
+    Set the volume of a return track.
+
+    Parameters:
+    - return_track_index: Index of the return track (0-based)
+    - volume: Volume level from 0.0 to 1.0
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_return_track_volume", {"return_track_index": return_track_index, "volume": volume})
+        return f"Set volume of return '{result.get('track')}' to {result.get('volume'):.3f}"
+    except Exception as e:
+        return f"Error setting return track volume: {str(e)}"
+
+@mcp.tool()
+def set_return_track_panning(ctx: Context, return_track_index: int, panning: float) -> str:
+    """
+    Set the panning of a return track.
+
+    Parameters:
+    - return_track_index: Index of the return track (0-based)
+    - panning: Pan position from -1.0 (left) to 1.0 (right), 0.0 = center
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_return_track_panning", {"return_track_index": return_track_index, "panning": panning})
+        return f"Set panning of return '{result.get('track')}' to {result.get('panning'):.3f}"
+    except Exception as e:
+        return f"Error setting return track panning: {str(e)}"
+
+@mcp.tool()
+def set_return_track_mute(ctx: Context, return_track_index: int, mute: bool) -> str:
+    """
+    Mute or unmute a return track.
+
+    Parameters:
+    - return_track_index: Index of the return track (0-based)
+    - mute: True to mute, False to unmute
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_return_track_mute", {"return_track_index": return_track_index, "mute": mute})
+        state = "muted" if result.get("mute") else "unmuted"
+        return f"Return track '{result.get('track')}' {state}"
+    except Exception as e:
+        return f"Error setting return track mute: {str(e)}"
+
+@mcp.tool()
+def set_return_track_color(ctx: Context, return_track_index: int, color: int) -> str:
+    """
+    Set the color of a return track.
+
+    Parameters:
+    - return_track_index: Index of the return track (0-based)
+    - color: RGB color as an integer (e.g. 0xFF0000 for red)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_return_track_color", {"return_track_index": return_track_index, "color": color})
+        return f"Set color of return '{result.get('track')}' to {hex(result.get('color', 0))}"
+    except Exception as e:
+        return f"Error setting return track color: {str(e)}"
+
+@mcp.tool()
+def set_master_volume(ctx: Context, volume: float) -> str:
+    """
+    Set the master track volume.
+
+    Parameters:
+    - volume: Volume level from 0.0 to 1.0
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_master_volume", {"volume": volume})
+        return f"Set master volume to {result.get('volume'):.3f}"
+    except Exception as e:
+        return f"Error setting master volume: {str(e)}"
+
+@mcp.tool()
+def set_master_panning(ctx: Context, panning: float) -> str:
+    """
+    Set the master track panning.
+
+    Parameters:
+    - panning: Pan position from -1.0 (left) to 1.0 (right), 0.0 = center
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_master_panning", {"panning": panning})
+        return f"Set master panning to {result.get('panning'):.3f}"
+    except Exception as e:
+        return f"Error setting master panning: {str(e)}"
 
 @mcp.tool()
 def load_device_on_return(ctx: Context, return_track_index: int, uri: str) -> str:
