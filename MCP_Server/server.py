@@ -431,12 +431,9 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
         
         # Check if the instrument was loaded successfully
         if result.get("loaded", False):
-            new_devices = result.get("new_devices", [])
-            if new_devices:
-                return f"Loaded instrument with URI '{uri}' on track {track_index}. New devices: {', '.join(new_devices)}"
-            else:
-                devices = result.get("devices_after", [])
-                return f"Loaded instrument with URI '{uri}' on track {track_index}. Devices on track: {', '.join(devices)}"
+            item_name = result.get("item_name", uri)
+            track_name = result.get("track_name", str(track_index))
+            return f"Loaded '{item_name}' onto track '{track_name}' (index {track_index})"
         else:
             return f"Failed to load instrument with URI '{uri}'"
     except Exception as e:
@@ -610,50 +607,40 @@ def get_browser_items_at_path(ctx: Context, path: str) -> str:
             return f"Error getting browser items at path: {error_msg}"
 
 @mcp.tool()
-def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:
+def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_uri: str) -> str:
     """
     Load a drum rack and then load a specific drum kit into it.
-    
+
     Parameters:
     - track_index: The index of the track to load on
-    - rack_uri: The URI of the drum rack to load (e.g., 'Drums/Drum Rack')
-    - kit_path: Path to the drum kit inside the browser (e.g., 'drums/acoustic/kit1')
+    - rack_uri: The URI of the drum rack (use 'query:Drums#Drum%20Rack')
+    - kit_uri: The URI of the drum kit to load (e.g. 'query:Drums#FileId_12860' for 808 Core Kit).
+               Use get_browser_items_at_path('Drums') to enumerate available kits and their URIs.
     """
     try:
         ableton = get_ableton_connection()
-        
+
         # Step 1: Load the drum rack
         result = ableton.send_command("load_browser_item", {
             "track_index": track_index,
             "item_uri": rack_uri
         })
-        
+
         if not result.get("loaded", False):
             return f"Failed to load drum rack with URI '{rack_uri}'"
-        
-        # Step 2: Get the drum kit items at the specified path
-        kit_result = ableton.send_command("get_browser_items_at_path", {
-            "path": kit_path
-        })
-        
-        if "error" in kit_result:
-            return f"Loaded drum rack but failed to find drum kit: {kit_result.get('error')}"
-        
-        # Step 3: Find a loadable drum kit
-        kit_items = kit_result.get("items", [])
-        loadable_kits = [item for item in kit_items if item.get("is_loadable", False)]
-        
-        if not loadable_kits:
-            return f"Loaded drum rack but no loadable drum kits found at '{kit_path}'"
-        
-        # Step 4: Load the first loadable kit
-        kit_uri = loadable_kits[0].get("uri")
-        load_result = ableton.send_command("load_browser_item", {
+
+        # Step 2: Load the specific kit by URI
+        kit_result = ableton.send_command("load_browser_item", {
             "track_index": track_index,
             "item_uri": kit_uri
         })
-        
-        return f"Loaded drum rack and kit '{loadable_kits[0].get('name')}' on track {track_index}"
+
+        if not kit_result.get("loaded", False):
+            return f"Loaded drum rack but failed to load kit with URI '{kit_uri}'"
+
+        kit_name = kit_result.get("item_name", kit_uri)
+        track_name = kit_result.get("track_name", str(track_index))
+        return f"Loaded drum rack and kit '{kit_name}' on track '{track_name}' (index {track_index})"
     except Exception as e:
         logger.error(f"Error loading drum kit: {str(e)}")
         return f"Error loading drum kit: {str(e)}"
@@ -937,6 +924,326 @@ def load_device_on_return(ctx: Context, return_track_index: int, uri: str) -> st
     except Exception as e:
         logger.error(f"Error loading device on return track: {str(e)}")
         return f"Error loading device on return track: {str(e)}"
+
+# -------------------------------------------------------------------------
+# Phase 2 — Scene Management
+# -------------------------------------------------------------------------
+
+@mcp.tool()
+def get_scenes(ctx: Context) -> str:
+    """Get all scenes in the Ableton session, including name, color, and tempo."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_scenes", {})
+        scenes = result.get("scenes", [])
+        lines = [f"Scenes ({result.get('scene_count', 0)} total):"]
+        for s in scenes:
+            tempo_str = f", tempo={s['tempo']:.1f}" if s.get("tempo") else ""
+            lines.append(f"  [{s['index']}] '{s['name']}' color={hex(s.get('color', 0))}{tempo_str}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error getting scenes: {str(e)}"
+
+@mcp.tool()
+def create_scene(ctx: Context, index: int = -1) -> str:
+    """
+    Create a new empty scene.
+
+    Parameters:
+    - index: Position to insert the scene (-1 appends at end)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_scene", {"index": index})
+        return f"Created scene '{result.get('name')}' at index {result.get('index')}"
+    except Exception as e:
+        return f"Error creating scene: {str(e)}"
+
+@mcp.tool()
+def delete_scene(ctx: Context, scene_index: int) -> str:
+    """
+    Delete a scene.
+
+    Parameters:
+    - scene_index: Index of the scene to delete
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_scene", {"scene_index": scene_index})
+        return f"Deleted scene '{result.get('name')}' (was index {result.get('deleted_index')})"
+    except Exception as e:
+        return f"Error deleting scene: {str(e)}"
+
+@mcp.tool()
+def fire_scene(ctx: Context, scene_index: int) -> str:
+    """
+    Launch all clips in a scene simultaneously.
+
+    Parameters:
+    - scene_index: Index of the scene to fire
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("fire_scene", {"scene_index": scene_index})
+        return f"Fired scene '{result.get('name')}' (index {result.get('index')})"
+    except Exception as e:
+        return f"Error firing scene: {str(e)}"
+
+@mcp.tool()
+def set_scene_name(ctx: Context, scene_index: int, name: str) -> str:
+    """
+    Rename a scene.
+
+    Parameters:
+    - scene_index: Index of the scene
+    - name: New name for the scene
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_scene_name", {"scene_index": scene_index, "name": name})
+        return f"Renamed scene {result.get('index')} to '{result.get('name')}'"
+    except Exception as e:
+        return f"Error setting scene name: {str(e)}"
+
+@mcp.tool()
+def set_scene_color(ctx: Context, scene_index: int, color: int) -> str:
+    """
+    Set the color of a scene.
+
+    Parameters:
+    - scene_index: Index of the scene
+    - color: RGB color as an integer (e.g. 0xFF0000 for red)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_scene_color", {"scene_index": scene_index, "color": color})
+        return f"Set color of scene '{result.get('name')}' to {hex(result.get('color', 0))}"
+    except Exception as e:
+        return f"Error setting scene color: {str(e)}"
+
+@mcp.tool()
+def set_scene_tempo(ctx: Context, scene_index: int, tempo: float) -> str:
+    """
+    Set the tempo override on a scene. When fired, Live jumps to this BPM.
+    Pass 0.0 to clear the override.
+
+    Parameters:
+    - scene_index: Index of the scene
+    - tempo: BPM value (e.g. 128.0), or 0.0 to clear
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_scene_tempo", {"scene_index": scene_index, "tempo": tempo})
+        tempo_val = result.get("tempo", 0.0)
+        tempo_str = f"{tempo_val:.1f} BPM" if tempo_val else "cleared"
+        return f"Scene '{result.get('name')}' tempo {tempo_str}"
+    except Exception as e:
+        return f"Error setting scene tempo: {str(e)}"
+
+@mcp.tool()
+def duplicate_scene(ctx: Context, scene_index: int) -> str:
+    """
+    Duplicate a scene, inserting the copy immediately after the original.
+
+    Parameters:
+    - scene_index: Index of the scene to duplicate
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_scene", {"scene_index": scene_index})
+        return f"Duplicated scene {result.get('source_index')} -> new scene '{result.get('name')}' at index {result.get('new_index')}"
+    except Exception as e:
+        return f"Error duplicating scene: {str(e)}"
+
+@mcp.tool()
+def stop_all_clips(ctx: Context) -> str:
+    """Stop all currently playing clips across all tracks."""
+    try:
+        ableton = get_ableton_connection()
+        ableton.send_command("stop_all_clips", {})
+        return "All clips stopped"
+    except Exception as e:
+        return f"Error stopping all clips: {str(e)}"
+
+
+@mcp.tool()
+def get_device_parameters(ctx: Context, track_index: int, device_index: int) -> str:
+    """
+    Get all parameters for a device on a track.
+
+    Parameters:
+    - track_index: The index of the track
+    - device_index: The index of the device on the track (from get_track_info)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device parameters: {str(e)}")
+        return f"Error getting device parameters: {str(e)}"
+
+
+@mcp.tool()
+def set_device_parameter(ctx: Context, track_index: int, device_index: int, param_index: int, value: float) -> str:
+    """
+    Set a parameter value on a device.
+
+    Parameters:
+    - track_index: The index of the track
+    - device_index: The index of the device on the track
+    - param_index: The index of the parameter (from get_device_parameters)
+    - value: The new value (will be clamped to the parameter's min/max range)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_device_parameter", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "param_index": param_index,
+            "value": value
+        })
+        return (f"Set '{result.get('device_name')}' param '{result.get('param_name')}' "
+                f"to {result.get('value_string')} (raw: {result.get('value'):.4f})")
+    except Exception as e:
+        logger.error(f"Error setting device parameter: {str(e)}")
+        return f"Error setting device parameter: {str(e)}"
+
+
+@mcp.tool()
+def get_notes_from_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Get all MIDI notes from a clip.
+
+    Parameters:
+    - track_index: The index of the track
+    - clip_index: The index of the clip slot
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_notes_from_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+        })
+        notes = result.get("notes", [])
+        return (f"Clip '{result.get('clip_name')}' (length {result.get('clip_length')} bars) "
+                f"has {len(notes)} note(s):\n" +
+                "\n".join(
+                    f"  pitch={n['pitch']} start={n['start_time']:.3f} "
+                    f"dur={n['duration']:.3f} vel={n['velocity']} mute={n['mute']}"
+                    for n in notes
+                ))
+    except Exception as e:
+        logger.error(f"Error getting notes from clip: {str(e)}")
+        return f"Error getting notes from clip: {str(e)}"
+
+
+@mcp.tool()
+def set_clip_loop(ctx: Context, track_index: int, clip_index: int,
+                  loop_start: float, loop_end: float, loop_on: bool = True) -> str:
+    """
+    Set the loop region and enable/disable looping for a clip.
+
+    Parameters:
+    - track_index: The index of the track
+    - clip_index: The index of the clip slot
+    - loop_start: Loop start position in beats
+    - loop_end: Loop end position in beats
+    - loop_on: Whether looping is enabled (default True)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_loop", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "loop_start": loop_start,
+            "loop_end": loop_end,
+            "loop_on": loop_on,
+        })
+        return (f"Loop set: start={result['loop_start']} end={result['loop_end']} "
+                f"looping={result['looping']}")
+    except Exception as e:
+        logger.error(f"Error setting clip loop: {str(e)}")
+        return f"Error setting clip loop: {str(e)}"
+
+
+@mcp.tool()
+def set_clip_color(ctx: Context, track_index: int, clip_index: int, color: int) -> str:
+    """
+    Set the color of a clip.
+
+    Parameters:
+    - track_index: The index of the track
+    - clip_index: The index of the clip slot
+    - color: RGB color as an integer (e.g. 16711680 for red)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_color", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "color": color,
+        })
+        return f"Clip color set to {result['color']}"
+    except Exception as e:
+        logger.error(f"Error setting clip color: {str(e)}")
+        return f"Error setting clip color: {str(e)}"
+
+
+@mcp.tool()
+def duplicate_clip(ctx: Context, track_index: int, clip_index: int,
+                   target_clip_index: int) -> str:
+    """
+    Duplicate a clip into another empty slot on the same track.
+
+    Parameters:
+    - track_index: The index of the track
+    - clip_index: The source clip slot index
+    - target_clip_index: The destination clip slot index (must be empty)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "target_clip_index": target_clip_index,
+        })
+        return (f"Clip duplicated from slot {result['source_clip_index']} "
+                f"to slot {result['target_clip_index']} ('{result['clip_name']}')")
+    except Exception as e:
+        logger.error(f"Error duplicating clip: {str(e)}")
+        return f"Error duplicating clip: {str(e)}"
+
+
+@mcp.tool()
+def quantize_clip(ctx: Context, track_index: int, clip_index: int,
+                  quantize_to: float = 0.25, amount: float = 1.0) -> str:
+    """
+    Quantize notes in a MIDI clip.
+
+    Parameters:
+    - track_index: The index of the track
+    - clip_index: The index of the clip slot
+    - quantize_to: Note division to quantize to (1.0=quarter note, 0.5=8th, 0.25=16th, 0.125=32nd)
+    - amount: Quantize strength from 0.0 (none) to 1.0 (full)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("quantize_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "quantize_to": quantize_to,
+            "amount": amount,
+        })
+        return (f"Quantized clip at track {result['track_index']} slot {result['clip_index']} "
+                f"to {result['quantize_to']} with amount {result['amount']}")
+    except Exception as e:
+        logger.error(f"Error quantizing clip: {str(e)}")
+        return f"Error quantizing clip: {str(e)}"
+
 
 # Main execution
 def main():

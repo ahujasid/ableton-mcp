@@ -225,6 +225,18 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "get_scenes":
+                response["result"] = self._get_scenes()
+            elif command_type == "get_return_tracks":
+                response["result"] = self._get_return_tracks()
+            elif command_type == "get_device_parameters":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                response["result"] = self._get_device_parameters(track_index, device_index)
+            elif command_type == "get_notes_from_clip":
+                track_index = params.get("track_index", 0)
+                clip_index = params.get("clip_index", 0)
+                response["result"] = self._get_notes_from_clip(track_index, clip_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
@@ -237,7 +249,13 @@ class AbletonMCP(ControlSurface):
                                  "set_track_color",
                                  "set_return_track_volume", "set_return_track_panning",
                                  "set_return_track_mute", "set_return_track_color",
-                                 "set_master_volume", "set_master_panning"]:
+                                 "set_master_volume", "set_master_panning",
+                                 "create_scene", "delete_scene", "fire_scene",
+                                 "set_scene_name", "set_scene_color", "set_scene_tempo",
+                                 "duplicate_scene", "stop_all_clips",
+                                 "set_device_parameter",
+                                 "set_clip_loop", "set_clip_color",
+                                 "duplicate_clip", "quantize_clip"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -329,6 +347,56 @@ class AbletonMCP(ControlSurface):
                             result = self._set_master_volume(params.get("volume", 0.85))
                         elif command_type == "set_master_panning":
                             result = self._set_master_panning(params.get("panning", 0.0))
+                        elif command_type == "create_scene":
+                            result = self._create_scene(params.get("index", -1))
+                        elif command_type == "delete_scene":
+                            result = self._delete_scene(params.get("scene_index", 0))
+                        elif command_type == "fire_scene":
+                            result = self._fire_scene(params.get("scene_index", 0))
+                        elif command_type == "set_scene_name":
+                            result = self._set_scene_name(params.get("scene_index", 0), params.get("name", ""))
+                        elif command_type == "set_scene_color":
+                            result = self._set_scene_color(params.get("scene_index", 0), params.get("color", 0))
+                        elif command_type == "set_scene_tempo":
+                            result = self._set_scene_tempo(params.get("scene_index", 0), params.get("tempo", 0.0))
+                        elif command_type == "duplicate_scene":
+                            result = self._duplicate_scene(params.get("scene_index", 0))
+                        elif command_type == "stop_all_clips":
+                            result = self._stop_all_clips()
+                        elif command_type == "set_device_parameter":
+                            result = self._set_device_parameter(
+                                params.get("track_index", 0),
+                                params.get("device_index", 0),
+                                params.get("param_index", 0),
+                                params.get("value", 0.0)
+                            )
+                        elif command_type == "set_clip_loop":
+                            result = self._set_clip_loop(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("loop_start", 0.0),
+                                params.get("loop_end", 4.0),
+                                params.get("loop_on", True)
+                            )
+                        elif command_type == "set_clip_color":
+                            result = self._set_clip_color(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("color", 0)
+                            )
+                        elif command_type == "duplicate_clip":
+                            result = self._duplicate_clip(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("target_clip_index", 1)
+                            )
+                        elif command_type == "quantize_clip":
+                            result = self._quantize_clip(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("quantize_to", 0.25),
+                                params.get("amount", 1.0)
+                            )
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -854,8 +922,65 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error finding browser item by URI: {0}".format(str(e)))
             return None
     
+    def _get_device_parameters(self, track_index, device_index):
+        """Get all parameters for a device on a track"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+            device = track.devices[device_index]
+            parameters = []
+            for param_index, param in enumerate(device.parameters):
+                parameters.append({
+                    "index": param_index,
+                    "name": param.name,
+                    "value": param.value,
+                    "min": param.min,
+                    "max": param.max,
+                    "is_quantized": param.is_quantized,
+                    "value_string": param.str_for_value(param.value)
+                })
+            return {
+                "track_index": track_index,
+                "device_index": device_index,
+                "device_name": device.name,
+                "parameters": parameters
+            }
+        except Exception as e:
+            self.log_message("Error getting device parameters: " + str(e))
+            raise
+
+    def _set_device_parameter(self, track_index, device_index, param_index, value):
+        """Set a parameter value on a device"""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+            device = track.devices[device_index]
+            if param_index < 0 or param_index >= len(device.parameters):
+                raise IndexError("Parameter index out of range")
+            param = device.parameters[param_index]
+            clamped = max(param.min, min(param.max, value))
+            param.value = clamped
+            return {
+                "track_index": track_index,
+                "device_index": device_index,
+                "device_name": device.name,
+                "param_index": param_index,
+                "param_name": param.name,
+                "value": param.value,
+                "value_string": param.str_for_value(param.value)
+            }
+        except Exception as e:
+            self.log_message("Error setting device parameter: " + str(e))
+            raise
+
     # Helper methods
-    
+
     def _get_device_type(self, device):
         """Get the type of a device"""
         try:
@@ -1052,6 +1177,189 @@ class AbletonMCP(ControlSurface):
         self._song.master_track.mixer_device.panning.value = max(-1.0, min(1.0, float(panning)))
         return {"panning": self._song.master_track.mixer_device.panning.value}
 
+    # -------------------------------------------------------------------------
+    # Phase 2 — Scene Management
+    # -------------------------------------------------------------------------
+
+    def _get_scenes(self):
+        scenes = []
+        for i, scene in enumerate(self._song.scenes):
+            scenes.append({
+                "index": i,
+                "name": scene.name,
+                "color": scene.color,
+                "tempo": scene.tempo,
+                "is_triggered": scene.is_triggered,
+            })
+        return {"scene_count": len(scenes), "scenes": scenes}
+
+    def _create_scene(self, index=-1):
+        self._song.create_scene(index)
+        # Resolve the actual index inserted
+        actual_index = index if index >= 0 else len(self._song.scenes) - 1
+        scene = self._song.scenes[actual_index]
+        return {"index": actual_index, "name": scene.name}
+
+    def _delete_scene(self, scene_index):
+        if scene_index < 0 or scene_index >= len(self._song.scenes):
+            raise IndexError("Scene index out of range")
+        name = self._song.scenes[scene_index].name
+        self._song.delete_scene(scene_index)
+        return {"deleted_index": scene_index, "name": name}
+
+    def _fire_scene(self, scene_index):
+        if scene_index < 0 or scene_index >= len(self._song.scenes):
+            raise IndexError("Scene index out of range")
+        scene = self._song.scenes[scene_index]
+        scene.fire()
+        return {"index": scene_index, "name": scene.name}
+
+    def _set_scene_name(self, scene_index, name):
+        if scene_index < 0 or scene_index >= len(self._song.scenes):
+            raise IndexError("Scene index out of range")
+        self._song.scenes[scene_index].name = name
+        return {"index": scene_index, "name": self._song.scenes[scene_index].name}
+
+    def _set_scene_color(self, scene_index, color):
+        if scene_index < 0 or scene_index >= len(self._song.scenes):
+            raise IndexError("Scene index out of range")
+        scene = self._song.scenes[scene_index]
+        scene.color = int(color)
+        return {"index": scene_index, "name": scene.name, "color": scene.color}
+
+    def _set_scene_tempo(self, scene_index, tempo):
+        if scene_index < 0 or scene_index >= len(self._song.scenes):
+            raise IndexError("Scene index out of range")
+        scene = self._song.scenes[scene_index]
+        # tempo=0.0 means "no override" in Live's LOM
+        scene.tempo = float(tempo)
+        return {"index": scene_index, "name": scene.name, "tempo": scene.tempo}
+
+    def _duplicate_scene(self, scene_index):
+        if scene_index < 0 or scene_index >= len(self._song.scenes):
+            raise IndexError("Scene index out of range")
+        self._song.duplicate_scene(scene_index)
+        new_index = scene_index + 1
+        scene = self._song.scenes[new_index]
+        return {"source_index": scene_index, "new_index": new_index, "name": scene.name}
+
+    def _stop_all_clips(self):
+        self._song.stop_all_clips()
+        return {"stopped": True}
+
+    def _get_clip(self, track_index, clip_index):
+        """Helper: return clip or raise."""
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        if clip_index < 0 or clip_index >= len(track.clip_slots):
+            raise IndexError("Clip index out of range")
+        clip_slot = track.clip_slots[clip_index]
+        if not clip_slot.has_clip:
+            raise Exception("No clip in slot")
+        return clip_slot.clip
+
+    def _get_notes_from_clip(self, track_index, clip_index):
+        """Get all MIDI notes from a clip."""
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            if not clip.is_midi_clip:
+                raise Exception("Clip is not a MIDI clip")
+            notes = clip.get_notes(0, 0, clip.length, 128)
+            return {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "clip_name": clip.name,
+                "clip_length": clip.length,
+                "notes": [
+                    {
+                        "pitch": n[0],
+                        "start_time": n[1],
+                        "duration": n[2],
+                        "velocity": n[3],
+                        "mute": n[4],
+                    }
+                    for n in notes
+                ],
+            }
+        except Exception as e:
+            self.log_message("Error getting notes: " + str(e))
+            raise
+
+    def _set_clip_loop(self, track_index, clip_index, loop_start, loop_end, loop_on):
+        """Set loop start, end, and on/off for a clip."""
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            clip.loop_start = loop_start
+            clip.loop_end = loop_end
+            clip.looping = loop_on
+            return {
+                "loop_start": clip.loop_start,
+                "loop_end": clip.loop_end,
+                "looping": clip.looping,
+            }
+        except Exception as e:
+            self.log_message("Error setting clip loop: " + str(e))
+            raise
+
+    def _set_clip_color(self, track_index, clip_index, color):
+        """Set the color of a clip (integer RGB)."""
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            clip.color = color
+            return {"color": clip.color}
+        except Exception as e:
+            self.log_message("Error setting clip color: " + str(e))
+            raise
+
+    def _duplicate_clip(self, track_index, clip_index, target_clip_index):
+        """Duplicate a clip into another slot on the same track."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Source clip index out of range")
+            if target_clip_index < 0 or target_clip_index >= len(track.clip_slots):
+                raise IndexError("Target clip index out of range")
+            src_slot = track.clip_slots[clip_index]
+            if not src_slot.has_clip:
+                raise Exception("No clip in source slot")
+            dst_slot = track.clip_slots[target_clip_index]
+            if dst_slot.has_clip:
+                raise Exception("Target slot already has a clip")
+            src_slot.duplicate_clip_to(dst_slot)
+            return {
+                "source_clip_index": clip_index,
+                "target_clip_index": target_clip_index,
+                "clip_name": dst_slot.clip.name if dst_slot.has_clip else "",
+            }
+        except Exception as e:
+            self.log_message("Error duplicating clip: " + str(e))
+            raise
+
+    def _quantize_clip(self, track_index, clip_index, quantize_to, amount):
+        """Quantize notes in a MIDI clip. quantize_to is note division (1=quarter, 0.5=8th, 0.25=16th, 0.125=32nd). amount 0–1."""
+        # Ableton's Clip.quantize() takes a RecordingQuantization integer enum, not a beat division float.
+        QUANTIZE_MAP = {1.0: 1, 0.5: 2, 0.25: 5, 0.125: 8}
+        quantize_enum = QUANTIZE_MAP.get(float(quantize_to))
+        if quantize_enum is None:
+            raise Exception("Invalid quantize_to value: {}. Use 1.0, 0.5, 0.25, or 0.125".format(quantize_to))
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            if not clip.is_midi_clip:
+                raise Exception("Clip is not a MIDI clip")
+            clip.quantize(quantize_enum, amount)
+            return {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "quantize_to": quantize_to,
+                "amount": amount,
+            }
+        except Exception as e:
+            self.log_message("Error quantizing clip: " + str(e))
+            raise
+
     def get_browser_tree(self, category_type="all"):
         """
         Get a simplified tree of browser categories.
@@ -1200,7 +1508,7 @@ class AbletonMCP(ControlSurface):
                 raise ValueError("Invalid path")
             
             # Determine the root category
-            root_category = path_parts[0].lower()
+            root_category = path_parts[0].lower().replace(" ", "_")
             current_item = None
             
             # Check standard categories first
