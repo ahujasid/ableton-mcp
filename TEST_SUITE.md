@@ -332,6 +332,118 @@ Prerequisites: Track 0, scene/clip-slot 0 must have a MIDI clip with at least a 
 
 ---
 
+## Phase 5 — Song Transport & Global State
+
+### T63 — get_current_song_time (baseline read)
+- **Action:** `get_current_song_time`
+- **Expect:** Returns current playback position in beats as a float. Returns `0.0` when stopped at the start.
+
+### T64 — set_current_song_time
+- **Action:** `set_current_song_time(time=8.0)`
+- **Verify:** `get_current_song_time` → `8.0`
+- **Restore:** `set_current_song_time(time=0.0)`
+- **Note:** Response message echoes the requested value (not a read-back) — Ableton's `current_song_time` property does not update synchronously on the same tick.
+
+### T65 — set_metronome (enable)
+- **Action:** `set_metronome(metronome=true)` while Ableton is playing
+- **Expect:** Metronome button lights up in transport bar; click audible.
+- **Restore:** `set_metronome(metronome=false)`
+
+### T66 — set_session_record
+- **Action:** `set_session_record(record=true)`, then `set_session_record(record=false)`
+- **Expect:** Session record button toggles on/off in transport bar. No error.
+
+### T67 — set_arrangement_record
+- **Action:** Start playback with `start_playback`. Then `set_arrangement_record(record=true)`.
+- **Expect:** Record button (circle) in transport bar lights red.
+- **Restore:** `set_arrangement_record(record=false)`, `stop_playback`
+- **Note:** Arrangement record only engages while playback is active. Calling without playback silently no-ops.
+
+### T68 — undo / redo
+- **Action:** `set_tempo(140.0)`. Then `undo`. Verify `get_session_info` → `tempo == 120.0`. Then `redo`. Verify `get_session_info` → `tempo == 140.0`.
+- **Restore:** `set_tempo(120.0)`
+- **Expect:** Both operations confirmed via read-back.
+
+### T69 — set_nudge_up / set_nudge_down
+- **Action:** `set_nudge_up(nudge=true)` then `set_nudge_up(nudge=false)`. Repeat for `set_nudge_down`.
+- **Expect:** Nudge arrow buttons in transport bar flash briefly. No error.
+- **Note:** Effect is only audible/visible during playback.
+
+### T70 — tap_tempo
+- **Action:** Call `tap_tempo` 4+ times
+- **Expect:** Each call returns "Tap received. Current tempo: X BPM". Tap button flashes in Ableton.
+- **Note:** Programmatic calls with no delay between them are too fast to calculate a new BPM — tempo won't change. Interval between taps determines the computed BPM.
+
+---
+
+## Phase 6 — Clip Read-back, Clip Slot State, Time Signature
+
+### T71 — get_clip_slot_info on empty slot
+- **Action:** `get_clip_slot_info(0, 0)` on a slot with no clip
+- **Expect:** `has_clip: false`, `clip: null`, `has_stop_button: true`, `is_triggered: false`
+- **Result:** ✅ Passed 2026-05-06
+
+### T72 — get_clip_slot_info on occupied slot
+- **Action:** Create a clip at track 0, slot 0, then call `get_clip_slot_info(0, 0)`
+- **Expect:** `has_clip: true`, `clip` object with name, length, color, playback state
+- **Result:** ✅ Passed 2026-05-06
+
+### T73 — get_clip_info full detail read
+- **Action:** `get_clip_info(0, 0)` on an existing MIDI clip
+- **Expect:** Returns `is_midi_clip: true`, `loop_on`, `loop_start`, `loop_end`, `start_marker`, `end_marker`, `is_playing`, `is_recording`
+- **Result:** ✅ Passed 2026-05-06
+
+### T74 — get_clip_info round-trip after name + color set
+- **Action:** Set clip name to "TestClip" and color to 255, then `get_clip_info(0, 0)`
+- **Expect:** `name: "TestClip"`, color reflects Ableton palette snap (same behavior as set_clip_color)
+- **Result:** ✅ Passed 2026-05-06
+
+### T75 — get_clip_slot_info and get_clip_info out-of-bounds
+- **Action:** `get_clip_slot_info(999, 0)` and `get_clip_info(0, 999)`
+- **Expect:** Clean "index out of range" errors from both tools
+- **Result:** ✅ Passed 2026-05-06
+
+### T76 — set_time_signature round-trip
+- **Action:** `set_time_signature(3, 8)`, then `get_session_info` to verify
+- **Expect:** `signature_numerator: 3`, `signature_denominator: 8`
+- **Result:** ✅ Passed 2026-05-06
+
+### T77 — set_time_signature invalid denominator
+- **Action:** `set_time_signature(4, 7)`
+- **Expect:** Clean error "Denominator must be one of: 1, 2, 4, 8, 16, 32"
+- **Result:** ✅ Passed 2026-05-06
+
+---
+
+## Phase 7 — Input/Output Routing
+
+### T78 — get_track_routing
+- **Action:** `get_track_routing(0)`
+- **Expect:** Returns `input_routing_type`, `input_routing_channel`, `output_routing_type`, `output_routing_channel`
+- **Result:** ✅ Passed 2026-05-07 — returned `input_routing_type: "All Ins"`, `input_routing_channel: "All Channels"`, `output_routing_type: "No Output"`, `output_routing_channel: ""`
+
+### T79 — get_available_routings
+- **Action:** `get_available_routings(0)`
+- **Expect:** Returns lists of `available_input_routing_types` and `available_output_routing_types`
+- **Result:** ✅ Passed 2026-05-07 — inputs: `["All Ins", "Computer Keyboard", "2-MIDI", "No Input"]`; outputs: `["2-MIDI", "No Output"]`
+
+### T80 — set_input_routing round-trip
+- **Action:** `set_input_routing(0, "No Input")`, then `get_track_routing(0)`
+- **Expect:** `input_routing_type` changes to "No Input", `input_routing_channel` becomes `""`
+- **Result:** ✅ Passed 2026-05-07
+
+### T81 — set_output_routing round-trip
+- **Action:** `set_output_routing(0, "2-MIDI")`, then `get_track_routing(0)`
+- **Expect:** `output_routing_type` changes to "2-MIDI", `output_routing_channel` populates (e.g. "Track In")
+- **Result:** ✅ Passed 2026-05-07 — `output_routing_channel: "Track In"`
+
+### T82 — restore routing
+- **Action:** `set_input_routing(0, "All Ins")` + `set_output_routing(0, "No Output")` in parallel, verify via `get_track_routing`
+- **Expect:** Both routing types restored to original values
+- **Result:** ✅ Passed 2026-05-07
+
+---
+
 ## Adversarial Tests
 
 These tests are designed to find edge cases, crashes, and unexpected behavior in the MCP ↔ Remote Script mapping. Document the actual result for each — the "expect" here is a hypothesis, not a guarantee.
