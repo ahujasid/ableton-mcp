@@ -904,6 +904,17 @@ def _get_registry():
             ),
             "modifying": True,
         },
+        "set_clip_source_bpm": {
+            "handler": lambda song, p, ctrl: audio.set_clip_source_bpm(
+                song,
+                p.get("track_index", 0),
+                p.get("clip_index", 0),
+                p.get("source_bpm", 120.0),
+                p.get("duration_seconds", 0.0),
+                ctrl,
+            ),
+            "modifying": True,
+        },
         "copy_arrangement_to_session": {
             "handler": lambda song, p, ctrl: arrangement.copy_arrangement_to_session(
                 song,

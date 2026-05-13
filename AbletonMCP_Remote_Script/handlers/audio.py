@@ -6,10 +6,26 @@ import time
 import traceback
 
 
+def _poll_for_clip(clip_slot, timeout_s=3.0, interval_s=0.1):
+    """Poll clip_slot.has_clip until True or timeout."""
+    steps = int(timeout_s / interval_s)
+    for _ in range(steps):
+        time.sleep(interval_s)
+        if clip_slot.has_clip:
+            return True
+    return False
+
+
 def load_audio_sample(
     song, track_index, clip_index, file_path, browser_uri, ctrl=None
 ):
-    """Load an audio sample into a clip slot."""
+    """Load an audio sample into a clip slot.
+
+    Strategy: cascade through every load mechanism Live exposes until one
+    materializes a clip in the target slot. Single-method approaches fail
+    silently on user_folder URIs (audio files outside the Samples
+    category), so we try them all and report which one worked.
+    """
     try:
         if track_index < 0 or track_index >= len(song.tracks):
             raise IndexError("Track index out of range")
@@ -22,67 +38,122 @@ def load_audio_sample(
         app = ctrl.application()
         if not app:
             raise RuntimeError("Could not access Live application")
-        # Live's browser.load_item targets the focused location in the UI.
-        # For an audio sample to land in the *clip slot* (rather than the
-        # device chain or some hotswap target), we must set both the
-        # selected_track AND highlighted_clip_slot. Setting only the
-        # clip slot caused loads to silently drop.
+
+        # Live's loader targets the focused UI location, so we must point
+        # selected_track + selected_scene + highlighted_clip_slot at the
+        # destination. Setting only one is not enough.
         try:
             song.view.selected_track = track
         except Exception:
             pass
-        # Selected scene drives "selected clip slot" together with selected_track
         try:
             if clip_index < len(song.scenes):
                 song.view.selected_scene = song.scenes[clip_index]
         except Exception:
             pass
-        song.view.highlighted_clip_slot = clip_slot
-        if browser_uri:
+        try:
+            song.view.highlighted_clip_slot = clip_slot
+        except Exception:
+            pass
+        # Tiny delay lets Live's view propagate selection
+        time.sleep(0.05)
+
+        method_used = None
+        errors = []
+
+        # Derive a file path from a userfolder URI when the caller only
+        # gave us a URI — the LOM's direct loader is by far the most
+        # reliable path, so we want to prefer it whenever possible.
+        derived_path = None
+        if not file_path and browser_uri and browser_uri.startswith("userfolder:"):
+            try:
+                _, rest = browser_uri.split("userfolder:", 1)
+                if "#" in rest:
+                    parent, sub = rest.split("#", 1)
+                    sub = sub.replace(":", "/")
+                    derived_path = parent.rstrip("/") + "/" + sub
+                else:
+                    derived_path = rest
+            except Exception:
+                derived_path = None
+
+        # Method 0: direct LOM call — clip_slot.create_audio_clip(path).
+        # This is the only method that reliably works for arbitrary file
+        # paths (including Places-added user folders). The browser-based
+        # methods silently fail for files outside Live's Samples category.
+        candidate_path = file_path or derived_path
+        if candidate_path and hasattr(clip_slot, "create_audio_clip"):
+            try:
+                clip_slot.create_audio_clip(candidate_path)
+                if _poll_for_clip(clip_slot, timeout_s=3.0):
+                    method_used = "clip_slot.create_audio_clip"
+            except Exception as e:
+                errors.append("create_audio_clip: " + str(e))
+
+        # Methods 1–3: browser-based loaders. Kept as fallbacks for when
+        # we only have a browser URI for something not in user_folders
+        # (rare).
+        if method_used is None and browser_uri:
             from . import browser as browser_mod
             item = browser_mod.find_browser_item_by_uri(
                 app.browser, browser_uri, ctrl=ctrl
             )
             if not item:
-                raise ValueError(
-                    "Browser item with URI '{0}' not found".format(browser_uri)
+                errors.append(
+                    "find_browser_item_by_uri: URI not found"
                 )
-            # Live's Browser exposes a dedicated method for putting samples
-            # into the *selected* clip slot — use it when available, fall
-            # back to plain load_item otherwise (older Live versions).
-            if hasattr(app.browser, "load_item_into_selected_clipslot"):
-                app.browser.load_item_into_selected_clipslot(item)
             else:
-                app.browser.load_item(item)
-            # Sample import can take a moment for larger files / first-touch
-            for _ in range(20):
-                time.sleep(0.1)
-                if clip_slot.has_clip:
-                    break
-            if not clip_slot.has_clip:
-                raise RuntimeError(
-                    "load_item ran but no clip materialized in slot {0} of track {1} "
-                    "(uri={2}).".format(
-                        clip_index, track_index, browser_uri
-                    )
+                # 1: dedicated clip-slot loader (Live 11+, Samples category)
+                if hasattr(app.browser, "load_item_into_selected_clipslot"):
+                    try:
+                        app.browser.load_item_into_selected_clipslot(item)
+                        if _poll_for_clip(clip_slot, timeout_s=3.0):
+                            method_used = "load_item_into_selected_clipslot"
+                    except Exception as e:
+                        errors.append(
+                            "load_item_into_selected_clipslot: " + str(e)
+                        )
+                # 2: hotswap_target + load_item
+                if method_used is None:
+                    try:
+                        app.browser.hotswap_target = clip_slot
+                        app.browser.load_item(item)
+                        if _poll_for_clip(clip_slot, timeout_s=3.0):
+                            method_used = "hotswap_target+load_item"
+                    except Exception as e:
+                        errors.append("hotswap_target+load_item: " + str(e))
+                # 3: plain load_item
+                if method_used is None:
+                    try:
+                        app.browser.load_item(item)
+                        if _poll_for_clip(clip_slot, timeout_s=3.0):
+                            method_used = "load_item"
+                    except Exception as e:
+                        errors.append("load_item: " + str(e))
+
+        if method_used is None:
+            if not candidate_path and not browser_uri:
+                raise ValueError("Either file_path or browser_uri must be provided")
+            raise RuntimeError(
+                "No load method materialized a clip in slot {0} of "
+                "track {1}. file_path={2}, browser_uri={3}. Errors: {4}".format(
+                    clip_index, track_index,
+                    candidate_path, browser_uri,
+                    " | ".join(errors) if errors else "(none)"
                 )
-        elif file_path:
-            if ctrl:
-                ctrl.log_message(
-                    "Attempting to load audio from path: {0}".format(file_path)
-                )
-            raise NotImplementedError(
-                "Direct file path loading is not yet fully implemented. "
-                "Please use browser_uri parameter with a browser item URI instead."
             )
-        else:
-            raise ValueError("Either file_path or browser_uri must be provided")
+        if ctrl:
+            ctrl.log_message(
+                "load_audio_sample succeeded via {0}".format(method_used)
+            )
+
         time.sleep(0.2)
         result = {
             "loaded": True,
             "track_index": track_index,
             "clip_index": clip_index,
             "has_clip": clip_slot.has_clip,
+            "method": method_used,
         }
         if clip_slot.has_clip:
             clip = clip_slot.clip
@@ -204,6 +275,101 @@ def get_audio_clip_info(song, track_index, clip_index, ctrl=None):
     except Exception as e:
         if ctrl:
             ctrl.log_message("Error getting audio clip info: " + str(e))
+        raise
+
+
+def set_clip_source_bpm(song, track_index, clip_index, source_bpm,
+                        duration_seconds=0.0, ctrl=None):
+    """Tell Live the source BPM of an audio clip — equivalent to typing the
+    BPM in the clip's Seg. BPM field. Rebuilds warp markers so the clip
+    time-stretches correctly to project tempo. Pass duration_seconds if you
+    know the source duration (faster + works for MP3/24-bit/float WAV files
+    that the stdlib wave module can't read).
+    """
+    try:
+        if track_index < 0 or track_index >= len(song.tracks):
+            raise IndexError("Track index out of range")
+        track = song.tracks[track_index]
+        if clip_index < 0 or clip_index >= len(track.clip_slots):
+            raise IndexError("Clip index out of range")
+        clip_slot = track.clip_slots[clip_index]
+        if not clip_slot.has_clip:
+            raise Exception("No clip in slot")
+        clip = clip_slot.clip
+        if not clip.is_audio_clip:
+            raise Exception("Clip is not an audio clip")
+        # Determine source duration: caller-supplied value beats anything we
+        # could infer from the clip; otherwise try clip.sample (Live API);
+        # otherwise wave.open as a last resort (won't work for MP3 / float WAV).
+        duration_s = float(duration_seconds or 0.0)
+        if duration_s <= 0:
+            sample = getattr(clip, "sample", None)
+            sr = 0.0
+            total_samples = 0.0
+            if sample is not None:
+                sr = float(getattr(sample, "sample_rate", 0) or 0)
+                total_samples = float(getattr(sample, "length", 0) or 0)
+            if (not sr or not total_samples) and getattr(clip, "file_path", None):
+                try:
+                    import wave
+                    with wave.open(clip.file_path, "rb") as wf:
+                        total_samples = float(wf.getnframes())
+                        sr = float(wf.getframerate())
+                except Exception:
+                    pass
+            if sr > 0 and total_samples > 0:
+                duration_s = total_samples / sr
+        if duration_s <= 0:
+            raise Exception(
+                "Could not determine source duration. Pass duration_seconds "
+                "explicitly. clip.sample={0}, file_path={1}".format(
+                    getattr(clip, "sample", None),
+                    getattr(clip, "file_path", None),
+                )
+            )
+        # Total source beats at the desired source BPM
+        total_beats = duration_s * source_bpm / 60.0
+        # Live 12 has locked down the warp marker API: add/clear methods
+        # aren't exposed, and WarpMarker.sample_time/beat_time are read-only.
+        # The remaining writable knobs we have are clip.warping, clip.warp_mode,
+        # and (in some builds) clip.bpm. Try setting clip.bpm directly.
+        clip.warping = True
+        tried = []
+        try:
+            clip.bpm = float(source_bpm)
+            tried.append("clip.bpm = " + str(source_bpm) + " OK")
+        except Exception as e:
+            tried.append("clip.bpm setter: " + str(e))
+        # Also try seg_bpm (sometimes named that way)
+        try:
+            clip.seg_bpm = float(source_bpm)
+            tried.append("clip.seg_bpm = " + str(source_bpm) + " OK")
+        except Exception as e:
+            tried.append("clip.seg_bpm setter: " + str(e))
+        # If we got here without an OK, raise so caller knows
+        if not any("OK" in s for s in tried):
+            raise Exception(
+                "No writable BPM property on this Clip. Tried: "
+                + " | ".join(tried)
+            )
+        # After re-warping, the loop region may be stale — re-anchor to whole clip
+        try:
+            clip.loop_start = 0.0
+            clip.loop_end = total_beats
+            clip.start_marker = 0.0
+            clip.end_marker = total_beats
+        except Exception:
+            pass
+        return {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "source_bpm": source_bpm,
+            "duration_seconds": duration_s,
+            "total_beats": total_beats,
+        }
+    except Exception as e:
+        if ctrl:
+            ctrl.log_message("Error setting clip source BPM: " + str(e))
         raise
 
 

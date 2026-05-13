@@ -8,8 +8,15 @@ APP_DEST="/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/MIDI Re
 CLI="$(dirname "$0")/ableton-cli.py"
 
 echo "Syncing to App-Resources..."
-rsync -a --delete "$SRC/" "$APP_DEST/"
-find "$APP_DEST" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null
+# macOS blocks writes to /Applications/.../*.app/Contents without sudo. The
+# User Remote Scripts copy below is what Live actually loads, so don't let
+# this kill the deploy.
+if rsync -a --delete "$SRC/" "$APP_DEST/" 2>/dev/null; then
+    find "$APP_DEST" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null
+    echo "  App-Resources OK"
+else
+    echo "  App-Resources skipped (sandboxed path — User Remote Scripts is authoritative)"
+fi
 
 # Sync to every installed Live version's User Remote Scripts (auto-covers updates)
 for live_pref in "$HOME/Library/Preferences/Ableton/Live "*; do
