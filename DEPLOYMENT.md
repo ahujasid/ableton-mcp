@@ -68,7 +68,7 @@ The MCP server is configured in `.mcp.json` at the repo root:
   "mcpServers": {
     "ableton": {
       "command": "uv",
-      "args": ["run", "--directory", "/Users/marcsperzel/Music/MacWhite/production/ableton-mcp", "ableton-mcp-macwhite"]
+      "args": ["run", "--directory", "/Users/macwhite/Music/MacWhite/production/ableton-mcp", "ableton-mcp-macwhite"]
     }
   }
 }

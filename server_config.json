@@ -5,7 +5,7 @@
       "args": [
         "run",
         "--directory",
-        "/Users/marcsperzel/Music/MacWhite/production/ableton-mcp",
+        "/Users/macwhite/Music/MacWhite/production/ableton-mcp",
         "ableton-mcp-macwhite"
       ]
     }
