@@ -871,6 +871,12 @@ def _get_registry():
             ),
             "modifying": True,
         },
+        "load_on_master_track": {
+            "handler": lambda song, p, ctrl: browser.load_on_master_track(
+                song, p.get("uri", ""), ctrl
+            ),
+            "modifying": True,
+        },
         "move_device": {
             "handler": lambda song, p, ctrl: _move_device(song, p, ctrl),
             "modifying": True,

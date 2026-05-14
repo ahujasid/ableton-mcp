@@ -40,16 +40,18 @@ def register(mcp: Any, get_ableton_connection: Callable[[], Any]) -> None:
             return f"Error getting browser items at path: {str(e)}"
 
     @mcp.tool()
-    def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
-        """Load an instrument or effect onto a track by URI. Parameters: track_index, uri (e.g. from browser)."""
+    def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, track_type: str = "track") -> str:
+        """Load an instrument or effect onto a track by URI. Parameters: track_index, uri (e.g. from browser), track_type ('track'|'return'|'master'). For master, track_index is ignored."""
         try:
             ableton = get_ableton_connection()
             result = ableton.send_command("load_browser_item", {
                 "track_index": track_index,
                 "item_uri": uri,
+                "track_type": track_type,
             })
             if result.get("loaded", False):
-                return f"Loaded '{result.get('item_name', uri)}' on track {track_index}"
+                target = result.get("track_name") or f"track {track_index}"
+                return f"Loaded '{result.get('item_name', uri)}' on {target}"
             return f"Failed to load instrument with URI '{uri}'"
         except Exception as e:
             logger.error(f"Error loading instrument by URI: {str(e)}")

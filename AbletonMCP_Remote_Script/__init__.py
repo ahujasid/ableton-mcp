@@ -549,7 +549,8 @@ def _dispatch_modifying(command_type, params, song, ctrl):
             song,
             p.get("track_index", 0),
             p.get("uri", p.get("item_uri", "")),
-            ctrl,
+            track_type=p.get("track_type", "track"),
+            ctrl=ctrl,
         )
     if command_type == "arm_track":
         return handlers.tracks.arm_track(song, p.get("track_index", 0), ctrl)

@@ -182,12 +182,23 @@ def get_browser_item(song, uri, path, ctrl=None):
         raise
 
 
-def load_browser_item(song, track_index, item_uri, ctrl=None):
-    """Load a browser item onto a track by its URI."""
+def load_browser_item(song, track_index, item_uri, track_type="track", ctrl=None):
+    """Load a browser item onto a track by its URI.
+
+    track_type: 'track' (default), 'return', or 'master'.
+    For 'master', track_index is ignored.
+    """
     try:
-        if track_index < 0 or track_index >= len(song.tracks):
-            raise IndexError("Track index out of range")
-        track = song.tracks[track_index]
+        if track_type == "return":
+            if track_index < 0 or track_index >= len(song.return_tracks):
+                raise IndexError("Return track index out of range")
+            track = song.return_tracks[track_index]
+        elif track_type == "master":
+            track = song.master_track
+        else:
+            if track_index < 0 or track_index >= len(song.tracks):
+                raise IndexError("Track index out of range")
+            track = song.tracks[track_index]
         if ctrl is None:
             raise RuntimeError(
                 "load_browser_item requires ctrl for application()"
@@ -204,6 +215,7 @@ def load_browser_item(song, track_index, item_uri, ctrl=None):
             "loaded": True,
             "item_name": item.name,
             "track_name": track.name,
+            "track_type": track_type,
             "uri": item_uri,
         }
     except Exception as e:
@@ -218,6 +230,38 @@ def load_browser_item(song, track_index, item_uri, ctrl=None):
 def load_instrument_or_effect(song, track_index, uri, ctrl=None):
     """Load an instrument or effect onto a track by URI (alias for load_browser_item)."""
     return load_browser_item(song, track_index, uri, ctrl)
+
+
+def load_on_master_track(song, uri, ctrl=None):
+    """Load an instrument or effect onto the master track by URI."""
+    try:
+        track = song.master_track
+        if ctrl is None:
+            raise RuntimeError(
+                "load_on_master_track requires ctrl for application()"
+            )
+        app = ctrl.application()
+        item = find_browser_item_by_uri(app.browser, uri, ctrl=ctrl)
+        if not item:
+            raise ValueError(
+                "Browser item with URI '{0}' not found".format(uri)
+            )
+        song.view.selected_track = track
+        app.browser.load_item(item)
+        return {
+            "loaded": True,
+            "item_name": item.name,
+            "track_name": track.name,
+            "track_type": "master",
+            "uri": uri,
+        }
+    except Exception as e:
+        if ctrl:
+            ctrl.log_message(
+                "Error loading on master track: {0}".format(str(e))
+            )
+            ctrl.log_message(traceback.format_exc())
+        raise
 
 
 def load_on_return_track(song, return_index, uri, ctrl=None):
