@@ -80,6 +80,63 @@ def get_arrangement_clips(song, track_index, ctrl=None):
         raise
 
 
+def delete_arrangement_clip(song, track_index, start_time=None, end_time=None,
+                            arrangement_clip_index=None, ctrl=None):
+    """Delete arrangement clip(s) on a track.
+
+    Match by either:
+      - arrangement_clip_index: index into track.arrangement_clips
+      - start_time + end_time: delete every clip whose start_time falls in [start_time, end_time)
+        (use end_time = start_time + 0.001 to target one exact start_time)
+    """
+    if track_index < 0 or track_index >= len(song.tracks):
+        raise IndexError("Track index out of range")
+    track = song.tracks[track_index]
+    if not hasattr(track, "arrangement_clips"):
+        raise Exception("Track has no arrangement clips")
+
+    arr_clips = list(track.arrangement_clips)
+    targets = []
+    if arrangement_clip_index is not None:
+        if arrangement_clip_index < 0 or arrangement_clip_index >= len(arr_clips):
+            raise IndexError("arrangement_clip_index out of range")
+        targets = [arr_clips[arrangement_clip_index]]
+    elif start_time is not None and end_time is not None:
+        targets = [c for c in arr_clips if start_time <= c.start_time < end_time]
+    else:
+        raise ValueError("Must provide arrangement_clip_index or (start_time, end_time)")
+
+    deleted = []
+    for c in targets:
+        info = {"name": c.name, "start_time": c.start_time, "end_time": c.end_time}
+        # Try multiple delete methods; Live API surface varies by version
+        deleted_ok = False
+        for fn in (
+            lambda: track.delete_clip(c),
+            lambda: c.delete(),
+            lambda: song.delete_clip(c),
+        ):
+            try:
+                fn()
+                deleted_ok = True
+                break
+            except Exception:
+                continue
+        if not deleted_ok:
+            # Fall back to song.delete_time to surgically remove this clip's slice on this track
+            raise Exception(
+                "No working delete method for arrangement clip at {0}".format(c.start_time)
+            )
+        deleted.append(info)
+
+    return {
+        "track_index": track_index,
+        "track_name": track.name,
+        "deleted_count": len(deleted),
+        "deleted": deleted,
+    }
+
+
 def inspect_arrangement_clip(song, track_index, arrangement_clip_index, ctrl=None):
     """Inspect available attributes/methods on an arrangement clip for debugging."""
     try:

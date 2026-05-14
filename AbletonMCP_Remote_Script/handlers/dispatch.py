@@ -254,12 +254,15 @@ def _record_arrangement(song, p, ctrl):
     if not plan:
         return {"error": "no plan provided"}
 
-    # Build scene fire times (in beats)
+    # Build scene fire times (in beats). Each plan section may carry an
+    # explicit `scene_index` (when scenes aren't contiguous starting at 0);
+    # otherwise the section's position in the plan is used.
     scene_times = []
     total_beats = 0
     for i, s in enumerate(plan):
         beat = (s["bar"] - 1) * 4
-        scene_times.append({"scene": i, "beat": beat, "name": s["name"]})
+        sc = int(s.get("scene_index", i))
+        scene_times.append({"scene": sc, "beat": beat, "name": s["name"]})
         end = beat + s["bars"] * 4
         if end > total_beats:
             total_beats = end
@@ -357,10 +360,13 @@ def _record_arrangement(song, p, ctrl):
                 pass
 
     song.record_mode = True
-    song.scenes[0].fire()
+    # Fire the FIRST scene from the plan (not scene 0) — scenes may be
+    # non-contiguous when the plan carries explicit scene_index values.
+    first_scene = scene_times[0]["scene"] if scene_times else 0
+    song.scenes[first_scene].fire()
     if ctrl:
-        ctrl.log_message("record: started, {0} scenes, {1} auto lanes".format(
-            len(scene_times), len(auto_resolved)))
+        ctrl.log_message("record: started, {0} scenes (first={1}), {2} auto lanes".format(
+            len(scene_times), first_scene, len(auto_resolved)))
 
     # Start polling for subsequent scenes
     ctrl.schedule_message(1, poll_and_fire)
@@ -888,6 +894,17 @@ def _get_registry():
             ),
             "modifying": False,
         },
+        "delete_arrangement_clip": {
+            "handler": lambda song, p, ctrl: arrangement.delete_arrangement_clip(
+                song,
+                p.get("track_index", 0),
+                p.get("start_time", None),
+                p.get("end_time", None),
+                p.get("arrangement_clip_index", None),
+                ctrl,
+            ),
+            "modifying": True,
+        },
         "get_all_clip_gains": {
             "handler": lambda song, p, ctrl: audio.get_all_clip_gains(
                 song, p.get("track_indices", None), ctrl
@@ -911,6 +928,17 @@ def _get_registry():
                 p.get("clip_index", 0),
                 p.get("source_bpm", 120.0),
                 p.get("duration_seconds", 0.0),
+                ctrl,
+            ),
+            "modifying": True,
+        },
+        "set_clip_pitch": {
+            "handler": lambda song, p, ctrl: audio.set_clip_pitch(
+                song,
+                p.get("track_index", 0),
+                p.get("clip_index", 0),
+                p.get("pitch_coarse", 0),
+                p.get("pitch_fine", 0.0),
                 ctrl,
             ),
             "modifying": True,

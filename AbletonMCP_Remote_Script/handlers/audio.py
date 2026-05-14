@@ -202,6 +202,38 @@ def get_all_clip_gains(song, track_indices=None, ctrl=None):
         raise
 
 
+def set_clip_pitch(song, track_index, clip_index, pitch_coarse, pitch_fine=0.0, ctrl=None):
+    """Set an audio clip's transpose. pitch_coarse is semitones (-48..48),
+    pitch_fine is cents (-50..50)."""
+    try:
+        if track_index < 0 or track_index >= len(song.tracks):
+            raise IndexError("Track index out of range")
+        track = song.tracks[track_index]
+        if clip_index < 0 or clip_index >= len(track.clip_slots):
+            raise IndexError("Clip index out of range")
+        slot = track.clip_slots[clip_index]
+        if not slot.has_clip:
+            raise Exception("No clip in slot")
+        clip = slot.clip
+        if not clip.is_audio_clip:
+            raise Exception("Clip is not an audio clip")
+        clip.pitch_coarse = int(pitch_coarse)
+        try:
+            clip.pitch_fine = float(pitch_fine)
+        except Exception:
+            pass
+        return {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "pitch_coarse": clip.pitch_coarse,
+            "pitch_fine": getattr(clip, "pitch_fine", None),
+        }
+    except Exception as e:
+        if ctrl:
+            ctrl.log_message("Error setting clip pitch: " + str(e))
+        raise
+
+
 def set_clip_gain(song, track_index, clip_index, gain, ctrl=None):
     """Set clip gain. gain is the raw API value (0.0-1.0)."""
     try:
