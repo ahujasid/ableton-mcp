@@ -226,10 +226,12 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
             # Commands that modify Live's state should be scheduled on the main thread
-            elif command_type in ["create_midi_track", "set_track_name", 
-                                 "create_clip", "add_notes_to_clip", "set_clip_name", 
+            elif command_type in ["create_midi_track", "set_track_name",
+                                 "create_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item"]:
+                                 "start_playback", "stop_playback", "load_browser_item",
+                                 "create_return_track", "duplicate_track",
+                                 "capture_midi", "tap_tempo", "set_track_color"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -282,7 +284,21 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
                             result = self._load_browser_item(track_index, item_uri)
-                        
+                        elif command_type == "create_return_track":
+                            result = self._create_return_track()
+                        elif command_type == "duplicate_track":
+                            track_index = params.get("track_index", 0)
+                            result = self._duplicate_track(track_index)
+                        elif command_type == "capture_midi":
+                            result = self._capture_midi()
+                        elif command_type == "tap_tempo":
+                            result = self._tap_tempo()
+                        elif command_type == "set_track_color":
+                            track_index = params.get("track_index", 0)
+                            color_index = params.get("color_index", -1)
+                            color = params.get("color", -1)
+                            result = self._set_track_color(track_index, color_index, color)
+
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
@@ -628,7 +644,7 @@ class AbletonMCP(ControlSurface):
         """Stop playing the session"""
         try:
             self._song.stop_playing()
-            
+
             result = {
                 "playing": self._song.is_playing
             }
@@ -636,7 +652,83 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error stopping playback: " + str(e))
             raise
-    
+
+    def _create_return_track(self):
+        """Create a return track at the end. Returns its index."""
+        try:
+            self._song.create_return_track()
+            n = len(self._song.return_tracks)
+            return {
+                "created": True,
+                "return_track_index": n - 1,
+                "return_track_count": n,
+            }
+        except Exception as e:
+            self.log_message("Error creating return track: " + str(e))
+            raise
+
+    def _duplicate_track(self, track_index):
+        """Duplicate a track (devices + clips). New track appears at track_index + 1."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            self._song.duplicate_track(track_index)
+            return {
+                "duplicated": True,
+                "source_track_index": track_index,
+                "new_track_index": track_index + 1,
+                "track_count": len(self._song.tracks),
+            }
+        except Exception as e:
+            self.log_message("Error duplicating track: " + str(e))
+            raise
+
+    def _capture_midi(self):
+        """Trigger Live's MIDI Capture — recovers MIDI played in the recent past."""
+        try:
+            self._song.capture_midi()
+            return {"captured": True}
+        except Exception as e:
+            self.log_message("Error capturing MIDI: " + str(e))
+            raise
+
+    def _tap_tempo(self):
+        """Register a tap-tempo tap. Live gradually settles to the tap interval."""
+        try:
+            self._song.tap_tempo()
+            return {"tapped": True, "tempo": self._song.tempo}
+        except Exception as e:
+            self.log_message("Error tapping tempo: " + str(e))
+            raise
+
+    def _set_track_color(self, track_index, color_index, color):
+        """Set track color.
+
+        ``color_index`` is the preferred Live 10+ palette index (0-69).
+        ``color`` (RGB integer 0xRRGGBB) is the legacy fallback.
+        Pass -1 for whichever you're not using.
+        """
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            color_index = int(color_index)
+            color = int(color)
+            if color_index >= 0:
+                track.color_index = color_index
+            elif color >= 0:
+                track.color = color
+            else:
+                raise ValueError("Provide color_index (0-69) or color (RGB int).")
+            return {
+                "track_index": track_index,
+                "color_index": getattr(track, 'color_index', None),
+                "color": getattr(track, 'color', None),
+            }
+        except Exception as e:
+            self.log_message("Error setting track color: " + str(e))
+            raise
+
     def _get_browser_item(self, uri, path):
         """Get a browser item by URI or path"""
         try:

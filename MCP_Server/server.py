@@ -651,6 +651,88 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) 
         logger.error(f"Error loading drum kit: {str(e)}")
         return f"Error loading drum kit: {str(e)}"
 
+@mcp.tool()
+def create_return_track(ctx: Context) -> str:
+    """
+    Create a return track at the end of the session.
+
+    Returns the index of the newly created return track.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_return_track", {})
+        return f"Created return track at index {result.get('return_track_index')} (total returns: {result.get('return_track_count')})"
+    except Exception as e:
+        logger.error(f"Error creating return track: {str(e)}")
+        return f"Error creating return track: {str(e)}"
+
+@mcp.tool()
+def duplicate_track(ctx: Context, track_index: int) -> str:
+    """
+    Duplicate a track (devices + clips). The new track appears at track_index + 1.
+
+    Parameters:
+    - track_index: The index of the track to duplicate
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_track", {"track_index": track_index})
+        return f"Duplicated track {track_index} -> {result.get('new_track_index')} (total tracks: {result.get('track_count')})"
+    except Exception as e:
+        logger.error(f"Error duplicating track: {str(e)}")
+        return f"Error duplicating track: {str(e)}"
+
+@mcp.tool()
+def capture_midi(ctx: Context) -> str:
+    """
+    Trigger Live's MIDI Capture, which recovers MIDI played in the recent past
+    on the armed track.
+    """
+    try:
+        ableton = get_ableton_connection()
+        ableton.send_command("capture_midi", {})
+        return "Captured MIDI"
+    except Exception as e:
+        logger.error(f"Error capturing MIDI: {str(e)}")
+        return f"Error capturing MIDI: {str(e)}"
+
+@mcp.tool()
+def tap_tempo(ctx: Context) -> str:
+    """
+    Register a tap-tempo tap. Live gradually settles to the tap interval.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("tap_tempo", {})
+        return f"Tap registered (current tempo: {result.get('tempo')})"
+    except Exception as e:
+        logger.error(f"Error tapping tempo: {str(e)}")
+        return f"Error tapping tempo: {str(e)}"
+
+@mcp.tool()
+def set_track_color(ctx: Context, track_index: int, color_index: int = -1, color: int = -1) -> str:
+    """
+    Set the color of a track.
+
+    Parameters:
+    - track_index: The index of the track
+    - color_index: Live's palette index (0-69). Preferred. Pass -1 to skip.
+    - color: Raw RGB integer (0xRRGGBB). Legacy fallback. Pass -1 to skip.
+
+    Provide either color_index or color (not both).
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_color", {
+            "track_index": track_index,
+            "color_index": color_index,
+            "color": color,
+        })
+        return f"Track {track_index} color set (color_index: {result.get('color_index')}, color: {result.get('color')})"
+    except Exception as e:
+        logger.error(f"Error setting track color: {str(e)}")
+        return f"Error setting track color: {str(e)}"
+
 # Main execution
 def main():
     """Run the MCP server"""
