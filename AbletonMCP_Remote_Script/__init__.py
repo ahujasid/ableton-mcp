@@ -2,6 +2,7 @@
 from __future__ import absolute_import, print_function, unicode_literals
 
 from _Framework.ControlSurface import ControlSurface
+import Live
 import socket
 import json
 import threading
@@ -279,7 +280,8 @@ class AbletonMCP(ControlSurface):
                                  "set_time_signature",
                                  "set_input_routing", "set_output_routing",
                                  "set_audio_clip_gain", "set_audio_clip_pitch",
-                                 "set_audio_clip_warp"]:
+                                 "set_audio_clip_warp",
+                                 "remove_notes_from_clip", "apply_note_modifications"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -469,6 +471,19 @@ class AbletonMCP(ControlSurface):
                                 params.get("clip_index", 0),
                                 params.get("warping"),
                                 params.get("warp_mode"))
+                        elif command_type == "remove_notes_from_clip":
+                            result = self._remove_notes_from_clip(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("from_pitch", 0),
+                                params.get("pitch_span", 128),
+                                params.get("from_time", 0.0),
+                                params.get("time_span", 1e9))
+                        elif command_type == "apply_note_modifications":
+                            result = self._apply_note_modifications(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("notes", []))
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -685,37 +700,33 @@ class AbletonMCP(ControlSurface):
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
-            
+
             track = self._song.tracks[track_index]
-            
+
             if clip_index < 0 or clip_index >= len(track.clip_slots):
                 raise IndexError("Clip index out of range")
-            
+
             clip_slot = track.clip_slots[clip_index]
-            
+
             if not clip_slot.has_clip:
                 raise Exception("No clip in slot")
-            
+
             clip = clip_slot.clip
-            
-            # Convert note data to Live's format
-            live_notes = []
+
+            specs = []
             for note in notes:
-                pitch = note.get("pitch", 60)
-                start_time = note.get("start_time", 0.0)
-                duration = note.get("duration", 0.25)
-                velocity = note.get("velocity", 100)
-                mute = note.get("mute", False)
-                
-                live_notes.append((pitch, start_time, duration, velocity, mute))
-            
-            # Add the notes
-            clip.set_notes(tuple(live_notes))
-            
-            result = {
-                "note_count": len(notes)
-            }
-            return result
+                spec = Live.Clip.MidiNoteSpecification(
+                    pitch=note.get("pitch", 60),
+                    start_time=note.get("start_time", 0.0),
+                    duration=note.get("duration", 0.25),
+                    velocity=note.get("velocity", 100),
+                    mute=note.get("mute", False)
+                )
+                specs.append(spec)
+
+            clip.add_new_notes(tuple(specs))
+
+            return {"note_count": len(specs)}
         except Exception as e:
             self.log_message("Error adding notes to clip: " + str(e))
             raise
@@ -1596,7 +1607,7 @@ class AbletonMCP(ControlSurface):
             clip = self._get_clip(track_index, clip_index)
             if not clip.is_midi_clip:
                 raise Exception("Clip is not a MIDI clip")
-            notes = clip.get_notes(0, 0, clip.length, 128)
+            notes = clip.get_notes_extended(from_pitch=0, pitch_span=128, from_time=0, time_span=clip.length)
             return {
                 "track_index": track_index,
                 "clip_index": clip_index,
@@ -1604,17 +1615,65 @@ class AbletonMCP(ControlSurface):
                 "clip_length": clip.length,
                 "notes": [
                     {
-                        "pitch": n[0],
-                        "start_time": n[1],
-                        "duration": n[2],
-                        "velocity": n[3],
-                        "mute": n[4],
+                        "pitch": n.pitch,
+                        "start_time": n.start_time,
+                        "duration": n.duration,
+                        "velocity": n.velocity,
+                        "mute": n.mute,
                     }
                     for n in notes
                 ],
             }
         except Exception as e:
             self.log_message("Error getting notes: " + str(e))
+            raise
+
+    def _remove_notes_from_clip(self, track_index, clip_index, from_pitch, pitch_span, from_time, time_span):
+        """Remove notes from a clip in a pitch/time range."""
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            if not clip.is_midi_clip:
+                raise Exception("Clip is not a MIDI clip")
+            clip.remove_notes_extended(
+                from_pitch=from_pitch,
+                pitch_span=pitch_span,
+                from_time=from_time,
+                time_span=time_span
+            )
+            return {"success": True}
+        except Exception as e:
+            self.log_message("Error removing notes: " + str(e))
+            raise
+
+    def _apply_note_modifications(self, track_index, clip_index, notes):
+        """Apply in-place modifications to existing notes via get_notes_extended + apply_note_modifications."""
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            if not clip.is_midi_clip:
+                raise Exception("Clip is not a MIDI clip")
+            all_notes = clip.get_notes_extended(from_pitch=0, pitch_span=128, from_time=0, time_span=clip.length)
+            # Build lookup: (pitch, start_time) -> MidiNote
+            note_map = {(n.pitch, round(n.start_time, 6)): n for n in all_notes}
+            updated = 0
+            for mod in notes:
+                key = (mod["pitch"], round(mod["start_time"], 6))
+                if key in note_map:
+                    n = note_map[key]
+                    if "new_pitch" in mod:
+                        n.pitch = mod["new_pitch"]
+                    if "new_start_time" in mod:
+                        n.start_time = mod["new_start_time"]
+                    if "new_duration" in mod:
+                        n.duration = mod["new_duration"]
+                    if "new_velocity" in mod:
+                        n.velocity = mod["new_velocity"]
+                    if "new_mute" in mod:
+                        n.mute = mod["new_mute"]
+                    updated += 1
+            clip.apply_note_modifications(all_notes)
+            return {"updated": updated}
+        except Exception as e:
+            self.log_message("Error applying note modifications: " + str(e))
             raise
 
     def _set_clip_loop(self, track_index, clip_index, loop_start, loop_end, loop_on):

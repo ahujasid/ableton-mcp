@@ -444,6 +444,69 @@ Prerequisites: Track 0, scene/clip-slot 0 must have a MIDI clip with at least a 
 
 ---
 
+## Phase 10 — Audio Clips
+
+### T83 — get_audio_clip_info baseline
+- **Action:** `get_audio_clip_info(track_index, clip_index)` on a track with an audio clip
+- **Expect:** Returns `name`, `length`, `gain`, `pitch_coarse`, `pitch_fine`, `warping`, `warp_mode`
+- **Result:** ✅ Passed 2026-05-15
+
+### T84 — set_audio_clip_gain round-trip
+- **Action:** `set_audio_clip_gain(track_index, clip_index, gain=1.5)`, then `get_audio_clip_info`
+- **Expect:** `gain` reflects new value
+- **Result:** ✅ Passed 2026-05-15
+
+### T85 — set_audio_clip_pitch round-trip
+- **Action:** `set_audio_clip_pitch(track_index, clip_index, pitch_coarse=3, pitch_fine=-15)`, then `get_audio_clip_info`
+- **Expect:** `pitch_coarse` and `pitch_fine` reflect new values
+- **Result:** ✅ Passed 2026-05-15
+
+### T86 — set_audio_clip_warp round-trip
+- **Action:** `set_audio_clip_warp(track_index, clip_index, warping=True, warp_mode=0)`, then `get_audio_clip_info`
+- **Expect:** `warping` is `true`, `warp_mode` is 0 (Beats)
+- **Result:** ✅ Passed 2026-05-15
+
+---
+
+## Phase 11 — Note Editing
+
+### T87 — get_notes_from_clip regression check
+- **Action:** `add_notes_to_clip` with 8-note C major scale, then `get_notes_from_clip`
+- **Expect:** All 8 notes returned with correct pitch, start_time, duration, velocity, mute via `get_notes_extended` API
+- **Result:** ✅ Passed 2026-05-15
+
+### T88 — add_notes_to_clip regression check
+- **Action:** `add_notes_to_clip` with 4 notes using `add_new_notes` + `MidiNoteSpecification`
+- **Expect:** Notes added, `note_count` returned, read-back confirms
+- **Result:** ✅ Passed 2026-05-15 (implicit — used throughout T87–T93 setup)
+
+### T89 — remove_notes_from_clip by pitch range
+- **Action:** `remove_notes_from_clip(from_pitch=60, pitch_span=3)` on 8-note clip
+- **Expect:** Pitches 60–62 removed, remaining notes untouched
+- **Result:** ✅ Passed 2026-05-15 — pitches 60 (C4) and 62 (D4) removed, 6 notes remain
+
+### T90 — remove_notes_from_clip by time range
+- **Action:** `remove_notes_from_clip(from_time=0, time_span=2)` on 6-note clip
+- **Expect:** Notes with start_time < 2 removed
+- **Result:** ✅ Passed 2026-05-15 — 2 notes removed, 4 remain (beats 2.0–3.5)
+
+### T91 — remove_notes_from_clip all notes
+- **Action:** `remove_notes_from_clip()` with no range args
+- **Expect:** Clip is empty
+- **Result:** ✅ Passed 2026-05-15 — 0 notes returned after call
+
+### T92 — apply_note_modifications: pitch change
+- **Action:** `apply_note_modifications` identifying note by `(pitch=60, start_time=0)`, setting `new_pitch=64`
+- **Expect:** That note's pitch changes to 64; other notes unaffected
+- **Result:** ✅ Passed 2026-05-15 — pitch 60 at beat 0 became 64; 3 other notes unchanged
+
+### T93 — apply_note_modifications: velocity + duration
+- **Action:** `apply_note_modifications` on note `(pitch=62, start_time=0.5)`, setting `new_velocity=127, new_duration=1`
+- **Expect:** Velocity and duration updated in place
+- **Result:** ✅ Passed 2026-05-15 — vel=127.0, dur=1.000 confirmed via read-back
+
+---
+
 ## Adversarial Tests
 
 These tests are designed to find edge cases, crashes, and unexpected behavior in the MCP ↔ Remote Script mapping. Document the actual result for each — the "expect" here is a hypothesis, not a guarantee.

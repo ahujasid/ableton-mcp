@@ -1306,6 +1306,75 @@ def get_notes_from_clip(ctx: Context, track_index: int, clip_index: int) -> str:
 
 
 @mcp.tool()
+def remove_notes_from_clip(ctx: Context, track_index: int, clip_index: int,
+                           from_pitch: int = 0, pitch_span: int = 128,
+                           from_time: float = 0.0, time_span: float = 1e9) -> str:
+    """
+    Remove notes from a MIDI clip within a pitch and time range.
+
+    Parameters:
+    - track_index: Index of the track (0-based)
+    - clip_index: Index of the clip slot (0-based)
+    - from_pitch: Lowest pitch to remove (0-127, default 0)
+    - pitch_span: Number of pitches to cover (default 128 = all)
+    - from_time: Start time in beats (default 0.0)
+    - time_span: Duration in beats to cover (default 1e9 = all)
+
+    Omit all range parameters to remove every note in the clip.
+    """
+    try:
+        ableton = get_ableton_connection()
+        ableton.send_command("remove_notes_from_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "from_pitch": from_pitch,
+            "pitch_span": pitch_span,
+            "from_time": from_time,
+            "time_span": time_span,
+        })
+        return f"Notes removed from clip {track_index}/{clip_index}"
+    except Exception as e:
+        logger.error(f"Error removing notes from clip: {str(e)}")
+        return f"Error removing notes from clip: {str(e)}"
+
+
+@mcp.tool()
+def apply_note_modifications(ctx: Context, track_index: int, clip_index: int, notes: list) -> str:
+    """
+    Modify existing notes in a MIDI clip in place.
+
+    Each entry in `notes` identifies a note by its current pitch and start_time,
+    then specifies new values for any fields to change.
+
+    Parameters:
+    - track_index: Index of the track (0-based)
+    - clip_index: Index of the clip slot (0-based)
+    - notes: List of modification objects, each with:
+        - pitch: Current pitch of the note to modify (required, for lookup)
+        - start_time: Current start time of the note to modify (required, for lookup)
+        - new_pitch: New pitch (optional)
+        - new_start_time: New start time in beats (optional)
+        - new_duration: New duration in beats (optional)
+        - new_velocity: New velocity 0-127 (optional)
+        - new_mute: New mute state (optional)
+
+    Workflow: call get_notes_from_clip first to inspect current state, then call
+    this tool with the modifications you want to apply.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("apply_note_modifications", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "notes": notes,
+        })
+        return f"Updated {result.get('updated', 0)} note(s) in clip {track_index}/{clip_index}"
+    except Exception as e:
+        logger.error(f"Error applying note modifications: {str(e)}")
+        return f"Error applying note modifications: {str(e)}"
+
+
+@mcp.tool()
 def set_clip_loop(ctx: Context, track_index: int, clip_index: int,
                   loop_start: float, loop_end: float, loop_on: bool = True) -> str:
     """
