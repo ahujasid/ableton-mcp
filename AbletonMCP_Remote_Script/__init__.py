@@ -277,7 +277,9 @@ class AbletonMCP(ControlSurface):
                                  "tap_tempo", "set_nudge_up", "set_nudge_down",
                                  "undo", "redo",
                                  "set_time_signature",
-                                 "set_input_routing", "set_output_routing"]:
+                                 "set_input_routing", "set_output_routing",
+                                 "set_audio_clip_gain", "set_audio_clip_pitch",
+                                 "set_audio_clip_warp"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
