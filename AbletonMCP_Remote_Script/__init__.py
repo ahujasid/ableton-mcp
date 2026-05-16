@@ -254,6 +254,13 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_available_routings":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_available_routings(track_index)
+            elif command_type == "get_arrangement_clips":
+                track_index = params.get("track_index", 0)
+                response["result"] = self._get_arrangement_clips(track_index)
+            elif command_type == "get_cue_points":
+                response["result"] = self._get_cue_points()
+            elif command_type == "get_arrangement_loop":
+                response["result"] = self._get_arrangement_loop()
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
@@ -281,7 +288,9 @@ class AbletonMCP(ControlSurface):
                                  "set_input_routing", "set_output_routing",
                                  "set_audio_clip_gain", "set_audio_clip_pitch",
                                  "set_audio_clip_warp",
-                                 "remove_notes_from_clip", "apply_note_modifications"]:
+                                 "remove_notes_from_clip", "apply_note_modifications",
+                                 "set_or_delete_cue", "set_arrangement_loop",
+                                 "set_punch_points", "jump_to_cue"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -484,6 +493,19 @@ class AbletonMCP(ControlSurface):
                                 params.get("track_index", 0),
                                 params.get("clip_index", 0),
                                 params.get("notes", []))
+                        elif command_type == "set_or_delete_cue":
+                            result = self._set_or_delete_cue()
+                        elif command_type == "set_arrangement_loop":
+                            result = self._set_arrangement_loop(
+                                params.get("loop_start"),
+                                params.get("loop_length"),
+                                params.get("loop_on"))
+                        elif command_type == "set_punch_points":
+                            result = self._set_punch_points(
+                                params.get("punch_in"),
+                                params.get("punch_out"))
+                        elif command_type == "jump_to_cue":
+                            result = self._jump_to_cue(params.get("direction", "next"))
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -1674,6 +1696,122 @@ class AbletonMCP(ControlSurface):
             return {"updated": updated}
         except Exception as e:
             self.log_message("Error applying note modifications: " + str(e))
+            raise
+
+    def _get_arrangement_clips(self, track_index):
+        """Get all clips in the arrangement view for a track."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            clips = []
+            for clip in track.arrangement_clips:
+                clips.append({
+                    "name": clip.name,
+                    "start_time": clip.start_time,
+                    "end_time": clip.end_time,
+                    "length": clip.length,
+                    "color": clip.color,
+                    "is_audio_clip": clip.is_audio_clip,
+                    "is_midi_clip": clip.is_midi_clip,
+                    "muted": clip.muted,
+                })
+            return {"track_index": track_index, "clips": clips}
+        except Exception as e:
+            self.log_message("Error getting arrangement clips: " + str(e))
+            raise
+
+    def _get_cue_points(self):
+        """Get all cue points (locators) in the arrangement."""
+        try:
+            cue_points = []
+            for cp in self._song.cue_points:
+                cue_points.append({"name": cp.name, "time": cp.time})
+            return {"cue_points": cue_points}
+        except Exception as e:
+            self.log_message("Error getting cue points: " + str(e))
+            raise
+
+    def _set_or_delete_cue(self):
+        """Create or delete a cue point at the current song time."""
+        try:
+            time_before = [cp.time for cp in self._song.cue_points]
+            self._song.set_or_delete_cue()
+            time_after = [cp.time for cp in self._song.cue_points]
+            if len(time_after) > len(time_before):
+                action = "created"
+            else:
+                action = "deleted"
+            return {"action": action, "cue_points": [{"name": cp.name, "time": cp.time} for cp in self._song.cue_points]}
+        except Exception as e:
+            self.log_message("Error setting/deleting cue: " + str(e))
+            raise
+
+    def _get_arrangement_loop(self):
+        """Get the current arrangement loop state."""
+        try:
+            return {
+                "loop": self._song.loop,
+                "loop_start": self._song.loop_start,
+                "loop_length": self._song.loop_length,
+                "punch_in": self._song.punch_in,
+                "punch_out": self._song.punch_out,
+            }
+        except Exception as e:
+            self.log_message("Error getting arrangement loop: " + str(e))
+            raise
+
+    def _set_arrangement_loop(self, loop_start, loop_length, loop_on):
+        """Set the arrangement loop region and on/off state."""
+        try:
+            if loop_start is not None:
+                self._song.loop_start = loop_start
+            if loop_length is not None:
+                self._song.loop_length = loop_length
+            if loop_on is not None:
+                self._song.loop = loop_on
+            # Live applies boolean property changes asynchronously, so reading
+            # self._song.loop back immediately returns the pre-change value.
+            # Numeric properties (loop_start, loop_length) read back correctly.
+            # Return the requested boolean rather than the stale read-back.
+            return {
+                "loop": loop_on if loop_on is not None else self._song.loop,
+                "loop_start": self._song.loop_start,
+                "loop_length": self._song.loop_length,
+            }
+        except Exception as e:
+            self.log_message("Error setting arrangement loop: " + str(e))
+            raise
+
+    def _set_punch_points(self, punch_in, punch_out):
+        """Set punch in/out state."""
+        try:
+            if punch_in is not None:
+                self._song.punch_in = punch_in
+            if punch_out is not None:
+                self._song.punch_out = punch_out
+            # Same async read-back issue as _set_arrangement_loop — return
+            # the requested values for any arg that was explicitly set.
+            return {
+                "punch_in": punch_in if punch_in is not None else self._song.punch_in,
+                "punch_out": punch_out if punch_out is not None else self._song.punch_out,
+            }
+        except Exception as e:
+            self.log_message("Error setting punch points: " + str(e))
+            raise
+
+    def _jump_to_cue(self, direction):
+        """Jump to next or previous cue point."""
+        try:
+            if direction == "next":
+                self._song.jump_to_next_cue()
+            else:
+                self._song.jump_to_prev_cue()
+            # jump_to_next/prev_cue() is fire-and-forget; current_song_time
+            # read immediately after still reflects the pre-jump position.
+            return {"direction": direction}
+        except Exception as e:
+            self.log_message("Error jumping to cue: " + str(e))
             raise
 
     def _set_clip_loop(self, track_index, clip_index, loop_start, loop_end, loop_on):

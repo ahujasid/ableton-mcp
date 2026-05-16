@@ -1746,6 +1746,159 @@ def set_audio_clip_warp(
         return f"Error setting audio clip warp: {str(e)}"
 
 
+@mcp.tool()
+def get_arrangement_clips(ctx: Context, track_index: int) -> str:
+    """
+    Get all clips in the arrangement view for a track.
+
+    Parameters:
+    - track_index: Index of the track (0-based)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_arrangement_clips", {"track_index": track_index})
+        clips = result.get("clips", [])
+        if not clips:
+            return f"Track {track_index} has no arrangement clips."
+        lines = [f"Track {track_index} has {len(clips)} arrangement clip(s):"]
+        for c in clips:
+            kind = "audio" if c.get("is_audio_clip") else "MIDI"
+            lines.append(f"  '{c['name']}' [{kind}] start={c['start_time']:.3f} end={c['end_time']:.3f} len={c['length']:.3f}")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Error getting arrangement clips: {str(e)}")
+        return f"Error getting arrangement clips: {str(e)}"
+
+
+@mcp.tool()
+def get_cue_points(ctx: Context) -> str:
+    """
+    Get all cue points (locators) in the arrangement.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_cue_points", {})
+        cue_points = result.get("cue_points", [])
+        if not cue_points:
+            return "No cue points in arrangement."
+        lines = [f"{len(cue_points)} cue point(s):"]
+        for cp in cue_points:
+            lines.append(f"  '{cp['name']}' at {cp['time']:.3f}")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Error getting cue points: {str(e)}")
+        return f"Error getting cue points: {str(e)}"
+
+
+@mcp.tool()
+def set_or_delete_cue(ctx: Context) -> str:
+    """
+    Create or delete a cue point at the current song time.
+    If no cue exists at the current position, one is created. If one exists, it is deleted.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_or_delete_cue", {})
+        action = result.get("action", "unknown")
+        cue_points = result.get("cue_points", [])
+        return f"Cue point {action}. Total cue points: {len(cue_points)}"
+    except Exception as e:
+        logger.error(f"Error setting/deleting cue: {str(e)}")
+        return f"Error setting/deleting cue: {str(e)}"
+
+
+@mcp.tool()
+def get_arrangement_loop(ctx: Context) -> str:
+    """
+    Get the current arrangement loop and punch state.
+    Returns loop_start, loop_length, loop on/off, punch_in, punch_out.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_arrangement_loop", {})
+        return (
+            f"Loop: {'on' if result['loop'] else 'off'}, "
+            f"start={result['loop_start']:.3f}, length={result['loop_length']:.3f} | "
+            f"Punch in: {'on' if result['punch_in'] else 'off'}, "
+            f"Punch out: {'on' if result['punch_out'] else 'off'}"
+        )
+    except Exception as e:
+        logger.error(f"Error getting arrangement loop: {str(e)}")
+        return f"Error getting arrangement loop: {str(e)}"
+
+
+@mcp.tool()
+def set_arrangement_loop(ctx: Context,
+                         loop_start: float = None,
+                         loop_length: float = None,
+                         loop_on: bool = None) -> str:
+    """
+    Set the arrangement loop region and/or enable/disable loop.
+
+    Parameters:
+    - loop_start: Loop start in beats (optional)
+    - loop_length: Loop length in beats (optional)
+    - loop_on: Enable or disable looping (optional)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_arrangement_loop", {
+            "loop_start": loop_start,
+            "loop_length": loop_length,
+            "loop_on": loop_on,
+        })
+        return (
+            f"Loop: {'on' if result['loop'] else 'off'}, "
+            f"start={result['loop_start']:.3f}, length={result['loop_length']:.3f}"
+        )
+    except Exception as e:
+        logger.error(f"Error setting arrangement loop: {str(e)}")
+        return f"Error setting arrangement loop: {str(e)}"
+
+
+@mcp.tool()
+def set_punch_points(ctx: Context, punch_in: bool = None, punch_out: bool = None) -> str:
+    """
+    Enable or disable punch in/out recording.
+
+    Parameters:
+    - punch_in: Enable punch-in (optional)
+    - punch_out: Enable punch-out (optional)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_punch_points", {
+            "punch_in": punch_in,
+            "punch_out": punch_out,
+        })
+        return (
+            f"Punch in: {'on' if result['punch_in'] else 'off'}, "
+            f"Punch out: {'on' if result['punch_out'] else 'off'}"
+        )
+    except Exception as e:
+        logger.error(f"Error setting punch points: {str(e)}")
+        return f"Error setting punch points: {str(e)}"
+
+
+@mcp.tool()
+def jump_to_cue(ctx: Context, direction: str = "next") -> str:
+    """
+    Jump to the next or previous cue point in the arrangement.
+
+    Parameters:
+    - direction: "next" or "prev" (default: "next")
+    """
+    try:
+        ableton = get_ableton_connection()
+        ableton.send_command("jump_to_cue", {"direction": direction})
+        # current_song_time read-back is unreliable immediately after jump_to_next/prev_cue()
+        # (Live applies the jump asynchronously). Use get_current_song_time to verify position.
+        return f"Jumped to {direction} cue."
+    except Exception as e:
+        logger.error(f"Error jumping to cue: {str(e)}")
+        return f"Error jumping to cue: {str(e)}"
+
+
 # Main execution
 def main():
     """Run the MCP server"""
