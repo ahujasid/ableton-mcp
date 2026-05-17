@@ -1899,6 +1899,70 @@ def jump_to_cue(ctx: Context, direction: str = "next") -> str:
         return f"Error jumping to cue: {str(e)}"
 
 
+@mcp.tool()
+def get_clip_follow_action(ctx: Context, track_index: int, clip_index: int) -> str:
+    """
+    Get follow action settings for a session clip.
+
+    Parameters:
+    - track_index: Track index (0-based)
+    - clip_index: Clip slot index (0-based)
+
+    Returns follow_actions_enabled, follow_action_a/b (0-8), follow_action_chance_a/b, follow_action_time (bars).
+    Follow action values: 0=Stop, 1=Play Again, 2=Previous, 3=Next, 4=First, 5=Last, 6=Any, 7=Other, 8=Jump
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_clip_follow_action", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting clip follow action: {str(e)}")
+        return f"Error getting clip follow action: {str(e)}"
+
+
+@mcp.tool()
+def set_clip_follow_action(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    follow_action_a: Union[int, str, None] = None,
+    follow_action_b: Union[int, str, None] = None,
+    follow_action_chance_a: float = None,
+    follow_action_time: float = None,
+    follow_actions_enabled: bool = None,
+) -> str:
+    """
+    Set follow action settings for a session clip. All parameters are optional — omit to leave unchanged.
+
+    Parameters:
+    - track_index: Track index (0-based)
+    - clip_index: Clip slot index (0-based)
+    - follow_action_a: Action A — int 0-8 or name string (Stop, Play Again, Previous, Next, First, Last, Any, Other, Jump)
+    - follow_action_b: Action B — int 0-8 or name string
+    - follow_action_chance_a: Probability of action A (0.0-1.0). Chance B is set to 1 - chance_a automatically.
+    - follow_action_time: Time in bars before follow action fires (>= 0)
+    - follow_actions_enabled: Enable or disable follow actions for this clip
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_follow_action", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "follow_action_a": follow_action_a,
+            "follow_action_b": follow_action_b,
+            "follow_action_chance_a": follow_action_chance_a,
+            "follow_action_time": follow_action_time,
+            "follow_actions_enabled": follow_actions_enabled,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting clip follow action: {str(e)}")
+        return f"Error setting clip follow action: {str(e)}"
+
+
 # Main execution
 def main():
     """Run the MCP server"""
