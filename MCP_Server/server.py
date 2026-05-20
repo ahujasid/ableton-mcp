@@ -106,6 +106,7 @@ class AbletonConnection:
             "create_clip", "add_notes_to_clip", "set_clip_name",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "start_playback", "stop_playback", "load_instrument_or_effect",
+            "load_browser_item",
             "duplicate_clip_to_arrangement", "duplicate_scene_to_arrangement",
             "back_to_arrangement", "stop_all_clips", "export_audio"
         ]
@@ -437,6 +438,56 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
     except Exception as e:
         logger.error(f"Error loading instrument by URI: {str(e)}")
         return f"Error loading instrument by URI: {str(e)}"
+
+@mcp.tool()
+def search_browser_items(
+    ctx: Context,
+    query: str,
+    category: str = None,
+    max_results: int = 20
+) -> str:
+    """
+    Search Ableton browser items and return names, paths, loadability, and URIs.
+
+    Parameters:
+    - query: Case-insensitive text to search for in browser item names/paths
+    - category: Optional root category, such as instruments, sounds, drums, audio_effects, or midi_effects
+    - max_results: Maximum number of matches to return
+    """
+    try:
+        params = {
+            "query": query,
+            "max_results": max_results
+        }
+        if category is not None:
+            params["category"] = category
+
+        ableton = get_ableton_connection()
+        result = ableton.send_command("search_browser_items", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error searching browser items: {str(e)}")
+        return f"Error searching browser items: {str(e)}"
+
+@mcp.tool()
+def load_browser_item_by_uri(ctx: Context, track_index: int, uri: str) -> str:
+    """
+    Load an Ableton browser item onto a track by URI and return device readback.
+
+    Parameters:
+    - track_index: The index of the track to load onto
+    - uri: Browser item URI returned by search_browser_items or get_browser_items_at_path
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("load_browser_item", {
+            "track_index": track_index,
+            "item_uri": uri
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error loading browser item by URI: {str(e)}")
+        return f"Error loading browser item by URI: {str(e)}"
 
 @mcp.tool()
 def fire_clip(ctx: Context, track_index: int, clip_index: int) -> str:

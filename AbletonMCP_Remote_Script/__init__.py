@@ -334,6 +334,13 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
                             result = self._load_browser_item(track_index, item_uri)
+                            deferred_response = True
+
+                            def verify_load_browser_item(result=result):
+                                result = self._verify_load_browser_item(result)
+                                response_queue.put({"status": "success", "result": result})
+
+                            self.schedule_message(4, verify_load_browser_item)
                         
                         # Put the result in the queue
                         if not deferred_response:
@@ -379,6 +386,11 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_browser_items_at_path":
                 path = params.get("path", "")
                 response["result"] = self.get_browser_items_at_path(path)
+            elif command_type == "search_browser_items":
+                query = params.get("query", "")
+                category = params.get("category", None)
+                max_results = params.get("max_results", 20)
+                response["result"] = self.search_browser_items(query, category, max_results)
             else:
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
@@ -439,16 +451,6 @@ class AbletonMCP(ControlSurface):
                     "clip": clip_info
                 })
             
-            # Get devices
-            devices = []
-            for device_index, device in enumerate(track.devices):
-                devices.append({
-                    "index": device_index,
-                    "name": device.name,
-                    "class_name": device.class_name,
-                    "type": self._get_device_type(device)
-                })
-            
             result = {
                 "index": track_index,
                 "name": track.name,
@@ -460,7 +462,7 @@ class AbletonMCP(ControlSurface):
                 "volume": track.mixer_device.volume.value,
                 "panning": track.mixer_device.panning.value,
                 "clip_slots": clip_slots,
-                "devices": devices
+                "devices": self._get_track_devices(track)
             }
             return result
         except Exception as e:
@@ -1009,24 +1011,58 @@ class AbletonMCP(ControlSurface):
             
             if not item:
                 raise ValueError("Browser item with URI '{0}' not found".format(item_uri))
+            if hasattr(item, "is_loadable") and not item.is_loadable:
+                raise ValueError("Browser item with URI '{0}' is not loadable".format(item_uri))
             
             # Select the track
             self._song.view.selected_track = track
+            devices_before = self._get_track_devices(track)
             
             # Load the item
             app.browser.load_item(item)
             
             result = {
-                "loaded": True,
+                "loaded": False,
                 "item_name": item.name,
                 "track_name": track.name,
-                "uri": item_uri
+                "track_index": track_index,
+                "uri": item_uri,
+                "is_loadable": item.is_loadable if hasattr(item, "is_loadable") else None,
+                "devices_before": devices_before,
+                "devices_after": [],
+                "new_devices": [],
+                "device_count_before": len(devices_before),
+                "device_count_after": None
             }
             return result
         except Exception as e:
             self.log_message("Error loading browser item: {0}".format(str(e)))
             self.log_message(traceback.format_exc())
             raise
+
+    def _verify_load_browser_item(self, result):
+        """Verify a browser item load changed the target track's devices."""
+        try:
+            track_index = result.get("track_index", 0)
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+            devices_after = self._get_track_devices(track)
+            devices_before = result.get("devices_before", [])
+            result["devices_after"] = devices_after
+            result["new_devices"] = [
+                device.get("name")
+                for device in devices_after[len(devices_before):]
+            ]
+            result["device_count_after"] = len(devices_after)
+            result["loaded"] = result["device_count_after"] > result.get("device_count_before", 0)
+            return result
+        except Exception as e:
+            result["error"] = str(e)
+            self.log_message("Error verifying browser item load: {0}".format(str(e)))
+            self.log_message(traceback.format_exc())
+            return result
     
     def _find_browser_item_by_uri(self, browser_or_item, uri, max_depth=10, current_depth=0):
         """Find a browser item by its URI"""
@@ -1070,6 +1106,58 @@ class AbletonMCP(ControlSurface):
             return None
     
     # Helper methods
+
+    def _get_track_devices(self, track):
+        """Return device details for a track."""
+        devices = []
+        for device_index, device in enumerate(track.devices):
+            devices.append({
+                "index": device_index,
+                "name": device.name,
+                "class_name": device.class_name,
+                "type": self._get_device_type(device)
+            })
+        return devices
+
+    def _browser_item_info(self, item, path):
+        """Return serializable browser item info."""
+        return {
+            "name": item.name if hasattr(item, "name") else "Unknown",
+            "path": path,
+            "is_folder": hasattr(item, "children") and bool(item.children),
+            "is_device": hasattr(item, "is_device") and item.is_device,
+            "is_loadable": hasattr(item, "is_loadable") and item.is_loadable,
+            "uri": item.uri if hasattr(item, "uri") else None
+        }
+
+    def _get_browser_roots(self, browser, category=None):
+        """Return browser root categories by stable external names."""
+        root_names = ["instruments", "sounds", "drums", "audio_effects", "midi_effects"]
+        roots = []
+        for name in root_names:
+            if (category is None or category == "all" or category == name) and hasattr(browser, name):
+                roots.append((name, getattr(browser, name)))
+        return roots
+
+    def _search_browser_item(self, item, path, query, max_results, results, depth=0, max_depth=12):
+        """Search browser items by name/path."""
+        if len(results) >= max_results or depth > max_depth or item is None:
+            return
+
+        name = item.name if hasattr(item, "name") else ""
+        searchable = (name + " " + path).lower()
+        if query in searchable:
+            results.append(self._browser_item_info(item, path))
+            if len(results) >= max_results:
+                return
+
+        if hasattr(item, "children") and item.children:
+            for child in item.children:
+                child_name = child.name if hasattr(child, "name") else "Unknown"
+                child_path = path + "/" + child_name
+                self._search_browser_item(child, child_path, query, max_results, results, depth + 1, max_depth)
+                if len(results) >= max_results:
+                    return
     
     def _get_device_type(self, device):
         """Get the type of a device"""
@@ -1328,5 +1416,66 @@ class AbletonMCP(ControlSurface):
             
         except Exception as e:
             self.log_message("Error getting browser items at path: {0}".format(str(e)))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def search_browser_items(self, query, category=None, max_results=20):
+        """
+        Search Ableton browser items by name or path.
+
+        Args:
+            query: Case-insensitive text to search for
+            category: Optional root category such as instruments, sounds, drums,
+                      audio_effects, or midi_effects
+            max_results: Maximum number of results to return
+
+        Returns:
+            Dictionary with matching browser items and their URIs
+        """
+        try:
+            app = self.application()
+            if not app:
+                raise RuntimeError("Could not access Live application")
+            if not hasattr(app, "browser") or app.browser is None:
+                raise RuntimeError("Browser is not available in the Live application")
+
+            query = (query or "").strip().lower()
+            if not query:
+                raise ValueError("query is required")
+
+            try:
+                max_results = int(max_results)
+            except:
+                max_results = 20
+            if max_results <= 0:
+                max_results = 20
+
+            normalized_category = category.lower() if category else None
+            roots = self._get_browser_roots(app.browser, normalized_category)
+            if normalized_category and normalized_category != "all" and not roots:
+                return {
+                    "query": query,
+                    "category": category,
+                    "error": "Unknown or unavailable category: {0}".format(category),
+                    "available_categories": [
+                        name for name, item in self._get_browser_roots(app.browser, "all")
+                    ],
+                    "results": []
+                }
+
+            results = []
+            for root_name, root_item in roots:
+                self._search_browser_item(root_item, root_name, query, max_results, results)
+                if len(results) >= max_results:
+                    break
+
+            return {
+                "query": query,
+                "category": category,
+                "results": results,
+                "count": len(results)
+            }
+        except Exception as e:
+            self.log_message("Error searching browser items: {0}".format(str(e)))
             self.log_message(traceback.format_exc())
             raise
