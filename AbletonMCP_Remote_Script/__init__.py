@@ -225,11 +225,21 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "get_device_info":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                response["result"] = self._get_device_info(track_index, device_index)
+            elif command_type == "get_device_parameters":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                response["result"] = self._get_device_parameters(track_index, device_index)
             # Commands that modify Live's state should be scheduled on the main thread
-            elif command_type in ["create_midi_track", "set_track_name", 
+            elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name", 
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback", "load_browser_item",
+                                 "set_device_parameter", "set_device_parameter_by_name",
+                                 "execute_batch",
                                  "duplicate_clip_to_arrangement",
                                  "duplicate_scene_to_arrangement",
                                  "back_to_arrangement", "stop_all_clips",
@@ -245,6 +255,9 @@ class AbletonMCP(ControlSurface):
                         if command_type == "create_midi_track":
                             index = params.get("index", -1)
                             result = self._create_midi_track(index)
+                        elif command_type == "create_audio_track":
+                            index = params.get("index", -1)
+                            result = self._create_audio_track(index)
                         elif command_type == "set_track_name":
                             track_index = params.get("track_index", 0)
                             name = params.get("name", "")
@@ -275,6 +288,25 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             result = self._stop_clip(track_index, clip_index)
+                        elif command_type == "set_device_parameter":
+                            result = self._set_device_parameter(
+                                params.get("track_index", 0),
+                                params.get("device_index", 0),
+                                params.get("parameter_index", 0),
+                                params.get("value", 0.0)
+                            )
+                        elif command_type == "set_device_parameter_by_name":
+                            result = self._set_device_parameter_by_name(
+                                params.get("track_index", 0),
+                                params.get("device_index", 0),
+                                params.get("parameter_name", ""),
+                                params.get("value", 0.0)
+                            )
+                        elif command_type == "execute_batch":
+                            result = self._execute_batch(
+                                params.get("commands", []),
+                                params.get("stop_on_error", True)
+                            )
                         elif command_type == "duplicate_clip_to_arrangement":
                             track_index = params.get("track_index", 0)
                             scene_index = params.get("scene_index", 0)
@@ -486,6 +518,23 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error creating MIDI track: " + str(e))
+            raise
+
+    def _create_audio_track(self, index):
+        """Create a new audio track at the specified index"""
+        try:
+            self._song.create_audio_track(index)
+
+            new_track_index = len(self._song.tracks) - 1 if index == -1 else index
+            new_track = self._song.tracks[new_track_index]
+
+            result = {
+                "index": new_track_index,
+                "name": new_track.name
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error creating audio track: " + str(e))
             raise
     
     
@@ -1085,6 +1134,9 @@ class AbletonMCP(ControlSurface):
                     browser_or_item.audio_effects,
                     browser_or_item.midi_effects
                 ]
+                for attr in ["plugins", "max_for_live", "packs", "user_library"]:
+                    if hasattr(browser_or_item, attr):
+                        categories.append(getattr(browser_or_item, attr))
                 
                 for category in categories:
                     item = self._find_browser_item_by_uri(category, uri, max_depth, current_depth + 1)
@@ -1107,6 +1159,15 @@ class AbletonMCP(ControlSurface):
     
     # Helper methods
 
+    def _safe_getattr(self, obj, attr, default=None):
+        """Read a Live API attribute that may raise when unavailable."""
+        try:
+            if hasattr(obj, attr):
+                return getattr(obj, attr)
+        except:
+            return default
+        return default
+
     def _get_track_devices(self, track):
         """Return device details for a track."""
         devices = []
@@ -1118,6 +1179,238 @@ class AbletonMCP(ControlSurface):
                 "type": self._get_device_type(device)
             })
         return devices
+
+    def _get_track(self, track_index):
+        """Return a track by zero-based index."""
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        return self._song.tracks[track_index]
+
+    def _get_device(self, track_index, device_index):
+        """Return a device by track and device index."""
+        track = self._get_track(track_index)
+        if device_index < 0 or device_index >= len(track.devices):
+            raise IndexError("Device index out of range")
+        return track.devices[device_index]
+
+    def _get_parameter_info(self, parameter, parameter_index):
+        """Return serializable parameter info."""
+        return {
+            "index": parameter_index,
+            "name": self._safe_getattr(parameter, "name", ""),
+            "original_name": self._safe_getattr(parameter, "original_name", None),
+            "value": self._safe_getattr(parameter, "value", None),
+            "default_value": self._safe_getattr(parameter, "default_value", None),
+            "min": self._safe_getattr(parameter, "min", None),
+            "max": self._safe_getattr(parameter, "max", None),
+            "is_enabled": self._safe_getattr(parameter, "is_enabled", None),
+            "is_quantized": self._safe_getattr(parameter, "is_quantized", None)
+        }
+
+    def _get_device_info(self, track_index, device_index):
+        """Return device details and parameters."""
+        device = self._get_device(track_index, device_index)
+        return {
+            "track_index": track_index,
+            "device_index": device_index,
+            "name": device.name,
+            "class_name": device.class_name,
+            "class_display_name": device.class_display_name if hasattr(device, "class_display_name") else None,
+            "type": self._get_device_type(device),
+            "can_have_chains": device.can_have_chains if hasattr(device, "can_have_chains") else None,
+            "can_have_drum_pads": device.can_have_drum_pads if hasattr(device, "can_have_drum_pads") else None,
+            "parameters": [
+                self._get_parameter_info(parameter, parameter_index)
+                for parameter_index, parameter in enumerate(device.parameters)
+            ] if hasattr(device, "parameters") else []
+        }
+
+    def _get_device_parameters(self, track_index, device_index):
+        """Return parameters for a device."""
+        device = self._get_device(track_index, device_index)
+        return {
+            "track_index": track_index,
+            "device_index": device_index,
+            "device_name": device.name,
+            "class_name": device.class_name,
+            "parameters": [
+                self._get_parameter_info(parameter, parameter_index)
+                for parameter_index, parameter in enumerate(device.parameters)
+            ] if hasattr(device, "parameters") else []
+        }
+
+    def _set_device_parameter(self, track_index, device_index, parameter_index, value):
+        """Set a device parameter by index and verify readback."""
+        device = self._get_device(track_index, device_index)
+        if not hasattr(device, "parameters"):
+            raise RuntimeError("Device has no parameters")
+        if parameter_index < 0 or parameter_index >= len(device.parameters):
+            raise IndexError("Parameter index out of range")
+
+        parameter = device.parameters[parameter_index]
+        value_before = parameter.value
+        parameter.value = float(value)
+        return {
+            "track_index": track_index,
+            "device_index": device_index,
+            "device_name": device.name,
+            "parameter_index": parameter_index,
+            "parameter_name": parameter.name,
+            "value_before": value_before,
+            "requested_value": float(value),
+            "value_after": parameter.value,
+            "success": parameter.value != value_before or float(value) == value_before
+        }
+
+    def _set_device_parameter_by_name(self, track_index, device_index, parameter_name, value):
+        """Set a device parameter by exact or case-insensitive name."""
+        device = self._get_device(track_index, device_index)
+        if not hasattr(device, "parameters"):
+            raise RuntimeError("Device has no parameters")
+
+        target_name = parameter_name.strip().lower()
+        if not target_name:
+            raise ValueError("parameter_name is required")
+
+        for parameter_index, parameter in enumerate(device.parameters):
+            names = [parameter.name]
+            if hasattr(parameter, "original_name") and parameter.original_name:
+                names.append(parameter.original_name)
+            if target_name in [name.lower() for name in names if name]:
+                result = self._set_device_parameter(track_index, device_index, parameter_index, value)
+                result["matched_name"] = parameter_name
+                return result
+
+        raise ValueError("Parameter '{0}' not found".format(parameter_name))
+
+    def _execute_batch(self, commands, stop_on_error=True):
+        """Execute a simple list of commands without result references."""
+        if not isinstance(commands, list):
+            raise TypeError("commands must be a list")
+        if len(commands) > 50:
+            raise ValueError("execute_batch supports at most 50 commands")
+
+        results = []
+        for command_index, command in enumerate(commands):
+            command_type = command.get("type", "")
+            params = command.get("params", {})
+            entry = {
+                "index": command_index,
+                "type": command_type,
+                "status": "success",
+                "result": {}
+            }
+            try:
+                if command_type == "execute_batch":
+                    raise ValueError("execute_batch cannot be nested")
+                if command_type == "export_audio":
+                    raise ValueError("export_audio cannot run inside execute_batch")
+                entry["result"] = self._execute_batch_command(command_type, params)
+            except Exception as e:
+                entry["status"] = "error"
+                entry["error"] = str(e)
+                results.append(entry)
+                if stop_on_error:
+                    return {
+                        "success": False,
+                        "stop_on_error": bool(stop_on_error),
+                        "failed_index": command_index,
+                        "results": results
+                    }
+                continue
+            results.append(entry)
+
+        return {
+            "success": all(entry["status"] == "success" for entry in results),
+            "stop_on_error": bool(stop_on_error),
+            "failed_index": None,
+            "results": results
+        }
+
+    def _execute_batch_command(self, command_type, params):
+        """Execute one batch-safe command."""
+        if command_type == "get_session_info":
+            return self._get_session_info()
+        if command_type == "get_track_info":
+            return self._get_track_info(params.get("track_index", 0))
+        if command_type == "get_device_info":
+            return self._get_device_info(params.get("track_index", 0), params.get("device_index", 0))
+        if command_type == "get_device_parameters":
+            return self._get_device_parameters(params.get("track_index", 0), params.get("device_index", 0))
+        if command_type == "search_browser_items":
+            return self.search_browser_items(
+                params.get("query", ""),
+                params.get("category", None),
+                params.get("max_results", 20)
+            )
+        if command_type == "get_browser_items_at_path":
+            return self.get_browser_items_at_path(params.get("path", ""))
+        if command_type == "get_browser_tree":
+            return self.get_browser_tree(params.get("category_type", "all"))
+        if command_type == "create_midi_track":
+            return self._create_midi_track(params.get("index", -1))
+        if command_type == "create_audio_track":
+            return self._create_audio_track(params.get("index", -1))
+        if command_type == "set_track_name":
+            return self._set_track_name(params.get("track_index", 0), params.get("name", ""))
+        if command_type == "create_clip":
+            return self._create_clip(
+                params.get("track_index", 0),
+                params.get("clip_index", 0),
+                params.get("length", 4.0)
+            )
+        if command_type == "add_notes_to_clip":
+            return self._add_notes_to_clip(
+                params.get("track_index", 0),
+                params.get("clip_index", 0),
+                params.get("notes", [])
+            )
+        if command_type == "set_clip_name":
+            return self._set_clip_name(
+                params.get("track_index", 0),
+                params.get("clip_index", 0),
+                params.get("name", "")
+            )
+        if command_type == "set_tempo":
+            return self._set_tempo(params.get("tempo", 120.0))
+        if command_type == "fire_clip":
+            return self._fire_clip(params.get("track_index", 0), params.get("clip_index", 0))
+        if command_type == "stop_clip":
+            return self._stop_clip(params.get("track_index", 0), params.get("clip_index", 0))
+        if command_type == "load_browser_item":
+            result = self._load_browser_item(params.get("track_index", 0), params.get("item_uri", ""))
+            return self._verify_load_browser_item(result)
+        if command_type == "set_device_parameter":
+            return self._set_device_parameter(
+                params.get("track_index", 0),
+                params.get("device_index", 0),
+                params.get("parameter_index", 0),
+                params.get("value", 0.0)
+            )
+        if command_type == "set_device_parameter_by_name":
+            return self._set_device_parameter_by_name(
+                params.get("track_index", 0),
+                params.get("device_index", 0),
+                params.get("parameter_name", ""),
+                params.get("value", 0.0)
+            )
+        if command_type == "duplicate_clip_to_arrangement":
+            return self._duplicate_clip_to_arrangement(
+                params.get("track_index", 0),
+                params.get("scene_index", 0),
+                params.get("start_time", 0.0)
+            )
+        if command_type == "duplicate_scene_to_arrangement":
+            return self._duplicate_scene_to_arrangement(
+                params.get("scene_index", 0),
+                params.get("start_time", 0.0),
+                params.get("track_indices", None)
+            )
+        if command_type == "start_playback":
+            return self._start_playback()
+        if command_type == "stop_playback":
+            return self._stop_playback()
+        raise ValueError("Command '{0}' is not supported in execute_batch".format(command_type))
 
     def _browser_item_info(self, item, path):
         """Return serializable browser item info."""
@@ -1132,7 +1425,10 @@ class AbletonMCP(ControlSurface):
 
     def _get_browser_roots(self, browser, category=None):
         """Return browser root categories by stable external names."""
-        root_names = ["instruments", "sounds", "drums", "audio_effects", "midi_effects"]
+        root_names = [
+            "instruments", "sounds", "drums", "audio_effects", "midi_effects",
+            "plugins", "max_for_live", "packs", "user_library"
+        ]
         roots = []
         for name in root_names:
             if (category is None or category == "all" or category == name) and hasattr(browser, name):

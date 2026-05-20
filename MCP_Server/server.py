@@ -105,6 +105,7 @@ class AbletonConnection:
             "create_midi_track", "create_audio_track", "set_track_name",
             "create_clip", "add_notes_to_clip", "set_clip_name",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
+            "set_device_parameter_by_name", "execute_batch",
             "start_playback", "stop_playback", "load_instrument_or_effect",
             "load_browser_item",
             "duplicate_clip_to_arrangement", "duplicate_scene_to_arrangement",
@@ -303,6 +304,22 @@ def create_midi_track(ctx: Context, index: int = -1) -> str:
         logger.error(f"Error creating MIDI track: {str(e)}")
         return f"Error creating MIDI track: {str(e)}"
 
+@mcp.tool()
+def create_audio_track(ctx: Context, index: int = -1) -> str:
+    """
+    Create a new audio track in the Ableton session.
+
+    Parameters:
+    - index: The index to insert the track at (-1 = end of list)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_audio_track", {"index": index})
+        return f"Created new audio track: {result.get('name', 'unknown')}"
+    except Exception as e:
+        logger.error(f"Error creating audio track: {str(e)}")
+        return f"Error creating audio track: {str(e)}"
+
 
 @mcp.tool()
 def set_track_name(ctx: Context, track_index: int, name: str) -> str:
@@ -488,6 +505,129 @@ def load_browser_item_by_uri(ctx: Context, track_index: int, uri: str) -> str:
     except Exception as e:
         logger.error(f"Error loading browser item by URI: {str(e)}")
         return f"Error loading browser item by URI: {str(e)}"
+
+@mcp.tool()
+def get_device_info(ctx: Context, track_index: int, device_index: int) -> str:
+    """
+    Get detailed device info, including exposed parameters.
+
+    Parameters:
+    - track_index: The track index containing the device
+    - device_index: The device index on the track
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_info", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device info: {str(e)}")
+        return f"Error getting device info: {str(e)}"
+
+@mcp.tool()
+def get_device_parameters(ctx: Context, track_index: int, device_index: int) -> str:
+    """
+    Get exposed parameters for a device.
+
+    Parameters:
+    - track_index: The track index containing the device
+    - device_index: The device index on the track
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device parameters: {str(e)}")
+        return f"Error getting device parameters: {str(e)}"
+
+@mcp.tool()
+def set_device_parameter(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    parameter_index: int,
+    value: float
+) -> str:
+    """
+    Set a device parameter by parameter index.
+
+    Parameters:
+    - track_index: The track index containing the device
+    - device_index: The device index on the track
+    - parameter_index: The parameter index on the device
+    - value: The new raw parameter value
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_device_parameter", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameter_index": parameter_index,
+            "value": value
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting device parameter: {str(e)}")
+        return f"Error setting device parameter: {str(e)}"
+
+@mcp.tool()
+def set_device_parameter_by_name(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    parameter_name: str,
+    value: float
+) -> str:
+    """
+    Set a device parameter by exact or case-insensitive name.
+
+    Parameters:
+    - track_index: The track index containing the device
+    - device_index: The device index on the track
+    - parameter_name: The visible or original parameter name
+    - value: The new raw parameter value
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_device_parameter_by_name", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameter_name": parameter_name,
+            "value": value
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting device parameter by name: {str(e)}")
+        return f"Error setting device parameter by name: {str(e)}"
+
+@mcp.tool()
+def execute_batch(ctx: Context, commands: List[Dict[str, Any]], stop_on_error: bool = True) -> str:
+    """
+    Execute a simple list of Ableton commands in one socket call.
+
+    This intentionally does not support result references yet; command params
+    should use explicit indices and URIs.
+
+    Parameters:
+    - commands: List of command objects with type and params fields
+    - stop_on_error: Stop at the first failed command when true
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("execute_batch", {
+            "commands": commands,
+            "stop_on_error": stop_on_error
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error executing batch: {str(e)}")
+        return f"Error executing batch: {str(e)}"
 
 @mcp.tool()
 def fire_clip(ctx: Context, track_index: int, clip_index: int) -> str:
