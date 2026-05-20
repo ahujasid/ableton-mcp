@@ -762,22 +762,20 @@ class AbletonMCP(ControlSurface):
     def _back_to_arrangement(self):
         """Re-enable Arrangement playback when Session clips have taken over."""
         result = {
-            "success": False
+            "success": False,
+            "back_to_arranger_before": None,
+            "back_to_arranger_after": None
         }
         
         try:
             if hasattr(self._song, "back_to_arranger"):
-                self._song.back_to_arranger = True
-            elif hasattr(self._song, "back_to_arrangement"):
-                attr = getattr(self._song, "back_to_arrangement")
-                if callable(attr):
-                    attr()
-                else:
-                    self._song.back_to_arrangement = True
+                result["back_to_arranger_before"] = bool(self._song.back_to_arranger)
+                self._song.back_to_arranger = False
+                result["back_to_arranger_after"] = bool(self._song.back_to_arranger)
             else:
-                raise RuntimeError("Live API does not expose back_to_arranger/back_to_arrangement")
+                raise RuntimeError("Live API does not expose back_to_arranger")
             
-            result["success"] = True
+            result["success"] = not result["back_to_arranger_after"]
             return result
         except Exception as e:
             result["error"] = str(e)
