@@ -232,7 +232,8 @@ class AbletonMCP(ControlSurface):
                                  "start_playback", "stop_playback", "load_browser_item",
                                  "duplicate_clip_to_arrangement",
                                  "duplicate_scene_to_arrangement",
-                                 "back_to_arrangement", "stop_all_clips"]:
+                                 "back_to_arrangement", "stop_all_clips",
+                                 "export_audio"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -291,6 +292,21 @@ class AbletonMCP(ControlSurface):
                             result = self._back_to_arrangement()
                         elif command_type == "stop_all_clips":
                             result = self._stop_all_clips()
+                        elif command_type == "export_audio":
+                            result = self._export_audio(
+                                params.get("output_path", ""),
+                                params.get("render_start_bar", 1),
+                                params.get("render_start_beat", 1),
+                                params.get("render_start_sixteenth", 1),
+                                params.get("render_length_bars", 0),
+                                params.get("render_length_beats", 0),
+                                params.get("render_length_sixteenths", 0),
+                                params.get("rendered_track", "Main"),
+                                params.get("file_type", "AIFF"),
+                                params.get("encode_mp3", False),
+                                params.get("normalize", False),
+                                params.get("create_analysis_file", False)
+                            )
                         elif command_type == "start_playback":
                             result = self._start_playback()
                         elif command_type == "stop_playback":
@@ -787,6 +803,83 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error stopping all clips: " + str(e))
             self.log_message(traceback.format_exc())
             return result
+
+    def _arrangement_position_to_beats(self, bar, beat, sixteenth):
+        """Convert Live-style bar/beat/sixteenth position to beat offset."""
+        beats_per_bar = float(self._song.signature_numerator)
+        return (
+            (int(bar) - 1) * beats_per_bar +
+            (int(beat) - 1) +
+            ((int(sixteenth) - 1) / 4.0)
+        )
+
+    def _arrangement_length_to_beats(self, bars, beats, sixteenths):
+        """Convert bar/beat/sixteenth duration fields to beats."""
+        beats_per_bar = float(self._song.signature_numerator)
+        return (
+            int(bars) * beats_per_bar +
+            int(beats) +
+            (int(sixteenths) / 4.0)
+        )
+
+    def _export_audio(self, output_path, render_start_bar, render_start_beat,
+                      render_start_sixteenth, render_length_bars,
+                      render_length_beats, render_length_sixteenths,
+                      rendered_track="Main", file_type="AIFF",
+                      encode_mp3=False, normalize=False,
+                      create_analysis_file=False):
+        """Return unsupported for native audio export.
+
+        This is intentionally a build-time capability decision: Ableton's
+        documented Remote Script/Live Object Model surface does not expose
+        native Export Audio/Video rendering.
+        """
+        try:
+            render_start_beats = self._arrangement_position_to_beats(
+                render_start_bar, render_start_beat, render_start_sixteenth
+            )
+            render_length_total_beats = self._arrangement_length_to_beats(
+                render_length_bars, render_length_beats, render_length_sixteenths
+            )
+        except Exception as e:
+            return {
+                "success": False,
+                "unsupported": False,
+                "error": "Invalid render range: " + str(e)
+            }
+
+        return {
+            "success": False,
+            "unsupported": True,
+            "error": (
+                "Ableton Live's documented Remote Script/Live Object Model API "
+                "does not expose native audio export/render. Use the Live UI "
+                "Export Audio/Video command or an explicit UI automation path."
+            ),
+            "output_path": output_path,
+            "duration": render_length_total_beats,
+            "duration_beats": render_length_total_beats,
+            "file_size": None,
+            "non_silent": None,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "render_start": {
+                "bar": render_start_bar,
+                "beat": render_start_beat,
+                "sixteenth": render_start_sixteenth,
+                "beats": render_start_beats
+            },
+            "render_length": {
+                "bars": render_length_bars,
+                "beats": render_length_beats,
+                "sixteenths": render_length_sixteenths,
+                "total_beats": render_length_total_beats
+            },
+            "rendered_track": rendered_track,
+            "file_type": file_type,
+            "encode_mp3": bool(encode_mp3),
+            "normalize": bool(normalize),
+            "create_analysis_file": bool(create_analysis_file)
+        }
     
     
     def _start_playback(self):
