@@ -17,6 +17,40 @@ except ImportError:
 # Constants for socket communication
 DEFAULT_PORT = 9877
 HOST = "localhost"
+SUPPORTED_COMMANDS = [
+    "get_session_info",
+    "get_track_info",
+    "get_device_info",
+    "get_device_parameters",
+    "get_browser_tree",
+    "get_browser_items_at_path",
+    "get_browser_item",
+    "search_browser_items",
+    "list_supported_commands",
+    "create_midi_track",
+    "create_audio_track",
+    "create_scene",
+    "append_scene",
+    "set_track_name",
+    "create_clip",
+    "add_notes_to_clip",
+    "set_clip_name",
+    "set_tempo",
+    "fire_clip",
+    "stop_clip",
+    "start_playback",
+    "stop_playback",
+    "load_instrument_or_effect",
+    "load_browser_item",
+    "set_device_parameter",
+    "set_device_parameter_by_name",
+    "execute_batch",
+    "duplicate_clip_to_arrangement",
+    "duplicate_scene_to_arrangement",
+    "back_to_arrangement",
+    "stop_all_clips",
+    "export_audio"
+]
 
 def create_instance(c_instance):
     """Create and return the AbletonMCP script instance"""
@@ -233,11 +267,15 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 device_index = params.get("device_index", 0)
                 response["result"] = self._get_device_parameters(track_index, device_index)
+            elif command_type == "list_supported_commands":
+                response["result"] = {"commands": SUPPORTED_COMMANDS}
             # Commands that modify Live's state should be scheduled on the main thread
-            elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
+            elif command_type in ["create_midi_track", "create_audio_track",
+                                 "create_scene", "append_scene", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name", 
                                  "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item",
+                                 "start_playback", "stop_playback",
+                                 "load_instrument_or_effect", "load_browser_item",
                                  "set_device_parameter", "set_device_parameter_by_name",
                                  "execute_batch",
                                  "duplicate_clip_to_arrangement",
@@ -258,6 +296,13 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "create_audio_track":
                             index = params.get("index", -1)
                             result = self._create_audio_track(index)
+                        elif command_type == "create_scene":
+                            result = self._create_scene(
+                                params.get("index", -1),
+                                params.get("name", None)
+                            )
+                        elif command_type == "append_scene":
+                            result = self._create_scene(-1, params.get("name", None))
                         elif command_type == "set_track_name":
                             track_index = params.get("track_index", 0)
                             name = params.get("name", "")
@@ -361,7 +406,14 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "load_instrument_or_effect":
                             track_index = params.get("track_index", 0)
                             uri = params.get("uri", "")
-                            result = self._load_instrument_or_effect(track_index, uri)
+                            result = self._load_browser_item(track_index, uri)
+                            deferred_response = True
+
+                            def verify_load_instrument_or_effect(result=result):
+                                result = self._verify_load_browser_item(result)
+                                response_queue.put({"status": "success", "result": result})
+
+                            self.schedule_message(4, verify_load_instrument_or_effect)
                         elif command_type == "load_browser_item":
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
@@ -536,6 +588,26 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error creating audio track: " + str(e))
             raise
+
+    def _create_scene(self, index=-1, name=None):
+        """Create a new Session scene."""
+        try:
+            scene_count_before = len(self._song.scenes)
+            self._song.create_scene(index)
+            scene_index = len(self._song.scenes) - 1 if index == -1 else index
+            scene = self._song.scenes[scene_index]
+            if name is not None:
+                scene.name = name
+
+            return {
+                "index": scene_index,
+                "name": scene.name,
+                "scene_count_before": scene_count_before,
+                "scene_count_after": len(self._song.scenes)
+            }
+        except Exception as e:
+            self.log_message("Error creating scene: " + str(e))
+            raise
     
     
     def _set_track_name(self, track_index, name):
@@ -561,11 +633,20 @@ class AbletonMCP(ControlSurface):
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
-            
+
             track = self._song.tracks[track_index]
-            
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
+            auto_created_scene = None
+
+            if clip_index < 0:
+                raise IndexError("Clip index out of range; valid range is 0-{0}".format(len(track.clip_slots) - 1))
+            if clip_index == len(track.clip_slots):
+                auto_created_scene = self._create_scene(-1)
+                track = self._song.tracks[track_index]
+            elif clip_index > len(track.clip_slots):
+                raise IndexError("Clip index out of range; valid range is 0-{0}, or {1} to append a scene".format(
+                    len(track.clip_slots) - 1,
+                    len(track.clip_slots)
+                ))
             
             clip_slot = track.clip_slots[clip_index]
             
@@ -578,7 +659,11 @@ class AbletonMCP(ControlSurface):
             
             result = {
                 "name": clip_slot.clip.name,
-                "length": clip_slot.clip.length
+                "length": clip_slot.clip.length,
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "scene_count": len(self._song.scenes),
+                "auto_created_scene": auto_created_scene
             }
             return result
         except Exception as e:
@@ -1066,6 +1151,7 @@ class AbletonMCP(ControlSurface):
             # Select the track
             self._song.view.selected_track = track
             devices_before = self._get_track_devices(track)
+            clip_slots_before = self._get_clip_slot_summary(track)
             
             # Load the item
             app.browser.load_item(item)
@@ -1080,8 +1166,15 @@ class AbletonMCP(ControlSurface):
                 "devices_before": devices_before,
                 "devices_after": [],
                 "new_devices": [],
+                "inserted_device_name": None,
+                "inserted_device_index": None,
                 "device_count_before": len(devices_before),
-                "device_count_after": None
+                "device_count_after": None,
+                "clip_slots_before": clip_slots_before,
+                "clip_slots_after": [],
+                "new_clips": [],
+                "clip_count_before": len([slot for slot in clip_slots_before if slot.get("has_clip")]),
+                "clip_count_after": None
             }
             return result
         except Exception as e:
@@ -1099,13 +1192,22 @@ class AbletonMCP(ControlSurface):
             track = self._song.tracks[track_index]
             devices_after = self._get_track_devices(track)
             devices_before = result.get("devices_before", [])
+            clip_slots_after = self._get_clip_slot_summary(track)
+            clip_slots_before = result.get("clip_slots_before", [])
+            inserted_devices = self._find_inserted_devices(devices_before, devices_after)
+            new_clips = self._find_new_clips(clip_slots_before, clip_slots_after)
             result["devices_after"] = devices_after
-            result["new_devices"] = [
-                device.get("name")
-                for device in devices_after[len(devices_before):]
-            ]
+            result["new_devices"] = [device.get("name") for device in inserted_devices]
+            if inserted_devices:
+                result["inserted_device_name"] = inserted_devices[0].get("name")
+                result["inserted_device_index"] = inserted_devices[0].get("index")
+            result["clip_slots_after"] = clip_slots_after
+            result["new_clips"] = new_clips
             result["device_count_after"] = len(devices_after)
-            result["loaded"] = result["device_count_after"] > result.get("device_count_before", 0)
+            result["clip_count_after"] = len([slot for slot in clip_slots_after if slot.get("has_clip")])
+            result["loaded"] = bool(inserted_devices or new_clips)
+            if not result["loaded"]:
+                result["error"] = "Browser item load did not change the target track's devices or clips"
             return result
         except Exception as e:
             result["error"] = str(e)
@@ -1180,6 +1282,57 @@ class AbletonMCP(ControlSurface):
             })
         return devices
 
+    def _device_key(self, device_info):
+        """Return a stable comparison key for serialized device info."""
+        return (
+            device_info.get("name"),
+            device_info.get("class_name"),
+            device_info.get("type")
+        )
+
+    def _find_inserted_devices(self, devices_before, devices_after):
+        """Find inserted devices without assuming Live appends them."""
+        remaining_before = {}
+        for device in devices_before:
+            key = self._device_key(device)
+            remaining_before[key] = remaining_before.get(key, 0) + 1
+
+        inserted = []
+        for device in devices_after:
+            key = self._device_key(device)
+            if remaining_before.get(key, 0):
+                remaining_before[key] -= 1
+            else:
+                inserted.append(device)
+        return inserted
+
+    def _get_clip_slot_summary(self, track):
+        """Return lightweight clip-slot state for load verification."""
+        slots = []
+        for slot_index, slot in enumerate(track.clip_slots):
+            has_clip = bool(slot.has_clip)
+            slots.append({
+                "index": slot_index,
+                "has_clip": has_clip,
+                "clip_name": slot.clip.name if has_clip else None
+            })
+        return slots
+
+    def _find_new_clips(self, slots_before, slots_after):
+        """Find clip slots that gained a clip."""
+        had_clip = {}
+        for slot in slots_before:
+            had_clip[slot.get("index")] = bool(slot.get("has_clip"))
+
+        new_clips = []
+        for slot in slots_after:
+            if slot.get("has_clip") and not had_clip.get(slot.get("index"), False):
+                new_clips.append({
+                    "slot_index": slot.get("index"),
+                    "clip_name": slot.get("clip_name")
+                })
+        return new_clips
+
     def _get_track(self, track_index):
         """Return a track by zero-based index."""
         if track_index < 0 or track_index >= len(self._song.tracks):
@@ -1249,7 +1402,11 @@ class AbletonMCP(ControlSurface):
 
         parameter = device.parameters[parameter_index]
         value_before = parameter.value
-        parameter.value = float(value)
+        requested_value = float(value)
+        parameter.value = requested_value
+        value_after = parameter.value
+        value_matches_requested = abs(float(value_after) - requested_value) <= 0.000001
+        value_changed = abs(float(value_after) - float(value_before)) > 0.000001
         return {
             "track_index": track_index,
             "device_index": device_index,
@@ -1257,9 +1414,11 @@ class AbletonMCP(ControlSurface):
             "parameter_index": parameter_index,
             "parameter_name": parameter.name,
             "value_before": value_before,
-            "requested_value": float(value),
-            "value_after": parameter.value,
-            "success": parameter.value != value_before or float(value) == value_before
+            "requested_value": requested_value,
+            "value_after": value_after,
+            "value_changed": value_changed,
+            "value_matches_requested": value_matches_requested,
+            "success": value_matches_requested
         }
 
     def _set_device_parameter_by_name(self, track_index, device_index, parameter_name, value):
@@ -1337,6 +1496,8 @@ class AbletonMCP(ControlSurface):
             return self._get_device_info(params.get("track_index", 0), params.get("device_index", 0))
         if command_type == "get_device_parameters":
             return self._get_device_parameters(params.get("track_index", 0), params.get("device_index", 0))
+        if command_type == "list_supported_commands":
+            return {"commands": SUPPORTED_COMMANDS}
         if command_type == "search_browser_items":
             return self.search_browser_items(
                 params.get("query", ""),
@@ -1351,6 +1512,10 @@ class AbletonMCP(ControlSurface):
             return self._create_midi_track(params.get("index", -1))
         if command_type == "create_audio_track":
             return self._create_audio_track(params.get("index", -1))
+        if command_type == "create_scene":
+            return self._create_scene(params.get("index", -1), params.get("name", None))
+        if command_type == "append_scene":
+            return self._create_scene(-1, params.get("name", None))
         if command_type == "set_track_name":
             return self._set_track_name(params.get("track_index", 0), params.get("name", ""))
         if command_type == "create_clip":
@@ -1377,8 +1542,9 @@ class AbletonMCP(ControlSurface):
             return self._fire_clip(params.get("track_index", 0), params.get("clip_index", 0))
         if command_type == "stop_clip":
             return self._stop_clip(params.get("track_index", 0), params.get("clip_index", 0))
-        if command_type == "load_browser_item":
-            result = self._load_browser_item(params.get("track_index", 0), params.get("item_uri", ""))
+        if command_type in ["load_browser_item", "load_instrument_or_effect"]:
+            item_uri = params.get("item_uri", params.get("uri", ""))
+            result = self._load_browser_item(params.get("track_index", 0), item_uri)
             return self._verify_load_browser_item(result)
         if command_type == "set_device_parameter":
             return self._set_device_parameter(

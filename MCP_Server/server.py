@@ -102,7 +102,8 @@ class AbletonConnection:
         
         # Check if this is a state-modifying command
         is_modifying_command = command_type in [
-            "create_midi_track", "create_audio_track", "set_track_name",
+            "create_midi_track", "create_audio_track", "create_scene",
+            "append_scene", "set_track_name",
             "create_clip", "add_notes_to_clip", "set_clip_name",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "set_device_parameter_by_name", "execute_batch",
@@ -289,6 +290,17 @@ def get_track_info(ctx: Context, track_index: int) -> str:
         return f"Error getting track info: {str(e)}"
 
 @mcp.tool()
+def list_supported_commands(ctx: Context) -> str:
+    """List command names supported by the connected Ableton Remote Script."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("list_supported_commands")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error listing supported commands: {str(e)}")
+        return f"Error listing supported commands: {str(e)}"
+
+@mcp.tool()
 def create_midi_track(ctx: Context, index: int = -1) -> str:
     """
     Create a new MIDI track in the Ableton session.
@@ -320,6 +332,44 @@ def create_audio_track(ctx: Context, index: int = -1) -> str:
         logger.error(f"Error creating audio track: {str(e)}")
         return f"Error creating audio track: {str(e)}"
 
+@mcp.tool()
+def create_scene(ctx: Context, index: int = -1, name: str = None) -> str:
+    """
+    Create a new Session scene.
+
+    Parameters:
+    - index: Scene index to insert at (-1 = end of list)
+    - name: Optional scene name
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {"index": index}
+        if name is not None:
+            params["name"] = name
+        result = ableton.send_command("create_scene", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error creating scene: {str(e)}")
+        return f"Error creating scene: {str(e)}"
+
+@mcp.tool()
+def append_scene(ctx: Context, name: str = None) -> str:
+    """
+    Append a new Session scene.
+
+    Parameters:
+    - name: Optional scene name
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {}
+        if name is not None:
+            params["name"] = name
+        result = ableton.send_command("append_scene", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error appending scene: {str(e)}")
+        return f"Error appending scene: {str(e)}"
 
 @mcp.tool()
 def set_track_name(ctx: Context, track_index: int, name: str) -> str:
@@ -449,8 +499,12 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
                 return f"Loaded instrument with URI '{uri}' on track {track_index}. New devices: {', '.join(new_devices)}"
             else:
                 devices = result.get("devices_after", [])
-                return f"Loaded instrument with URI '{uri}' on track {track_index}. Devices on track: {', '.join(devices)}"
+                device_names = [device.get("name", "Unknown") for device in devices]
+                return f"Loaded instrument with URI '{uri}' on track {track_index}. Devices on track: {', '.join(device_names)}"
         else:
+            error = result.get("error")
+            if error:
+                return f"Failed to load instrument with URI '{uri}': {error}"
             return f"Failed to load instrument with URI '{uri}'"
     except Exception as e:
         logger.error(f"Error loading instrument by URI: {str(e)}")
