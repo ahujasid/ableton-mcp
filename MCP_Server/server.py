@@ -105,7 +105,9 @@ class AbletonConnection:
             "create_midi_track", "create_audio_track", "set_track_name",
             "create_clip", "add_notes_to_clip", "set_clip_name",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
-            "start_playback", "stop_playback", "load_instrument_or_effect"
+            "start_playback", "stop_playback", "load_instrument_or_effect",
+            "duplicate_clip_to_arrangement", "duplicate_scene_to_arrangement",
+            "back_to_arrangement", "stop_all_clips"
         ]
         
         try:
@@ -475,6 +477,85 @@ def stop_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     except Exception as e:
         logger.error(f"Error stopping clip: {str(e)}")
         return f"Error stopping clip: {str(e)}"
+
+@mcp.tool()
+def duplicate_clip_to_arrangement(
+    ctx: Context,
+    track_index: int,
+    scene_index: int,
+    start_time: float
+) -> str:
+    """
+    Duplicate one Session clip into Arrangement.
+    
+    Parameters:
+    - track_index: Zero-based track index
+    - scene_index: Zero-based Session scene/clip-slot index
+    - start_time: Arrangement destination time in beats, where 0 = bar 1 beat 1
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_clip_to_arrangement", {
+            "track_index": track_index,
+            "scene_index": scene_index,
+            "start_time": start_time
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error duplicating clip to Arrangement: {str(e)}")
+        return f"Error duplicating clip to Arrangement: {str(e)}"
+
+@mcp.tool()
+def duplicate_scene_to_arrangement(
+    ctx: Context,
+    scene_index: int,
+    start_time: float,
+    track_indices: List[int] = None
+) -> str:
+    """
+    Duplicate all clips from a Session scene into Arrangement.
+    
+    Parameters:
+    - scene_index: Zero-based Session scene/clip-slot index
+    - start_time: Arrangement destination time in beats, where 0 = bar 1 beat 1
+    - track_indices: Optional list of zero-based track indices. If omitted, all normal tracks are processed.
+    """
+    try:
+        params = {
+            "scene_index": scene_index,
+            "start_time": start_time
+        }
+        if track_indices is not None:
+            params["track_indices"] = track_indices
+        
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_scene_to_arrangement", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error duplicating scene to Arrangement: {str(e)}")
+        return f"Error duplicating scene to Arrangement: {str(e)}"
+
+@mcp.tool()
+def back_to_arrangement(ctx: Context) -> str:
+    """Re-enable Arrangement playback after Session clips have taken over."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("back_to_arrangement")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error returning to Arrangement: {str(e)}")
+        return f"Error returning to Arrangement: {str(e)}"
+
+@mcp.tool()
+def stop_all_clips(ctx: Context) -> str:
+    """Stop all Session clips."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("stop_all_clips")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error stopping all clips: {str(e)}")
+        return f"Error stopping all clips: {str(e)}"
 
 @mcp.tool()
 def start_playback(ctx: Context) -> str:

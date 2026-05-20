@@ -229,7 +229,10 @@ class AbletonMCP(ControlSurface):
             elif command_type in ["create_midi_track", "set_track_name", 
                                  "create_clip", "add_notes_to_clip", "set_clip_name", 
                                  "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item"]:
+                                 "start_playback", "stop_playback", "load_browser_item",
+                                 "duplicate_clip_to_arrangement",
+                                 "duplicate_scene_to_arrangement",
+                                 "back_to_arrangement", "stop_all_clips"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -270,6 +273,24 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             result = self._stop_clip(track_index, clip_index)
+                        elif command_type == "duplicate_clip_to_arrangement":
+                            track_index = params.get("track_index", 0)
+                            scene_index = params.get("scene_index", 0)
+                            start_time = params.get("start_time", 0.0)
+                            result = self._duplicate_clip_to_arrangement(
+                                track_index, scene_index, start_time
+                            )
+                        elif command_type == "duplicate_scene_to_arrangement":
+                            scene_index = params.get("scene_index", 0)
+                            start_time = params.get("start_time", 0.0)
+                            track_indices = params.get("track_indices", None)
+                            result = self._duplicate_scene_to_arrangement(
+                                scene_index, start_time, track_indices
+                            )
+                        elif command_type == "back_to_arrangement":
+                            result = self._back_to_arrangement()
+                        elif command_type == "stop_all_clips":
+                            result = self._stop_all_clips()
                         elif command_type == "start_playback":
                             result = self._start_playback()
                         elif command_type == "stop_playback":
@@ -609,6 +630,163 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error stopping clip: " + str(e))
             raise
+
+    def _duplicate_clip_to_arrangement(self, track_index, scene_index, start_time):
+        """Duplicate one Session clip into Arrangement."""
+        result = {
+            "success": False,
+            "scene_index": scene_index,
+            "start_time": start_time,
+            "duplicated": [],
+            "skipped": []
+        }
+        
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            
+            track = self._song.tracks[track_index]
+            if scene_index < 0 or scene_index >= len(track.clip_slots):
+                raise IndexError("Scene index out of range")
+            
+            slot = track.clip_slots[scene_index]
+            if not slot.has_clip:
+                result["skipped"].append({
+                    "track_index": track_index,
+                    "track_name": track.name,
+                    "reason": "empty_slot"
+                })
+                result["success"] = True
+                return result
+            
+            if not hasattr(track, "duplicate_clip_to_arrangement"):
+                raise RuntimeError("Live API does not expose track.duplicate_clip_to_arrangement")
+            
+            clip = slot.clip
+            track.duplicate_clip_to_arrangement(clip, float(start_time))
+            result["duplicated"].append({
+                "track_index": track_index,
+                "track_name": track.name,
+                "clip_name": clip.name
+            })
+            result["success"] = True
+            return result
+        except Exception as e:
+            result["error"] = str(e)
+            self.log_message("Error duplicating clip to arrangement: " + str(e))
+            self.log_message(traceback.format_exc())
+            return result
+
+    def _duplicate_scene_to_arrangement(self, scene_index, start_time, track_indices=None):
+        """Duplicate all clips in a Session scene into Arrangement at start_time."""
+        result = {
+            "success": False,
+            "scene_index": scene_index,
+            "start_time": start_time,
+            "duplicated": [],
+            "skipped": []
+        }
+        
+        try:
+            tracks = self._song.tracks
+            
+            if track_indices is None:
+                selected_track_indices = range(len(tracks))
+            else:
+                if not isinstance(track_indices, list):
+                    raise TypeError("track_indices must be a list of zero-based track indices")
+                selected_track_indices = track_indices
+            
+            for track_index in selected_track_indices:
+                if track_index < 0 or track_index >= len(tracks):
+                    result["skipped"].append({
+                        "track_index": track_index,
+                        "track_name": "",
+                        "reason": "track_index_out_of_range"
+                    })
+                    continue
+                
+                track = tracks[track_index]
+                if scene_index < 0 or scene_index >= len(track.clip_slots):
+                    result["skipped"].append({
+                        "track_index": track_index,
+                        "track_name": track.name,
+                        "reason": "scene_index_out_of_range"
+                    })
+                    continue
+                
+                slot = track.clip_slots[scene_index]
+                if not slot.has_clip:
+                    result["skipped"].append({
+                        "track_index": track_index,
+                        "track_name": track.name,
+                        "reason": "empty_slot"
+                    })
+                    continue
+                
+                if not hasattr(track, "duplicate_clip_to_arrangement"):
+                    raise RuntimeError("Live API does not expose track.duplicate_clip_to_arrangement")
+                
+                clip = slot.clip
+                track.duplicate_clip_to_arrangement(clip, float(start_time))
+                result["duplicated"].append({
+                    "track_index": track_index,
+                    "track_name": track.name,
+                    "clip_name": clip.name
+                })
+            
+            result["success"] = True
+            return result
+        except Exception as e:
+            result["error"] = str(e)
+            self.log_message("Error duplicating scene to arrangement: " + str(e))
+            self.log_message(traceback.format_exc())
+            return result
+
+    def _back_to_arrangement(self):
+        """Re-enable Arrangement playback when Session clips have taken over."""
+        result = {
+            "success": False
+        }
+        
+        try:
+            if hasattr(self._song, "back_to_arranger"):
+                self._song.back_to_arranger = True
+            elif hasattr(self._song, "back_to_arrangement"):
+                attr = getattr(self._song, "back_to_arrangement")
+                if callable(attr):
+                    attr()
+                else:
+                    self._song.back_to_arrangement = True
+            else:
+                raise RuntimeError("Live API does not expose back_to_arranger/back_to_arrangement")
+            
+            result["success"] = True
+            return result
+        except Exception as e:
+            result["error"] = str(e)
+            self.log_message("Error returning to arrangement: " + str(e))
+            self.log_message(traceback.format_exc())
+            return result
+
+    def _stop_all_clips(self):
+        """Stop all Session clips."""
+        result = {
+            "success": False
+        }
+        
+        try:
+            if not hasattr(self._song, "stop_all_clips"):
+                raise RuntimeError("Live API does not expose stop_all_clips")
+            
+            self._song.stop_all_clips()
+            result["success"] = True
+            return result
+        except Exception as e:
+            result["error"] = str(e)
+            self.log_message("Error stopping all clips: " + str(e))
+            self.log_message(traceback.format_exc())
+            return result
     
     
     def _start_playback(self):
