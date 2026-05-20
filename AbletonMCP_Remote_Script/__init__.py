@@ -241,6 +241,7 @@ class AbletonMCP(ControlSurface):
                 def main_thread_task():
                     try:
                         result = None
+                        deferred_response = False
                         if command_type == "create_midi_track":
                             index = params.get("index", -1)
                             result = self._create_midi_track(index)
@@ -290,8 +291,22 @@ class AbletonMCP(ControlSurface):
                             )
                         elif command_type == "back_to_arrangement":
                             result = self._back_to_arrangement()
+                            deferred_response = True
+
+                            def verify_back_to_arrangement(result=result):
+                                result = self._verify_back_to_arrangement(result)
+                                response_queue.put({"status": "success", "result": result})
+
+                            self.schedule_message(2, verify_back_to_arrangement)
                         elif command_type == "stop_all_clips":
                             result = self._stop_all_clips()
+                            deferred_response = True
+
+                            def verify_stop_all_clips(result=result):
+                                result = self._verify_stop_all_clips(result)
+                                response_queue.put({"status": "success", "result": result})
+
+                            self.schedule_message(2, verify_stop_all_clips)
                         elif command_type == "export_audio":
                             result = self._export_audio(
                                 params.get("output_path", ""),
@@ -321,7 +336,8 @@ class AbletonMCP(ControlSurface):
                             result = self._load_browser_item(track_index, item_uri)
                         
                         # Put the result in the queue
-                        response_queue.put({"status": "success", "result": result})
+                        if not deferred_response:
+                            response_queue.put({"status": "success", "result": result})
                     except Exception as e:
                         self.log_message("Error in main thread task: " + str(e))
                         self.log_message(traceback.format_exc())
@@ -654,7 +670,9 @@ class AbletonMCP(ControlSurface):
             "scene_index": scene_index,
             "start_time": start_time,
             "duplicated": [],
-            "skipped": []
+            "skipped": [],
+            "arrangement_clip_count_before": None,
+            "arrangement_clip_count_after": None
         }
         
         try:
@@ -675,17 +693,18 @@ class AbletonMCP(ControlSurface):
                 result["success"] = True
                 return result
             
-            if not hasattr(track, "duplicate_clip_to_arrangement"):
-                raise RuntimeError("Live API does not expose track.duplicate_clip_to_arrangement")
-            
             clip = slot.clip
+            result["arrangement_clip_count_before"] = len(track.arrangement_clips)
             track.duplicate_clip_to_arrangement(clip, float(start_time))
+            result["arrangement_clip_count_after"] = len(track.arrangement_clips)
             result["duplicated"].append({
                 "track_index": track_index,
                 "track_name": track.name,
-                "clip_name": clip.name
+                "clip_name": clip.name,
+                "arrangement_clip_count_before": result["arrangement_clip_count_before"],
+                "arrangement_clip_count_after": result["arrangement_clip_count_after"]
             })
-            result["success"] = True
+            result["success"] = result["arrangement_clip_count_after"] > result["arrangement_clip_count_before"]
             return result
         except Exception as e:
             result["error"] = str(e)
@@ -740,18 +759,22 @@ class AbletonMCP(ControlSurface):
                     })
                     continue
                 
-                if not hasattr(track, "duplicate_clip_to_arrangement"):
-                    raise RuntimeError("Live API does not expose track.duplicate_clip_to_arrangement")
-                
                 clip = slot.clip
+                arrangement_clip_count_before = len(track.arrangement_clips)
                 track.duplicate_clip_to_arrangement(clip, float(start_time))
+                arrangement_clip_count_after = len(track.arrangement_clips)
                 result["duplicated"].append({
                     "track_index": track_index,
                     "track_name": track.name,
-                    "clip_name": clip.name
+                    "clip_name": clip.name,
+                    "arrangement_clip_count_before": arrangement_clip_count_before,
+                    "arrangement_clip_count_after": arrangement_clip_count_after
                 })
             
-            result["success"] = True
+            result["success"] = len(result["duplicated"]) > 0 and all(
+                item["arrangement_clip_count_after"] > item["arrangement_clip_count_before"]
+                for item in result["duplicated"]
+            )
             return result
         except Exception as e:
             result["error"] = str(e)
@@ -759,23 +782,42 @@ class AbletonMCP(ControlSurface):
             self.log_message(traceback.format_exc())
             return result
 
+    def _get_playing_session_clips(self):
+        """Return currently playing or triggered Session clips for verification."""
+        playing = []
+        for track_index, track in enumerate(self._song.tracks):
+            for slot_index, slot in enumerate(track.clip_slots):
+                clip_info = None
+                if slot.has_clip:
+                    clip = slot.clip
+                    if clip.is_playing or clip.is_triggered:
+                        clip_info = {
+                            "track_index": track_index,
+                            "track_name": track.name,
+                            "slot_index": slot_index,
+                            "clip_name": clip.name,
+                            "is_playing": bool(clip.is_playing),
+                            "is_triggered": bool(clip.is_triggered)
+                        }
+                if clip_info:
+                    playing.append(clip_info)
+        return playing
+
     def _back_to_arrangement(self):
         """Re-enable Arrangement playback when Session clips have taken over."""
         result = {
             "success": False,
             "back_to_arranger_before": None,
-            "back_to_arranger_after": None
+            "back_to_arranger_after": None,
+            "playing_before": [],
+            "playing_after": []
         }
         
         try:
-            if hasattr(self._song, "back_to_arranger"):
-                result["back_to_arranger_before"] = bool(self._song.back_to_arranger)
-                self._song.back_to_arranger = False
-                result["back_to_arranger_after"] = bool(self._song.back_to_arranger)
-            else:
-                raise RuntimeError("Live API does not expose back_to_arranger")
-            
-            result["success"] = not result["back_to_arranger_after"]
+            result["back_to_arranger_before"] = bool(self._song.back_to_arranger)
+            result["playing_before"] = self._get_playing_session_clips()
+            self._song.stop_all_clips(False)
+            self._song.back_to_arranger = False
             return result
         except Exception as e:
             result["error"] = str(e)
@@ -783,18 +825,33 @@ class AbletonMCP(ControlSurface):
             self.log_message(traceback.format_exc())
             return result
 
+    def _verify_back_to_arrangement(self, result):
+        """Verify Arrangement playback was re-enabled after Live updates state."""
+        try:
+            result["back_to_arranger_after"] = bool(self._song.back_to_arranger)
+            result["playing_after"] = self._get_playing_session_clips()
+            result["success"] = (
+                not result["back_to_arranger_after"] and
+                len(result["playing_after"]) == 0
+            )
+            return result
+        except Exception as e:
+            result["error"] = str(e)
+            self.log_message("Error verifying return to arrangement: " + str(e))
+            self.log_message(traceback.format_exc())
+            return result
+
     def _stop_all_clips(self):
         """Stop all Session clips."""
         result = {
-            "success": False
+            "success": False,
+            "playing_before": [],
+            "playing_after": []
         }
         
         try:
-            if not hasattr(self._song, "stop_all_clips"):
-                raise RuntimeError("Live API does not expose stop_all_clips")
-            
-            self._song.stop_all_clips()
-            result["success"] = True
+            result["playing_before"] = self._get_playing_session_clips()
+            self._song.stop_all_clips(False)
             return result
         except Exception as e:
             result["error"] = str(e)
@@ -802,23 +859,17 @@ class AbletonMCP(ControlSurface):
             self.log_message(traceback.format_exc())
             return result
 
-    def _arrangement_position_to_beats(self, bar, beat, sixteenth):
-        """Convert Live-style bar/beat/sixteenth position to beat offset."""
-        beats_per_bar = float(self._song.signature_numerator)
-        return (
-            (int(bar) - 1) * beats_per_bar +
-            (int(beat) - 1) +
-            ((int(sixteenth) - 1) / 4.0)
-        )
-
-    def _arrangement_length_to_beats(self, bars, beats, sixteenths):
-        """Convert bar/beat/sixteenth duration fields to beats."""
-        beats_per_bar = float(self._song.signature_numerator)
-        return (
-            int(bars) * beats_per_bar +
-            int(beats) +
-            (int(sixteenths) / 4.0)
-        )
+    def _verify_stop_all_clips(self, result):
+        """Verify Session clips stopped after Live updates state."""
+        try:
+            result["playing_after"] = self._get_playing_session_clips()
+            result["success"] = len(result["playing_after"]) == 0
+            return result
+        except Exception as e:
+            result["error"] = str(e)
+            self.log_message("Error verifying stopped clips: " + str(e))
+            self.log_message(traceback.format_exc())
+            return result
 
     def _export_audio(self, output_path, render_start_bar, render_start_beat,
                       render_start_sixteenth, render_length_bars,
@@ -826,58 +877,8 @@ class AbletonMCP(ControlSurface):
                       rendered_track="Main", file_type="AIFF",
                       encode_mp3=False, normalize=False,
                       create_analysis_file=False):
-        """Return unsupported for native audio export.
-
-        This is intentionally a build-time capability decision: Ableton's
-        documented Remote Script/Live Object Model surface does not expose
-        native Export Audio/Video rendering.
-        """
-        try:
-            render_start_beats = self._arrangement_position_to_beats(
-                render_start_bar, render_start_beat, render_start_sixteenth
-            )
-            render_length_total_beats = self._arrangement_length_to_beats(
-                render_length_bars, render_length_beats, render_length_sixteenths
-            )
-        except Exception as e:
-            return {
-                "success": False,
-                "unsupported": False,
-                "error": "Invalid render range: " + str(e)
-            }
-
-        return {
-            "success": False,
-            "unsupported": True,
-            "error": (
-                "Ableton Live's documented Remote Script/Live Object Model API "
-                "does not expose native audio export/render. Use the Live UI "
-                "Export Audio/Video command or an explicit UI automation path."
-            ),
-            "output_path": output_path,
-            "duration": render_length_total_beats,
-            "duration_beats": render_length_total_beats,
-            "file_size": None,
-            "non_silent": None,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "render_start": {
-                "bar": render_start_bar,
-                "beat": render_start_beat,
-                "sixteenth": render_start_sixteenth,
-                "beats": render_start_beats
-            },
-            "render_length": {
-                "bars": render_length_bars,
-                "beats": render_length_beats,
-                "sixteenths": render_length_sixteenths,
-                "total_beats": render_length_total_beats
-            },
-            "rendered_track": rendered_track,
-            "file_type": file_type,
-            "encode_mp3": bool(encode_mp3),
-            "normalize": bool(normalize),
-            "create_analysis_file": bool(create_analysis_file)
-        }
+        """Audio export is not implemented by the documented Live API."""
+        raise NotImplementedError("export_audio is not implemented by AbletonMCP")
     
     
     def _start_playback(self):

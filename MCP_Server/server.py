@@ -576,9 +576,8 @@ def export_audio(
     """
     Request native Ableton audio export/render.
 
-    The current Remote Script implementation returns unsupported because
-    Ableton's documented Remote Script/Live Object Model API does not expose
-    native Export Audio/Video rendering.
+    This currently raises an error because AbletonMCP has no implemented
+    native export path.
 
     Parameters:
     - output_path: Destination audio file path
