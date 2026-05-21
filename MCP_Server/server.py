@@ -559,6 +559,35 @@ def get_arrangement_clip_notes(ctx: Context, track_index: int, clip_index: int) 
         return f"Error getting arrangement clip notes: {str(e)}"
 
 @mcp.tool()
+def get_clips_in_time_range(
+    ctx: Context,
+    start_time: float,
+    end_time: float,
+    track_indices: List[int]
+) -> str:
+    """
+    Get metadata for arrangement clips that overlap a given time range across specified tracks.
+    Returns clip names, positions, colors, and track info — but NOT note data.
+    Use get_arrangement_clip_notes to fetch notes for specific clips.
+    
+    Parameters:
+    - start_time: Start of the time window in beats
+    - end_time: End of the time window in beats
+    - track_indices: Explicit list of track indices to scan to prevent overhead
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_clips_in_time_range", {
+            "start_time": start_time,
+            "end_time": end_time,
+            "track_indices": track_indices
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting clips in time range: {str(e)}")
+        return f"Error getting clips in time range: {str(e)}"
+
+@mcp.tool()
 def create_arrangement_clip(
     ctx: Context, 
     track_index: int, 

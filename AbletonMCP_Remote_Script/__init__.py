@@ -242,6 +242,11 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 clip_index = params.get("clip_index", 0)
                 response["result"] = self._get_arrangement_clip_notes(track_index, clip_index)
+            elif command_type == "get_clips_in_time_range":
+                start_time = params.get("start_time")
+                end_time = params.get("end_time")
+                track_indices = params.get("track_indices")
+                response["result"] = self._get_clips_in_time_range(start_time, end_time, track_indices)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name", 
                                  "create_clip", "delete_clip", "add_notes_to_clip", "set_clip_name", 
@@ -691,6 +696,57 @@ class AbletonMCP(ControlSurface):
             return {"clips": clips_info}
         except Exception as e:
             self.log_message("Error getting arrangement clips: " + str(e))
+            raise
+
+    def _get_clips_in_time_range(self, start_time, end_time, track_indices):
+        """Get metadata for all arrangement clips overlapping a given time range across specified tracks"""
+        try:
+            start_time = float(start_time)
+            end_time = float(end_time)
+            if not isinstance(track_indices, list):
+                raise ValueError("track_indices must be a list of integers")
+            
+            clips_info = []
+            tracks = self._song.tracks
+            
+            for track_idx in track_indices:
+                try:
+                    track_idx = int(track_idx)
+                except (ValueError, TypeError):
+                    continue
+                    
+                if track_idx < 0 or track_idx >= len(tracks):
+                    continue
+                
+                track = tracks[track_idx]
+                try:
+                    for i, clip in enumerate(track.arrangement_clips):
+                        # Check overlap: clip.start_time < end_time and clip.end_time > start_time
+                        if clip.start_time < end_time and clip.end_time > start_time:
+                            clips_info.append({
+                                "track_name": track.name,
+                                "track_index": track_idx,
+                                "clip_index": i,
+                                "clip_name": clip.name,
+                                "start_time": clip.start_time,
+                                "end_time": clip.end_time,
+                                "length": clip.length,
+                                "is_midi_clip": clip.is_midi_clip,
+                                "is_audio_clip": clip.is_audio_clip,
+                                "color": getattr(clip, "color", None)
+                            })
+                except Exception as track_err:
+                    self.log_message("Skipping track %d due to LOM error: %s" % (track_idx, str(track_err)))
+                    continue
+            
+            return {
+                "start_time": start_time,
+                "end_time": end_time,
+                "clip_count": len(clips_info),
+                "clips": clips_info
+            }
+        except Exception as e:
+            self.log_message("Error getting clips in time range: " + str(e))
             raise
 
     def _get_arrangement_clip_notes(self, track_index, clip_index):
