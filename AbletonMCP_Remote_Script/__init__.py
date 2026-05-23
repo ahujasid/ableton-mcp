@@ -261,10 +261,6 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_cue_points()
             elif command_type == "get_arrangement_loop":
                 response["result"] = self._get_arrangement_loop()
-            elif command_type == "get_clip_follow_action":
-                track_index = params.get("track_index", 0)
-                clip_index = params.get("clip_index", 0)
-                response["result"] = self._get_clip_follow_action(track_index, clip_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name",
                                  "create_clip", "add_notes_to_clip", "set_clip_name",
@@ -294,8 +290,7 @@ class AbletonMCP(ControlSurface):
                                  "set_audio_clip_warp",
                                  "remove_notes_from_clip", "apply_note_modifications",
                                  "set_or_delete_cue", "set_arrangement_loop",
-                                 "set_punch_points", "jump_to_cue",
-                                 "set_clip_follow_action"]:
+                                 "set_punch_points", "jump_to_cue"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -2279,96 +2274,3 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error setting audio clip warp: " + str(e))
             raise
 
-    FOLLOW_ACTIONS = {
-        0: "Stop",
-        1: "Play Again",
-        2: "Previous",
-        3: "Next",
-        4: "First",
-        5: "Last",
-        6: "Any",
-        7: "Other",
-        8: "Jump",
-    }
-    FOLLOW_ACTION_NAMES = {v.lower(): k for k, v in {
-        0: "Stop", 1: "Play Again", 2: "Previous", 3: "Next",
-        4: "First", 5: "Last", 6: "Any", 7: "Other", 8: "Jump",
-    }.items()}
-
-    def _get_clip_follow_action(self, track_index, clip_index):
-        """Read follow action settings for a clip."""
-        try:
-            clip = self._get_clip(track_index, clip_index)
-            result = {}
-            if hasattr(clip, "follow_actions_enabled"):
-                result["follow_actions_enabled"] = bool(clip.follow_actions_enabled)
-            if hasattr(clip, "follow_action_A"):
-                fa = int(clip.follow_action_A)
-                result["follow_action_a"] = fa
-                result["follow_action_a_name"] = self.FOLLOW_ACTIONS.get(fa, "Unknown")
-            if hasattr(clip, "follow_action_B"):
-                fb = int(clip.follow_action_B)
-                result["follow_action_b"] = fb
-                result["follow_action_b_name"] = self.FOLLOW_ACTIONS.get(fb, "Unknown")
-            if hasattr(clip, "follow_action_chance_A"):
-                result["follow_action_chance_a"] = float(clip.follow_action_chance_A)
-            if hasattr(clip, "follow_action_chance_B"):
-                result["follow_action_chance_b"] = float(clip.follow_action_chance_B)
-            if hasattr(clip, "follow_action_time"):
-                result["follow_action_time"] = float(clip.follow_action_time)
-            return result
-        except Exception as e:
-            self.log_message("Error getting clip follow action: " + str(e))
-            raise
-
-    def _set_clip_follow_action(self, track_index, clip_index,
-                                follow_action_a, follow_action_b,
-                                follow_action_chance_a, follow_action_time,
-                                follow_actions_enabled):
-        """Set follow action settings for a session clip."""
-        try:
-            clip = self._get_clip(track_index, clip_index)
-
-            if follow_actions_enabled is not None and hasattr(clip, "follow_actions_enabled"):
-                clip.follow_actions_enabled = bool(follow_actions_enabled)
-
-            if follow_action_a is not None and hasattr(clip, "follow_action_A"):
-                if isinstance(follow_action_a, str):
-                    fa = self.FOLLOW_ACTION_NAMES.get(follow_action_a.lower())
-                    if fa is None:
-                        raise ValueError("Unknown follow action: " + follow_action_a)
-                else:
-                    fa = int(follow_action_a)
-                if fa < 0 or fa > 8:
-                    raise ValueError("follow_action_a must be 0-8")
-                clip.follow_action_A = fa
-
-            if follow_action_b is not None and hasattr(clip, "follow_action_B"):
-                if isinstance(follow_action_b, str):
-                    fb = self.FOLLOW_ACTION_NAMES.get(follow_action_b.lower())
-                    if fb is None:
-                        raise ValueError("Unknown follow action: " + follow_action_b)
-                else:
-                    fb = int(follow_action_b)
-                if fb < 0 or fb > 8:
-                    raise ValueError("follow_action_b must be 0-8")
-                clip.follow_action_B = fb
-
-            if follow_action_chance_a is not None and hasattr(clip, "follow_action_chance_A"):
-                ca = float(follow_action_chance_a)
-                if ca < 0.0 or ca > 1.0:
-                    raise ValueError("follow_action_chance_a must be 0.0-1.0")
-                clip.follow_action_chance_A = ca
-                if hasattr(clip, "follow_action_chance_B"):
-                    clip.follow_action_chance_B = 1.0 - ca
-
-            if follow_action_time is not None and hasattr(clip, "follow_action_time"):
-                t = float(follow_action_time)
-                if t < 0.0:
-                    raise ValueError("follow_action_time must be >= 0")
-                clip.follow_action_time = t
-
-            return self._get_clip_follow_action(track_index, clip_index)
-        except Exception as e:
-            self.log_message("Error setting clip follow action: " + str(e))
-            raise

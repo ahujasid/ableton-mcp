@@ -507,6 +507,14 @@ Prerequisites: Track 0, scene/clip-slot 0 must have a MIDI clip with at least a 
 
 ---
 
+## Phase 11 — Follow Actions (NOT IMPLEMENTED)
+
+**Not implemented.** Follow action properties (`follow_action_A`, `follow_action_B`, `follow_action_chance_A/B`, `follow_action_time`, `follow_actions_enabled`) raise `AttributeError` on the Live 12 `Clip` object — they are not exposed in the Remote Script Python API in Live 12. Confirmed by live probing on Live 12.2.7. Tools were removed from the codebase.
+
+~~T101–T106 — skipped~~
+
+---
+
 ## Adversarial Tests
 
 These tests are designed to find edge cases, crashes, and unexpected behavior in the MCP ↔ Remote Script mapping. Document the actual result for each — the "expect" here is a hypothesis, not a guarantee.
