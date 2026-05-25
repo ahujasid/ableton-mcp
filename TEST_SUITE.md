@@ -281,7 +281,7 @@ Prerequisites: Track 0 must have at least one device loaded (e.g. load Operator 
 
 ---
 
-## Phase 4 — Clip Operations
+## Phase 5 — Clip Operations
 
 Prerequisites: Track 0, scene/clip-slot 0 must have a MIDI clip with at least a few notes. Track 0 must have an empty clip slot at index 2 for the duplicate test.
 
@@ -754,7 +754,7 @@ These tests are designed to find edge cases, crashes, and unexpected behavior in
 
 **Clip read-back:**
 - `get_track_info` exposes `clip_slots[n].clip.name`, `length`, `is_playing`, and `is_recording`. Clip name and playback state ARE readable without a dedicated `get_clip_info` tool.
-- No tool to read back individual MIDI notes from a clip yet.
+- Use `get_notes_from_clip` to read individual MIDI notes from a clip.
 
 **Device loading:**
 - `get_track_info` and `get_return_tracks` expose the `devices` array, so device loading can be verified via read-back.

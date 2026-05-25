@@ -506,16 +506,6 @@ class AbletonMCP(ControlSurface):
                                 params.get("punch_out"))
                         elif command_type == "jump_to_cue":
                             result = self._jump_to_cue(params.get("direction", "next"))
-                        elif command_type == "set_clip_follow_action":
-                            result = self._set_clip_follow_action(
-                                params.get("track_index", 0),
-                                params.get("clip_index", 0),
-                                params.get("follow_action_a"),
-                                params.get("follow_action_b"),
-                                params.get("follow_action_chance_a"),
-                                params.get("follow_action_time"),
-                                params.get("follow_actions_enabled"))
-
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
@@ -552,8 +542,6 @@ class AbletonMCP(ControlSurface):
                 path = params.get("path", "")
                 item_type = params.get("item_type", "all")
                 response["result"] = self._get_browser_items(path, item_type)
-            elif command_type == "get_return_tracks":
-                response["result"] = self._get_return_tracks()
             # Add the new browser commands
             elif command_type == "get_browser_tree":
                 category_type = params.get("category_type", "all")
@@ -2167,8 +2155,8 @@ class AbletonMCP(ControlSurface):
             try:
                 if hasattr(clip, 'sample') and clip.sample is not None:
                     sample_name = clip.sample.file_path if hasattr(clip.sample, 'file_path') else ""
-            except Exception:
-                pass
+            except Exception as e:
+                self.log_message("Could not get sample file path: " + str(e))
             warp_mode_int = int(clip.warp_mode) if hasattr(clip, 'warp_mode') else 0
             return {
                 "track_index": track_index,

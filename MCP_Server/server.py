@@ -5,7 +5,7 @@ import json
 import logging
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Any, List, Union
+from typing import AsyncIterator, Dict, Any, List, Optional, Union
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -116,7 +116,14 @@ class AbletonConnection:
             "set_current_song_time", "set_arrangement_record",
             "set_session_record", "set_overdub", "set_metronome",
             "tap_tempo", "set_nudge_up", "set_nudge_down",
-            "undo", "redo"
+            "undo", "redo",
+            "create_scene", "delete_scene", "fire_scene", "set_scene_name",
+            "set_scene_color", "set_scene_tempo", "duplicate_scene", "stop_all_clips",
+            "remove_notes_from_clip", "apply_note_modifications", "set_clip_loop",
+            "set_clip_color", "duplicate_clip", "quantize_clip",
+            "set_time_signature", "set_input_routing", "set_output_routing",
+            "set_audio_clip_gain", "set_audio_clip_pitch", "set_audio_clip_warp",
+            "set_arrangement_loop", "set_punch_points", "set_or_delete_cue"
         ]
         
         try:
@@ -1684,8 +1691,8 @@ def set_audio_clip_pitch(
     ctx: Context,
     track_index: int,
     clip_index: int,
-    pitch_coarse: int = None,
-    pitch_fine: float = None,
+    pitch_coarse: Optional[int] = None,
+    pitch_fine: Optional[float] = None,
 ) -> str:
     """
     Set the transposition of an audio clip.
@@ -1717,8 +1724,8 @@ def set_audio_clip_warp(
     ctx: Context,
     track_index: int,
     clip_index: int,
-    warping: bool = None,
-    warp_mode: str = None,
+    warping: Optional[bool] = None,
+    warp_mode: Optional[str] = None,
 ) -> str:
     """
     Set warping on/off and/or the warp mode of an audio clip.
@@ -1829,9 +1836,9 @@ def get_arrangement_loop(ctx: Context) -> str:
 
 @mcp.tool()
 def set_arrangement_loop(ctx: Context,
-                         loop_start: float = None,
-                         loop_length: float = None,
-                         loop_on: bool = None) -> str:
+                         loop_start: Optional[float] = None,
+                         loop_length: Optional[float] = None,
+                         loop_on: Optional[bool] = None) -> str:
     """
     Set the arrangement loop region and/or enable/disable loop.
 
@@ -1857,7 +1864,7 @@ def set_arrangement_loop(ctx: Context,
 
 
 @mcp.tool()
-def set_punch_points(ctx: Context, punch_in: bool = None, punch_out: bool = None) -> str:
+def set_punch_points(ctx: Context, punch_in: Optional[bool] = None, punch_out: Optional[bool] = None) -> str:
     """
     Enable or disable punch in/out recording.
 
