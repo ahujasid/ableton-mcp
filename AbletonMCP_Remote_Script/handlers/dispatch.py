@@ -112,6 +112,104 @@ def _set_track_routing(song, p, ctrl):
     return result
 
 
+def _fire_clip_slot(song, p, ctrl):
+    """Fire a clip slot regardless of whether it has a clip.
+
+    On an armed track with an EMPTY slot this starts RECORDING the track input
+    into a new session clip (used for resampling capture). Unlike fire_clip,
+    it does not error on empty slots.
+    """
+    track_index = p.get("track_index", 0)
+    slot_index = p.get("slot_index", 0)
+    track = song.tracks[track_index]
+    slot = track.clip_slots[slot_index]
+    slot.fire()
+    return {"track_index": track_index, "slot_index": slot_index, "fired": True,
+            "has_clip": slot.has_clip}
+
+
+def _stop_all_clips(song, p, ctrl):
+    """Stop all playing/recording session clips (commits any in-progress recording)."""
+    song.stop_all_clips()
+    return {"stopped": True}
+
+
+def _set_clip_quantization(song, p, ctrl):
+    """Set global clip launch quantization. 0=None (immediate), 4=1 Bar, etc.
+
+    Returns the previous value so the caller can restore it.
+    """
+    prev = song.clip_trigger_quantization
+    song.clip_trigger_quantization = int(p.get("value", 0))
+    return {"previous": prev, "value": song.clip_trigger_quantization}
+
+
+def _get_input_routing(song, p, ctrl):
+    """Get input routing + monitoring info for a track (for resampling capture setup)."""
+    track = _resolve_track(song, p.get("track_index", 0), p.get("track_type", "track"))
+    current = None
+    try:
+        rt = track.input_routing_type
+        current = rt.display_name if rt else None
+    except Exception:
+        pass
+    available = []
+    try:
+        for rt in track.available_input_routing_types:
+            available.append(rt.display_name)
+    except Exception:
+        pass
+    monitor = None
+    try:
+        monitor = track.current_monitoring_state
+    except Exception:
+        pass
+    return {
+        "name": track.name,
+        "input_routing_type": current,
+        "available_input_routing_types": available,
+        "monitoring_state": monitor,
+    }
+
+
+def _set_input_routing(song, p, ctrl):
+    """Set a track's input routing type (e.g. 'Resampling') and monitoring state.
+
+    Params:
+        track_index, track_type
+        input_type: display name to match (substring ok), e.g. "Resampling"
+        monitor: "in"|"auto"|"off" or 0/1/2 (Live: 0=In, 1=Auto, 2=Off)
+    """
+    track = _resolve_track(song, p.get("track_index", 0), p.get("track_type", "track"))
+    input_type = p.get("input_type", None)
+    monitor = p.get("monitor", None)
+    result = {"name": track.name}
+
+    if input_type is not None:
+        found = False
+        for rt in track.available_input_routing_types:
+            if rt.display_name == input_type or input_type.lower() in rt.display_name.lower():
+                track.input_routing_type = rt
+                result["input_routing_type"] = rt.display_name
+                found = True
+                break
+        if not found:
+            available = [rt.display_name for rt in track.available_input_routing_types]
+            raise ValueError(
+                "Input type '{0}' not found. Available: {1}".format(
+                    input_type, ", ".join(available)
+                )
+            )
+
+    if monitor is not None:
+        mon_map = {"in": 0, "auto": 1, "off": 2}
+        mv = mon_map.get(str(monitor).lower(), monitor)
+        track.current_monitoring_state = int(mv)
+        result["monitoring_state"] = int(mv)
+
+    return result
+
+
 def _move_device(song, p, ctrl):
     """Move a device to a new position on a track."""
     track_index = p.get("track_index", 0)
@@ -991,6 +1089,26 @@ def _get_registry():
         },
         "set_track_routing": {
             "handler": lambda song, p, ctrl: _set_track_routing(song, p, ctrl),
+            "modifying": True,
+        },
+        "get_input_routing": {
+            "handler": lambda song, p, ctrl: _get_input_routing(song, p, ctrl),
+            "modifying": False,
+        },
+        "set_input_routing": {
+            "handler": lambda song, p, ctrl: _set_input_routing(song, p, ctrl),
+            "modifying": True,
+        },
+        "fire_clip_slot": {
+            "handler": lambda song, p, ctrl: _fire_clip_slot(song, p, ctrl),
+            "modifying": True,
+        },
+        "stop_all_clips": {
+            "handler": lambda song, p, ctrl: _stop_all_clips(song, p, ctrl),
+            "modifying": True,
+        },
+        "set_clip_quantization": {
+            "handler": lambda song, p, ctrl: _set_clip_quantization(song, p, ctrl),
             "modifying": True,
         },
         "get_project_overview": {

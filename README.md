@@ -130,6 +130,22 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Set track input/output routing (incl. **Resampling**) and monitoring state
+- Capture the master output to disk for offline loudness analysis (resampling record)
+
+### macwhite additions (handlers/dispatch.py)
+
+Hot-reloadable commands added for the master-measurement / auto-mastering workflow
+(see `production/README.md` in the parent repo):
+
+| Command | Purpose |
+|---------|---------|
+| `get_input_routing` / `set_input_routing` | Read/set a track's `input_routing_type` (e.g. `Resampling`) + `monitor` (`in`/`auto`/`off`). |
+| `fire_clip_slot` | Fire a clip slot regardless of `has_clip` — on an armed track with an empty slot this starts **recording** (used to capture the master via Resampling). |
+| `stop_all_clips` | `song.stop_all_clips()` — commits any in-progress session recording. |
+| `set_clip_quantization` | Set/restore global clip-launch quantization (returns previous). |
+
+Also: `get_arrangement_clips` now includes `file_path` for audio clips.
 
 ## Example Commands
 

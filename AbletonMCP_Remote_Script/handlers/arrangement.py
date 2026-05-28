@@ -66,6 +66,9 @@ def get_arrangement_clips(song, track_index, ctrl=None):
                 "is_midi_clip": clip.is_midi_clip,
                 "muted": getattr(clip, "muted", False),
                 "color_index": getattr(clip, "color_index", None),
+                "file_path": (
+                    getattr(clip, "file_path", None) if clip.is_audio_clip else None
+                ),
             }
             clips.append(clip_info)
         return {
