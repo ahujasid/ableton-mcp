@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "ableton": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/Users/macwhite/Music/MacWhite/production/ableton-mcp",
+        "ableton-mcp-macwhite"
+      ]
+    }
+  }
+}
