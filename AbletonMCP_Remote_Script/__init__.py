@@ -92,7 +92,7 @@ class AbletonMCP(ControlSurface):
         if self.server:
             try:
                 self.server.close()
-            except:
+            except Exception:
                 pass
         
         # Wait for the server thread to exit
@@ -227,7 +227,7 @@ class AbletonMCP(ControlSurface):
                     except AttributeError:
                         # Python 2: string is already bytes
                         client.sendall(json.dumps(error_response))
-                    except:
+                    except Exception:
                         # If we can't send the error, the connection is probably dead
                         break
                     
@@ -239,7 +239,7 @@ class AbletonMCP(ControlSurface):
         finally:
             try:
                 client.close()
-            except:
+            except Exception:
                 pass
             self.log_message("Client handler stopped")
     
@@ -1268,7 +1268,7 @@ class AbletonMCP(ControlSurface):
         try:
             if hasattr(obj, attr):
                 return getattr(obj, attr)
-        except:
+        except Exception:
             return default
         return default
 
@@ -1590,7 +1590,7 @@ class AbletonMCP(ControlSurface):
         children = self._safe_getattr(item, "children", None)
         try:
             is_folder = bool(children)
-        except:
+        except Exception:
             is_folder = False
         return {
             "name": self._safe_getattr(item, "name", "Unknown"),
@@ -1675,7 +1675,7 @@ class AbletonMCP(ControlSurface):
                 return "midi_effect"
             else:
                 return "unknown"
-        except:
+        except Exception:
             return "unknown"
     
     def get_browser_tree(self, category_type="all"):
@@ -1945,7 +1945,7 @@ class AbletonMCP(ControlSurface):
 
             try:
                 max_results = int(max_results)
-            except:
+            except (TypeError, ValueError):
                 max_results = 20
             if max_results <= 0:
                 max_results = 20
