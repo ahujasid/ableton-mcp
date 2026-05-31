@@ -25,6 +25,8 @@ SUPPORTED_COMMANDS = [
     "get_browser_tree",
     "get_browser_items_at_path",
     "get_browser_item",
+    "get_browser_categories",
+    "get_browser_items",
     "search_browser_items",
     "list_supported_commands",
     "create_midi_track",
@@ -1545,7 +1547,12 @@ class AbletonMCP(ControlSurface):
         if command_type in ["load_browser_item", "load_instrument_or_effect"]:
             item_uri = params.get("item_uri", params.get("uri", ""))
             result = self._load_browser_item(params.get("track_index", 0), item_uri)
-            return self._verify_load_browser_item(result)
+            result["verification_deferred"] = True
+            result["verification_note"] = (
+                "Batch browser loads are not readback-verified in the same Live callback; "
+                "call get_track_info or get_device_parameters after the batch to verify the load."
+            )
+            return result
         if command_type == "set_device_parameter":
             return self._set_device_parameter(
                 params.get("track_index", 0),
@@ -1580,13 +1587,18 @@ class AbletonMCP(ControlSurface):
 
     def _browser_item_info(self, item, path):
         """Return serializable browser item info."""
+        children = self._safe_getattr(item, "children", None)
+        try:
+            is_folder = bool(children)
+        except:
+            is_folder = False
         return {
-            "name": item.name if hasattr(item, "name") else "Unknown",
+            "name": self._safe_getattr(item, "name", "Unknown"),
             "path": path,
-            "is_folder": hasattr(item, "children") and bool(item.children),
-            "is_device": hasattr(item, "is_device") and item.is_device,
-            "is_loadable": hasattr(item, "is_loadable") and item.is_loadable,
-            "uri": item.uri if hasattr(item, "uri") else None
+            "is_folder": is_folder,
+            "is_device": bool(self._safe_getattr(item, "is_device", False)),
+            "is_loadable": bool(self._safe_getattr(item, "is_loadable", False)),
+            "uri": self._safe_getattr(item, "uri", None)
         }
 
     def _get_browser_roots(self, browser, category=None):
@@ -1597,28 +1609,54 @@ class AbletonMCP(ControlSurface):
         ]
         roots = []
         for name in root_names:
-            if (category is None or category == "all" or category == name) and hasattr(browser, name):
-                roots.append((name, getattr(browser, name)))
+            if category is None or category == "all" or category == name:
+                root = self._safe_getattr(browser, name, None)
+                if root is not None:
+                    roots.append((name, root))
         return roots
 
-    def _search_browser_item(self, item, path, query, max_results, results, depth=0, max_depth=12):
+    def _search_browser_item(self, item, path, query, max_results, results,
+                             depth=0, max_depth=12, budget=None, max_nodes=1500):
         """Search browser items by name/path."""
+        if budget is None:
+            budget = {"visited": 0, "skipped": 0}
         if len(results) >= max_results or depth > max_depth or item is None:
             return
+        if budget["visited"] >= max_nodes:
+            return
 
-        name = item.name if hasattr(item, "name") else ""
+        budget["visited"] += 1
+
+        name = self._safe_getattr(item, "name", "")
         searchable = (name + " " + path).lower()
         if query in searchable:
             results.append(self._browser_item_info(item, path))
             if len(results) >= max_results:
                 return
 
-        if hasattr(item, "children") and item.children:
-            for child in item.children:
-                child_name = child.name if hasattr(child, "name") else "Unknown"
-                child_path = path + "/" + child_name
-                self._search_browser_item(child, child_path, query, max_results, results, depth + 1, max_depth)
+        children = self._safe_getattr(item, "children", None)
+        if children:
+            try:
+                child_iter = list(children)
+            except Exception as e:
+                budget["skipped"] += 1
+                self.log_message("Skipping browser children at {0}: {1}".format(path, str(e)))
+                return
+
+            for child in child_iter:
+                try:
+                    child_name = self._safe_getattr(child, "name", "Unknown")
+                    child_path = path + "/" + child_name
+                    self._search_browser_item(
+                        child, child_path, query, max_results, results,
+                        depth + 1, max_depth, budget, max_nodes
+                    )
+                except Exception as e:
+                    budget["skipped"] += 1
+                    self.log_message("Skipping browser item under {0}: {1}".format(path, str(e)))
                 if len(results) >= max_results:
+                    return
+                if budget["visited"] >= max_nodes:
                     return
     
     def _get_device_type(self, device):
@@ -1926,16 +1964,22 @@ class AbletonMCP(ControlSurface):
                 }
 
             results = []
+            budget = {"visited": 0, "skipped": 0}
             for root_name, root_item in roots:
-                self._search_browser_item(root_item, root_name, query, max_results, results)
+                self._search_browser_item(root_item, root_name, query, max_results, results, budget=budget)
                 if len(results) >= max_results:
+                    break
+                if budget["visited"] >= 1500:
                     break
 
             return {
                 "query": query,
                 "category": category,
                 "results": results,
-                "count": len(results)
+                "count": len(results),
+                "visited": budget["visited"],
+                "skipped": budget["skipped"],
+                "truncated": budget["visited"] >= 1500
             }
         except Exception as e:
             self.log_message("Error searching browser items: {0}".format(str(e)))
