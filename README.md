@@ -133,6 +133,15 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Start playback from a specific beat and configure Arrangement loop playback
+
+### Transport Examples
+
+| What you can ask | Tool behavior |
+| --- | --- |
+| "Start playback at beat 256" | Moves the Arrangement playhead to beat 256 and starts playback |
+| "Loop 16 beats starting at beat 256" | Sets the Arrangement loop brace to start at beat 256 for 16 beats and enables looping |
+| "Turn arrangement loop off" | Disables Arrangement looping without moving the existing loop brace |
 
 ## Example Commands
 
@@ -149,6 +158,9 @@ Here are some examples of what you can ask Claude to do:
 - "Add a jazz chord progression to the clip in track 1"
 - "Set the tempo to 120 BPM"
 - "Play the clip in track 2"
+- "Start playback at beat 256"
+- "Loop 16 beats starting at beat 256"
+- "Turn arrangement loop off"
 
 
 ## Troubleshooting

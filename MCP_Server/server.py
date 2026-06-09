@@ -19,6 +19,23 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("AbletonMCPServer")
 
+
+def validate_non_negative_beat(value: float, parameter_name: str) -> float:
+    """Validate a beat position counted from the start of the arrangement."""
+    beat_value = float(value)
+    if beat_value < 0.0:
+        raise ValueError(f"{parameter_name} must be greater than or equal to 0")
+    return beat_value
+
+
+def validate_positive_beat_length(value: float, parameter_name: str) -> float:
+    """Validate a beat length such as an arrangement loop span."""
+    beat_length = float(value)
+    if beat_length <= 0.0:
+        raise ValueError(f"{parameter_name} must be greater than 0")
+    return beat_length
+
+
 @dataclass
 class AbletonConnection:
     host: str
@@ -117,6 +134,7 @@ class AbletonConnection:
             "start_playback", "stop_playback", "load_instrument_or_effect",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
+            "set_arrangement_loop", "set_arrangement_loop_enabled",
             "duplicate_session_clip_to_arrangement"
         ]
 
@@ -543,16 +561,23 @@ def stop_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str 
         return f"Error stopping clip: {str(e)}"
 
 @mcp.tool()
-@telemetry_tool("start_playback")
-def start_playback(ctx: Context, user_prompt: str = "") -> str:
+@rich_telemetry_tool("start_playback")
+def start_playback(ctx: Context, start_time: float | None = None, user_prompt: str = "") -> str:
     """Start playing the Ableton session.
 
     Parameters:
+    - start_time: Optional beat position to move the arrangement playhead to before playback starts
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("start_playback")
+        params = {}
+        if start_time is not None:
+            params["start_time"] = validate_non_negative_beat(start_time, "start_time")
+
+        result = ableton.send_command("start_playback", params)
+        if start_time is not None and "current_song_time" in result:
+            return f"Started playback at beat {result.get('current_song_time')}"
         return "Started playback"
     except Exception as e:
         logger.error(f"Error starting playback: {str(e)}")
@@ -763,12 +788,70 @@ def set_arrangement_time(ctx: Context, time: float, user_prompt: str = "") -> st
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        time = validate_non_negative_beat(time, "time")
         ableton = get_ableton_connection()
         result = ableton.send_command("set_current_song_time", {"time": time})
         return f"Playhead moved to beat {result.get('current_song_time', time)}"
     except Exception as e:
         logger.error(f"Error setting arrangement time: {str(e)}")
         return f"Error setting arrangement time: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_arrangement_loop")
+def set_arrangement_loop(
+    ctx: Context,
+    loop_start: float,
+    loop_length: float,
+    enabled: bool = True,
+    user_prompt: str = "",
+) -> str:
+    """
+    Set the Arrangement loop brace and optionally enable looping.
+
+    Parameters:
+    - loop_start: Beat position where the loop starts
+    - loop_length: Loop duration in beats
+    - enabled: Whether arrangement looping should be enabled after setting the range
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        loop_start = validate_non_negative_beat(loop_start, "loop_start")
+        loop_length = validate_positive_beat_length(loop_length, "loop_length")
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_arrangement_loop", {
+            "loop_start": loop_start,
+            "loop_length": loop_length,
+            "enabled": enabled,
+        })
+        loop_state = "enabled" if result.get("loop", enabled) else "disabled"
+        return (
+            f"Arrangement loop {loop_state}: beat {result.get('loop_start', loop_start)} "
+            f"for {result.get('loop_length', loop_length)} beats"
+        )
+    except Exception as e:
+        logger.error(f"Error setting arrangement loop: {str(e)}")
+        return f"Error setting arrangement loop: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_arrangement_loop_enabled")
+def set_arrangement_loop_enabled(ctx: Context, enabled: bool, user_prompt: str = "") -> str:
+    """
+    Enable or disable Arrangement looping without changing the loop brace.
+
+    Parameters:
+    - enabled: Whether arrangement looping should be enabled
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_arrangement_loop_enabled", {"enabled": enabled})
+        loop_state = "enabled" if result.get("loop", enabled) else "disabled"
+        return f"Arrangement loop {loop_state}"
+    except Exception as e:
+        logger.error(f"Error setting arrangement loop enabled state: {str(e)}")
+        return f"Error setting arrangement loop enabled state: {str(e)}"
 
 
 @mcp.tool()

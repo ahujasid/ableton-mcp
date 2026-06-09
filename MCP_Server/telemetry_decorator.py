@@ -37,7 +37,9 @@ def _extract_tool_params(kwargs: dict, capture_notes: bool = False) -> dict:
         # Track/clip identifiers (not sensitive, just indices)
         'track_index', 'clip_index', 'index',
         # Timing params
-        'length', 'time', 'destination_time', 'tempo',
+        'length', 'time', 'start_time', 'destination_time', 'loop_start', 'loop_length', 'tempo',
+        # Boolean transport params
+        'enabled',
         # Browser/instrument params (with consent - can reveal user's sound choices)
         'uri', 'rack_uri', 'kit_path', 'category_type',
         # Names (with consent - user-created content)

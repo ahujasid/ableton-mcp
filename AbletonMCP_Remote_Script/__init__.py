@@ -233,6 +233,7 @@ class AbletonMCP(ControlSurface):
                                  "start_playback", "stop_playback", "load_browser_item",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
+                                 "set_arrangement_loop", "set_arrangement_loop_enabled",
                                  "duplicate_session_clip_to_arrangement"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
@@ -280,7 +281,8 @@ class AbletonMCP(ControlSurface):
                             clip_index = params.get("clip_index", 0)
                             result = self._stop_clip(track_index, clip_index)
                         elif command_type == "start_playback":
-                            result = self._start_playback()
+                            start_time = params.get("start_time", None)
+                            result = self._start_playback(start_time)
                         elif command_type == "stop_playback":
                             result = self._stop_playback()
                         elif command_type == "load_instrument_or_effect":
@@ -297,6 +299,14 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "set_current_song_time":
                             time_val = params.get("time", 0.0)
                             result = self._set_current_song_time(time_val)
+                        elif command_type == "set_arrangement_loop":
+                            loop_start = params.get("loop_start", 0.0)
+                            loop_length = params.get("loop_length", 4.0)
+                            enabled = params.get("enabled", True)
+                            result = self._set_arrangement_loop(loop_start, loop_length, enabled)
+                        elif command_type == "set_arrangement_loop_enabled":
+                            enabled = params.get("enabled", True)
+                            result = self._set_arrangement_loop_enabled(enabled)
                         elif command_type == "duplicate_session_clip_to_arrangement":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
@@ -368,6 +378,26 @@ class AbletonMCP(ControlSurface):
         return response
     
     # Command implementations
+
+    def _validate_non_negative_beat(self, value, parameter_name):
+        """Validate a beat position counted from the start of the arrangement."""
+        beat_value = float(value)
+        if beat_value < 0.0:
+            raise ValueError(parameter_name + " must be greater than or equal to 0")
+        return beat_value
+
+    def _validate_positive_beat_length(self, value, parameter_name):
+        """Validate a beat length such as an arrangement loop span."""
+        beat_length = float(value)
+        if beat_length <= 0.0:
+            raise ValueError(parameter_name + " must be greater than 0")
+        return beat_length
+
+    def _validate_bool(self, value, parameter_name):
+        """Validate boolean values sent over the raw socket protocol."""
+        if not isinstance(value, bool):
+            raise ValueError(parameter_name + " must be a boolean")
+        return value
     
     def _safe_song_property(self, attr, cast, default):
         """Read self._song.<attr> with cast, returning default on common failures.
@@ -711,13 +741,17 @@ class AbletonMCP(ControlSurface):
             raise
     
     
-    def _start_playback(self):
+    def _start_playback(self, start_time=None):
         """Start playing the session"""
         try:
+            if start_time is not None:
+                self._set_current_song_time(start_time)
+
             self._song.start_playing()
             
             result = {
-                "playing": self._song.is_playing
+                "playing": self._song.is_playing,
+                "current_song_time": self._song.current_song_time
             }
             return result
         except Exception as e:
@@ -751,10 +785,43 @@ class AbletonMCP(ControlSurface):
     def _set_current_song_time(self, time_val):
         """Move the arrangement playhead to a position in beats"""
         try:
-            self._song.current_song_time = float(time_val)
+            self._song.current_song_time = self._validate_non_negative_beat(time_val, "time")
             return {"current_song_time": self._song.current_song_time}
         except Exception as e:
             self.log_message("Error setting current song time: " + str(e))
+            raise
+
+    def _set_arrangement_loop(self, loop_start, loop_length, enabled):
+        """Set Ableton's Arrangement loop brace and enabled state"""
+        try:
+            loop_start = self._validate_non_negative_beat(loop_start, "loop_start")
+            loop_length = self._validate_positive_beat_length(loop_length, "loop_length")
+            enabled = self._validate_bool(enabled, "enabled")
+
+            self._song.loop_start = loop_start
+            self._song.loop_length = loop_length
+            self._song.loop = enabled
+            return {
+                "loop": self._song.loop,
+                "loop_start": self._song.loop_start,
+                "loop_length": self._song.loop_length
+            }
+        except Exception as e:
+            self.log_message("Error setting arrangement loop: " + str(e))
+            raise
+
+    def _set_arrangement_loop_enabled(self, enabled):
+        """Enable or disable Ableton's Arrangement loop"""
+        try:
+            enabled = self._validate_bool(enabled, "enabled")
+            self._song.loop = enabled
+            return {
+                "loop": self._song.loop,
+                "loop_start": self._song.loop_start,
+                "loop_length": self._song.loop_length
+            }
+        except Exception as e:
+            self.log_message("Error setting arrangement loop enabled state: " + str(e))
             raise
 
     def _get_arrangement_clips(self, track_index):
