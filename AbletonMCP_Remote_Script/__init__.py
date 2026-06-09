@@ -5,6 +5,7 @@ from _Framework.ControlSurface import ControlSurface
 import os
 import socket
 import json
+import math
 import threading
 import time
 import traceback
@@ -382,6 +383,8 @@ class AbletonMCP(ControlSurface):
     def _validate_non_negative_beat(self, value, parameter_name):
         """Validate a beat position counted from the start of the arrangement."""
         beat_value = float(value)
+        if math.isnan(beat_value) or math.isinf(beat_value):
+            raise ValueError(parameter_name + " must be finite")
         if beat_value < 0.0:
             raise ValueError(parameter_name + " must be greater than or equal to 0")
         return beat_value
@@ -389,6 +392,8 @@ class AbletonMCP(ControlSurface):
     def _validate_positive_beat_length(self, value, parameter_name):
         """Validate a beat length such as an arrangement loop span."""
         beat_length = float(value)
+        if math.isnan(beat_length) or math.isinf(beat_length):
+            raise ValueError(parameter_name + " must be finite")
         if beat_length <= 0.0:
             raise ValueError(parameter_name + " must be greater than 0")
         return beat_length

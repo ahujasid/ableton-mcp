@@ -3,6 +3,7 @@ from mcp.server.fastmcp import FastMCP, Context
 import socket
 import json
 import logging
+import math
 import os
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
@@ -23,6 +24,8 @@ logger = logging.getLogger("AbletonMCPServer")
 def validate_non_negative_beat(value: float, parameter_name: str) -> float:
     """Validate a beat position counted from the start of the arrangement."""
     beat_value = float(value)
+    if not math.isfinite(beat_value):
+        raise ValueError(f"{parameter_name} must be finite")
     if beat_value < 0.0:
         raise ValueError(f"{parameter_name} must be greater than or equal to 0")
     return beat_value
@@ -31,6 +34,8 @@ def validate_non_negative_beat(value: float, parameter_name: str) -> float:
 def validate_positive_beat_length(value: float, parameter_name: str) -> float:
     """Validate a beat length such as an arrangement loop span."""
     beat_length = float(value)
+    if not math.isfinite(beat_length):
+        raise ValueError(f"{parameter_name} must be finite")
     if beat_length <= 0.0:
         raise ValueError(f"{parameter_name} must be greater than 0")
     return beat_length
