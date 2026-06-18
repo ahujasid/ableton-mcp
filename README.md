@@ -1,7 +1,7 @@
 # AbletonMCP - Ableton Live Model Context Protocol Integration
 [![smithery badge](https://smithery.ai/badge/@ahujasid/ableton-mcp)](https://smithery.ai/server/@ahujasid/ableton-mcp)
 
-AbletonMCP connects Ableton Live to Claude AI through the Model Context Protocol (MCP), allowing Claude to directly interact with and control Ableton Live. This integration enables prompt-assisted music production, track creation, and Live session manipulation.
+AbletonMCP connects Ableton Live to Claude AI through the Model Context Protocol (MCP), allowing Claude to directly interact with and control Ableton Live. This integration enables prompt-assisted music production, end-to-end track creation, and Live session and arrangement manipulation.
 
 ### Join the Community
 
@@ -13,7 +13,9 @@ Give feedback, get inspired, and build on top of the MCP: [Discord](https://disc
 - **Track manipulation**: Create, modify, and manipulate MIDI and audio tracks
 - **Instrument and effect selection**: Claude can access and load the right instruments, effects and sounds from Ableton's library
 - **Clip creation**: Create and edit MIDI clips with notes
-- **Session control**: Start and stop playback, fire clips, and control transport
+- **Arrangement view composition**: Build full songs autonomously in Arrangement View, including sections like intro, buildup, drop, breakdown, and outro
+- **Session control**: Start and stop playback, fire clips, and control transport across Session View and Arrangement View
+- **Anonymous telemetry**: Usage tracking to help improve the tool (can be disabled)
 
 ## Components
 
@@ -125,6 +127,7 @@ Once the config file has been set on Claude, and the remote script is running in
 
 - Get session and track information
 - Create and modify MIDI and audio tracks
+- Create full song arrangements from start to finish in Arrangement View
 - Create, edit, and trigger clips
 - Control playback
 - Load instruments and effects from Ableton's browser
@@ -137,6 +140,7 @@ Here are some examples of what you can ask Claude to do:
 
 - "Create an 80s synthwave track" [Demo](https://youtu.be/VH9g66e42XA)
 - "Create a Metro Boomin style hip-hop beat"
+- "Create a full arrangement with an intro, buildup, drop, breakdown, and outro"
 - "Create a new MIDI track with a synth bass instrument"
 - "Add reverb to my drums"
 - "Create a 4-bar MIDI clip with a simple melody"
@@ -171,6 +175,43 @@ The system uses a simple JSON-based protocol over TCP sockets:
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Telemetry
+
+AbletonMCP collects anonymous usage data to help improve the tool. This includes:
+- Tool usage statistics (which features are used)
+- Session information (for daily/monthly active user counts)
+- Error rates and performance metrics
+
+No personal information, project names, or audio content is collected.
+
+### Opting Out
+
+To disable telemetry, set one of these environment variables before starting the MCP server:
+
+```bash
+export ABLETON_MCP_DISABLE_TELEMETRY=true
+```
+
+Or use any of these alternatives:
+- `DISABLE_TELEMETRY=true`
+- `MCP_DISABLE_TELEMETRY=true`
+
+For Claude Desktop, add the environment variable to your config:
+
+```json
+{
+    "mcpServers": {
+        "AbletonMCP": {
+            "command": "uvx",
+            "args": ["ableton-mcp"],
+            "env": {
+                "ABLETON_MCP_DISABLE_TELEMETRY": "true"
+            }
+        }
+    }
+}
+```
 
 ## Disclaimer
 
