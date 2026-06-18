@@ -121,7 +121,7 @@ class AbletonConnection:
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
             "duplicate_clip_to_arrangement", "duplicate_scene_to_arrangement",
-            "back_to_arrangement", "stop_all_clips", "export_audio"
+            "back_to_arrangement", "stop_all_clips"
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
@@ -866,59 +866,6 @@ def stop_all_clips(ctx: Context) -> str:
     except Exception as e:
         logger.error(f"Error stopping all clips: {str(e)}")
         return f"Error stopping all clips: {str(e)}"
-
-@mcp.tool()
-def export_audio(
-    ctx: Context,
-    output_path: str,
-    render_start_bar: int,
-    render_start_beat: int,
-    render_start_sixteenth: int,
-    render_length_bars: int,
-    render_length_beats: int,
-    render_length_sixteenths: int,
-    rendered_track: str = "Main",
-    file_type: str = "AIFF",
-    encode_mp3: bool = False,
-    normalize: bool = False,
-    create_analysis_file: bool = False
-) -> str:
-    """
-    Request native Ableton audio export/render.
-
-    This currently raises an error because AbletonMCP has no implemented
-    native export path.
-
-    Parameters:
-    - output_path: Destination audio file path
-    - render_start_bar/render_start_beat/render_start_sixteenth: Live-style start position
-    - render_length_bars/render_length_beats/render_length_sixteenths: Render duration
-    - rendered_track: Track/output to render, default Main
-    - file_type: Desired output type, default AIFF
-    - encode_mp3: Whether to also encode MP3 if supported
-    - normalize: Whether to normalize if supported
-    - create_analysis_file: Whether to create an analysis file if supported
-    """
-    try:
-        ableton = get_ableton_connection()
-        result = ableton.send_command("export_audio", {
-            "output_path": output_path,
-            "render_start_bar": render_start_bar,
-            "render_start_beat": render_start_beat,
-            "render_start_sixteenth": render_start_sixteenth,
-            "render_length_bars": render_length_bars,
-            "render_length_beats": render_length_beats,
-            "render_length_sixteenths": render_length_sixteenths,
-            "rendered_track": rendered_track,
-            "file_type": file_type,
-            "encode_mp3": encode_mp3,
-            "normalize": normalize,
-            "create_analysis_file": create_analysis_file
-        })
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        logger.error(f"Error exporting audio: {str(e)}")
-        return f"Error exporting audio: {str(e)}"
 
 @mcp.tool()
 @telemetry_tool("start_playback")

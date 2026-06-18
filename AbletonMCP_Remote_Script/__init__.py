@@ -56,8 +56,7 @@ SUPPORTED_COMMANDS = [
     "duplicate_clip_to_arrangement",
     "duplicate_scene_to_arrangement",
     "back_to_arrangement",
-    "stop_all_clips",
-    "export_audio"
+    "stop_all_clips"
 ]
 
 def create_instance(c_instance):
@@ -290,8 +289,7 @@ class AbletonMCP(ControlSurface):
                                  "duplicate_session_clip_to_arrangement",
                                  "duplicate_clip_to_arrangement",
                                  "duplicate_scene_to_arrangement",
-                                 "back_to_arrangement", "stop_all_clips",
-                                 "export_audio"]:
+                                 "back_to_arrangement", "stop_all_clips"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -399,21 +397,6 @@ class AbletonMCP(ControlSurface):
                                 response_queue.put({"status": "success", "result": result})
 
                             self.schedule_message(2, verify_stop_all_clips)
-                        elif command_type == "export_audio":
-                            result = self._export_audio(
-                                params.get("output_path", ""),
-                                params.get("render_start_bar", 1),
-                                params.get("render_start_beat", 1),
-                                params.get("render_start_sixteenth", 1),
-                                params.get("render_length_bars", 0),
-                                params.get("render_length_beats", 0),
-                                params.get("render_length_sixteenths", 0),
-                                params.get("rendered_track", "Main"),
-                                params.get("file_type", "AIFF"),
-                                params.get("encode_mp3", False),
-                                params.get("normalize", False),
-                                params.get("create_analysis_file", False)
-                            )
                         elif command_type == "start_playback":
                             result = self._start_playback()
                         elif command_type == "stop_playback":
@@ -1112,16 +1095,6 @@ class AbletonMCP(ControlSurface):
             self.log_message(traceback.format_exc())
             return result
 
-    def _export_audio(self, output_path, render_start_bar, render_start_beat,
-                      render_start_sixteenth, render_length_bars,
-                      render_length_beats, render_length_sixteenths,
-                      rendered_track="Main", file_type="AIFF",
-                      encode_mp3=False, normalize=False,
-                      create_analysis_file=False):
-        """Audio export is not implemented by the documented Live API."""
-        raise NotImplementedError("export_audio is not implemented by AbletonMCP")
-    
-    
     def _start_playback(self):
         """Start playing the session"""
         try:
@@ -1716,8 +1689,6 @@ class AbletonMCP(ControlSurface):
             try:
                 if command_type == "execute_batch":
                     raise ValueError("execute_batch cannot be nested")
-                if command_type == "export_audio":
-                    raise ValueError("export_audio cannot run inside execute_batch")
                 entry["result"] = self._execute_batch_command(command_type, params)
             except Exception as e:
                 entry["status"] = "error"
