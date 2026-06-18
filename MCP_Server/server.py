@@ -111,13 +111,17 @@ class AbletonConnection:
         
         # Check if this is a state-modifying command
         is_modifying_command = command_type in [
-            "create_midi_track", "create_audio_track", "set_track_name",
+            "create_midi_track", "create_audio_track", "create_scene",
+            "append_scene", "set_track_name",
             "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
+            "set_device_parameter_by_name", "execute_batch",
             "start_playback", "stop_playback", "load_instrument_or_effect",
-            # Arrangement view commands
+            "load_browser_item",
             "switch_to_arrangement_view", "set_current_song_time",
-            "duplicate_session_clip_to_arrangement"
+            "duplicate_session_clip_to_arrangement",
+            "duplicate_clip_to_arrangement", "duplicate_scene_to_arrangement",
+            "back_to_arrangement", "stop_all_clips"
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
@@ -303,6 +307,22 @@ def get_track_info(ctx: Context, track_index: int, user_prompt: str = "") -> str
         return f"Error getting track info: {str(e)}"
 
 @mcp.tool()
+@telemetry_tool("list_supported_commands")
+def list_supported_commands(ctx: Context, user_prompt: str = "") -> str:
+    """List command names supported by the connected Ableton Remote Script.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("list_supported_commands")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error listing supported commands: {str(e)}")
+        return f"Error listing supported commands: {str(e)}"
+
+@mcp.tool()
 @telemetry_tool("create_midi_track")
 def create_midi_track(ctx: Context, index: int = -1, user_prompt: str = "") -> str:
     """
@@ -320,6 +340,66 @@ def create_midi_track(ctx: Context, index: int = -1, user_prompt: str = "") -> s
         logger.error(f"Error creating MIDI track: {str(e)}")
         return f"Error creating MIDI track: {str(e)}"
 
+@mcp.tool()
+@telemetry_tool("create_audio_track")
+def create_audio_track(ctx: Context, index: int = -1, user_prompt: str = "") -> str:
+    """
+    Create a new audio track in the Ableton session.
+
+    Parameters:
+    - index: The index to insert the track at (-1 = end of list)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_audio_track", {"index": index})
+        return f"Created new audio track: {result.get('name', 'unknown')}"
+    except Exception as e:
+        logger.error(f"Error creating audio track: {str(e)}")
+        return f"Error creating audio track: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("create_scene")
+def create_scene(ctx: Context, index: int = -1, name: str = None, user_prompt: str = "") -> str:
+    """
+    Create a new Session scene.
+
+    Parameters:
+    - index: Scene index to insert at (-1 = end of list)
+    - name: Optional scene name
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {"index": index}
+        if name is not None:
+            params["name"] = name
+        result = ableton.send_command("create_scene", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error creating scene: {str(e)}")
+        return f"Error creating scene: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("append_scene")
+def append_scene(ctx: Context, name: str = None, user_prompt: str = "") -> str:
+    """
+    Append a new Session scene.
+
+    Parameters:
+    - name: Optional scene name
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {}
+        if name is not None:
+            params["name"] = name
+        result = ableton.send_command("append_scene", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error appending scene: {str(e)}")
+        return f"Error appending scene: {str(e)}"
 
 @mcp.tool()
 @rich_telemetry_tool("set_track_name")
@@ -491,12 +571,211 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, user_pro
                 return f"Loaded instrument with URI '{uri}' on track {track_index}. New devices: {', '.join(new_devices)}"
             else:
                 devices = result.get("devices_after", [])
-                return f"Loaded instrument with URI '{uri}' on track {track_index}. Devices on track: {', '.join(devices)}"
+                device_names = [device.get("name", "Unknown") for device in devices]
+                return f"Loaded instrument with URI '{uri}' on track {track_index}. Devices on track: {', '.join(device_names)}"
         else:
+            error = result.get("error")
+            if error:
+                return f"Failed to load instrument with URI '{uri}': {error}"
             return f"Failed to load instrument with URI '{uri}'"
     except Exception as e:
         logger.error(f"Error loading instrument by URI: {str(e)}")
         return f"Error loading instrument by URI: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("search_browser_items")
+def search_browser_items(
+    ctx: Context,
+    query: str,
+    category: str = None,
+    max_results: int = 20,
+    user_prompt: str = ""
+) -> str:
+    """
+    Search Ableton browser items and return names, paths, loadability, and URIs.
+
+    Parameters:
+    - query: Case-insensitive text to search for in browser item names/paths
+    - category: Optional root category, such as instruments, sounds, drums, audio_effects, or midi_effects
+    - max_results: Maximum number of matches to return
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {
+            "query": query,
+            "max_results": max_results
+        }
+        if category is not None:
+            params["category"] = category
+
+        ableton = get_ableton_connection()
+        result = ableton.send_command("search_browser_items", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error searching browser items: {str(e)}")
+        return f"Error searching browser items: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("load_browser_item_by_uri")
+def load_browser_item_by_uri(ctx: Context, track_index: int, uri: str, user_prompt: str = "") -> str:
+    """
+    Load an Ableton browser item onto a track by URI and return device readback.
+
+    Parameters:
+    - track_index: The index of the track to load onto
+    - uri: Browser item URI returned by search_browser_items or get_browser_items_at_path
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("load_browser_item", {
+            "track_index": track_index,
+            "item_uri": uri
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error loading browser item by URI: {str(e)}")
+        return f"Error loading browser item by URI: {str(e)}"
+
+@mcp.tool()
+@telemetry_tool("get_device_info")
+def get_device_info(ctx: Context, track_index: int, device_index: int, user_prompt: str = "") -> str:
+    """
+    Get detailed device info, including exposed parameters.
+
+    Parameters:
+    - track_index: The track index containing the device
+    - device_index: The device index on the track
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_info", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device info: {str(e)}")
+        return f"Error getting device info: {str(e)}"
+
+@mcp.tool()
+@telemetry_tool("get_device_parameters")
+def get_device_parameters(ctx: Context, track_index: int, device_index: int, user_prompt: str = "") -> str:
+    """
+    Get exposed parameters for a device.
+
+    Parameters:
+    - track_index: The track index containing the device
+    - device_index: The device index on the track
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_index": device_index
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device parameters: {str(e)}")
+        return f"Error getting device parameters: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("set_device_parameter")
+def set_device_parameter(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    parameter_index: int,
+    value: float,
+    user_prompt: str = ""
+) -> str:
+    """
+    Set a device parameter by parameter index.
+
+    Parameters:
+    - track_index: The track index containing the device
+    - device_index: The device index on the track
+    - parameter_index: The parameter index on the device
+    - value: The new raw parameter value
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_device_parameter", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameter_index": parameter_index,
+            "value": value
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting device parameter: {str(e)}")
+        return f"Error setting device parameter: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("set_device_parameter_by_name")
+def set_device_parameter_by_name(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    parameter_name: str,
+    value: float,
+    user_prompt: str = ""
+) -> str:
+    """
+    Set a device parameter by exact or case-insensitive name.
+
+    Parameters:
+    - track_index: The track index containing the device
+    - device_index: The device index on the track
+    - parameter_name: The visible or original parameter name
+    - value: The new raw parameter value
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_device_parameter_by_name", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameter_name": parameter_name,
+            "value": value
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting device parameter by name: {str(e)}")
+        return f"Error setting device parameter by name: {str(e)}"
+
+@mcp.tool()
+@telemetry_tool("execute_batch")
+def execute_batch(
+    ctx: Context,
+    commands: List[Dict[str, Any]],
+    stop_on_error: bool = True,
+    user_prompt: str = ""
+) -> str:
+    """
+    Execute a simple list of Ableton commands in one socket call.
+
+    This intentionally does not support result references yet; command params
+    should use explicit indices and URIs.
+
+    Parameters:
+    - commands: List of command objects with type and params fields
+    - stop_on_error: Stop at the first failed command when true
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("execute_batch", {
+            "commands": commands,
+            "stop_on_error": stop_on_error
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error executing batch: {str(e)}")
+        return f"Error executing batch: {str(e)}"
 
 @mcp.tool()
 @telemetry_tool("fire_clip")
@@ -541,6 +820,101 @@ def stop_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str 
     except Exception as e:
         logger.error(f"Error stopping clip: {str(e)}")
         return f"Error stopping clip: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("duplicate_clip_to_arrangement")
+def duplicate_clip_to_arrangement(
+    ctx: Context,
+    track_index: int,
+    scene_index: int,
+    start_time: float,
+    user_prompt: str = ""
+) -> str:
+    """
+    Duplicate one Session clip into Arrangement.
+    
+    Parameters:
+    - track_index: Zero-based track index
+    - scene_index: Zero-based Session scene/clip-slot index
+    - start_time: Arrangement destination time in beats, where 0 = bar 1 beat 1
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_clip_to_arrangement", {
+            "track_index": track_index,
+            "scene_index": scene_index,
+            "start_time": start_time
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error duplicating clip to Arrangement: {str(e)}")
+        return f"Error duplicating clip to Arrangement: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("duplicate_scene_to_arrangement")
+def duplicate_scene_to_arrangement(
+    ctx: Context,
+    scene_index: int,
+    start_time: float,
+    track_indices: List[int] = None,
+    user_prompt: str = ""
+) -> str:
+    """
+    Duplicate all clips from a Session scene into Arrangement.
+    
+    Parameters:
+    - scene_index: Zero-based Session scene/clip-slot index
+    - start_time: Arrangement destination time in beats, where 0 = bar 1 beat 1
+    - track_indices: Optional list of zero-based track indices. If omitted, all normal tracks are processed.
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {
+            "scene_index": scene_index,
+            "start_time": start_time
+        }
+        if track_indices is not None:
+            params["track_indices"] = track_indices
+        
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_scene_to_arrangement", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error duplicating scene to Arrangement: {str(e)}")
+        return f"Error duplicating scene to Arrangement: {str(e)}"
+
+@mcp.tool()
+@telemetry_tool("back_to_arrangement")
+def back_to_arrangement(ctx: Context, user_prompt: str = "") -> str:
+    """Re-enable Arrangement playback after Session clips have taken over.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("back_to_arrangement")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error returning to Arrangement: {str(e)}")
+        return f"Error returning to Arrangement: {str(e)}"
+
+@mcp.tool()
+@telemetry_tool("stop_all_clips")
+def stop_all_clips(ctx: Context, user_prompt: str = "") -> str:
+    """Stop all Session clips.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("stop_all_clips")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error stopping all clips: {str(e)}")
+        return f"Error stopping all clips: {str(e)}"
 
 @mcp.tool()
 @telemetry_tool("start_playback")
