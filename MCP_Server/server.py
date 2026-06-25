@@ -132,6 +132,7 @@ class AbletonConnection:
         is_modifying_command = command_type in [
             "create_midi_track", "create_audio_track", "set_track_name",
             "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
+            "delete_clip",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "start_playback", "stop_playback", "load_instrument_or_effect",
             # Arrangement view commands
@@ -912,6 +913,38 @@ def stop_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str 
     except Exception as e:
         logger.error(f"Error stopping clip: {str(e)}")
         return f"Error stopping clip: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("delete_clip")
+def delete_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str = "") -> str:
+    """
+    Delete the clip in the given clip slot, freeing it for reuse.
+
+    Use this before create_clip when you want to overwrite an existing clip
+    (create_clip itself refuses to write into an occupied slot).
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the clip slot to clear
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("delete_clip")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error deleting clip: {str(e)}")
+        return f"Error deleting clip: {str(e)}"
+
 
 @mcp.tool()
 @telemetry_tool("start_playback")
