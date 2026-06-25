@@ -113,6 +113,7 @@ class AbletonConnection:
         is_modifying_command = command_type in [
             "create_midi_track", "create_audio_track", "set_track_name",
             "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
+            "clear_notes_from_clip",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "start_playback", "stop_playback", "load_instrument_or_effect",
             # Arrangement view commands
@@ -422,6 +423,88 @@ def add_notes_to_clip(
     except Exception as e:
         logger.error(f"Error adding notes to clip: {str(e)}")
         return f"Error adding notes to clip: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("get_notes_from_clip")
+def get_notes_from_clip(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    user_prompt: str = ""
+) -> str:
+    """
+    Read the MIDI notes currently in a Session clip.
+
+    Returns the notes as JSON so they can be inspected, edited, and written
+    back with add_notes_to_clip. Each note has pitch, start_time, duration,
+    velocity, and mute; richer fields (note_id, probability,
+    velocity_deviation, release_velocity) are included when Live exposes them.
+    Use this to iterate on an existing clip (read -> modify -> write) instead
+    of regenerating it from memory, and to see edits made by hand in Live.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the clip slot containing the clip
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_notes_from_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        notes = result.get("notes", [])
+        header = (
+            "Clip '{name}' (track {t}, slot {c}) — {n} note(s), {length} beats:".format(
+                name=result.get("clip_name", "clip"),
+                t=track_index,
+                c=clip_index,
+                n=result.get("note_count", len(notes)),
+                length=result.get("length", "?"),
+            )
+        )
+        return header + "\n" + json.dumps(notes, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting notes from clip: {str(e)}")
+        return f"Error getting notes from clip: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("clear_notes_from_clip")
+def clear_notes_from_clip(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    user_prompt: str = ""
+) -> str:
+    """
+    Remove all MIDI notes from a Session clip.
+
+    Writes are additive (add_notes_to_clip only appends), so to truly *modify*
+    a clip you clear it first, then add the new notes. Use this with
+    get_notes_from_clip and add_notes_to_clip for a real read -> modify -> write
+    loop: read the notes, edit the list, clear_notes_from_clip, then
+    add_notes_to_clip the edited notes.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the clip slot containing the clip
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("clear_notes_from_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index
+        })
+        return "Cleared {n} note(s) from clip '{name}' (track {t}, slot {c})".format(
+            n=result.get("cleared_count", "?"),
+            name=result.get("clip_name", "clip"),
+            t=track_index,
+            c=clip_index,
+        )
+    except Exception as e:
+        logger.error(f"Error clearing notes from clip: {str(e)}")
+        return f"Error clearing notes from clip: {str(e)}"
 
 @mcp.tool()
 @rich_telemetry_tool("set_clip_name")
