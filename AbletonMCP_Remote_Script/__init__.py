@@ -233,7 +233,8 @@ class AbletonMCP(ControlSurface):
                                  "start_playback", "stop_playback", "load_browser_item",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
-                                 "duplicate_session_clip_to_arrangement"]:
+                                 "duplicate_session_clip_to_arrangement",
+                                 "create_locator"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -303,6 +304,10 @@ class AbletonMCP(ControlSurface):
                             destination_time = params.get("destination_time", 0.0)
                             result = self._duplicate_session_clip_to_arrangement(
                                 track_index, clip_index, destination_time)
+                        elif command_type == "create_locator":
+                            name = params.get("name", "")
+                            time_val = params.get("time", 0.0)
+                            result = self._create_locator(name, time_val)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -834,6 +839,60 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error duplicating clip to arrangement: " + str(e))
+            raise
+
+    def _create_locator(self, name, time_val):
+        """Create (or rename) a named locator at the given beat position.
+
+        Uses Live's Song.set_or_delete_cue(), which toggles a cue at the
+        current_song_time. We temporarily move the playhead, toggle, then
+        restore. If a cue already exists at that time we just rename it
+        instead of toggling (which would delete it).
+        """
+        try:
+            song = self._song
+            target_time = float(time_val)
+            tolerance = 1e-3
+
+            # See if a cue already exists at (or near) the target time
+            existing = None
+            for cue in song.cue_points:
+                if abs(cue.time - target_time) < tolerance:
+                    existing = cue
+                    break
+
+            original_time = song.current_song_time
+
+            if existing is None:
+                # Move playhead, toggle to create, then locate the new cue
+                song.current_song_time = target_time
+                song.set_or_delete_cue()
+                for cue in song.cue_points:
+                    if abs(cue.time - target_time) < tolerance:
+                        existing = cue
+                        break
+                # Restore playhead
+                try:
+                    song.current_song_time = original_time
+                except Exception:
+                    pass
+
+            if existing is None:
+                raise Exception("Failed to create cue at time " + str(target_time))
+
+            if name:
+                try:
+                    existing.name = str(name)
+                except Exception as e:
+                    self.log_message("Could not rename locator: " + str(e))
+
+            return {
+                "success": True,
+                "time": existing.time,
+                "name": existing.name,
+            }
+        except Exception as e:
+            self.log_message("Error creating locator: " + str(e))
             raise
 
     # ── Browser implementations ───────────────────────────────────────────────
