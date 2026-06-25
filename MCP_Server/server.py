@@ -136,7 +136,8 @@ class AbletonConnection:
             "start_playback", "stop_playback", "load_instrument_or_effect",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
-            "duplicate_session_clip_to_arrangement"
+            "duplicate_session_clip_to_arrangement",
+            "create_locator"
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
@@ -1218,6 +1219,46 @@ def duplicate_to_arrangement(
     except Exception as e:
         logger.error(f"Error duplicating clip to arrangement: {str(e)}")
         return f"Error duplicating clip to arrangement: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("create_locator")
+def create_locator(
+    ctx: Context,
+    name: str,
+    time: float,
+    user_prompt: str = ""
+) -> str:
+    """
+    Create a named locator (cue point) in the Arrangement at a beat position.
+
+    If a locator already exists at that beat (within ~1e-3 tolerance) it is
+    renamed instead of toggled off. Time is in beats from the start of the
+    arrangement (e.g. 0.0 = start, 16.0 = bar 5 in 4/4).
+
+    Parameters:
+    - name: The locator label (e.g. "Chorus", "Verse 1", "Drop")
+    - time: Beat position where the locator should sit
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("create_locator")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "create_locator",
+            {"name": name, "time": time}
+        )
+        return (
+            f"Locator '{result.get('name', name)}' set at beat "
+            f"{result.get('time', time)}"
+        )
+    except Exception as e:
+        logger.error(f"Error creating locator: {str(e)}")
+        return f"Error creating locator: {str(e)}"
 
 
 # ── Dataset / preference tools (Supabase trajectory recording) ─────────────────
