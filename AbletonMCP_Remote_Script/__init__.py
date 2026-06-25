@@ -231,6 +231,7 @@ class AbletonMCP(ControlSurface):
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback", "load_browser_item",
+                                 "set_device_parameter",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement"]:
@@ -303,6 +304,13 @@ class AbletonMCP(ControlSurface):
                             destination_time = params.get("destination_time", 0.0)
                             result = self._duplicate_session_clip_to_arrangement(
                                 track_index, clip_index, destination_time)
+                        elif command_type == "set_device_parameter":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            parameter = params.get("parameter", None)
+                            value = params.get("value", 0.0)
+                            result = self._set_device_parameter(
+                                track_index, device_index, parameter, value)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -356,6 +364,10 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_arrangement_clips":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_arrangement_clips(track_index)
+            elif command_type == "get_device_parameters":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                response["result"] = self._get_device_parameters(track_index, device_index)
             else:
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
@@ -647,7 +659,70 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error setting clip name: " + str(e))
             raise
-    
+
+    def _get_device_parameters(self, track_index, device_index):
+        """List parameters on a device with current values and ranges."""
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        if device_index < 0 or device_index >= len(track.devices):
+            raise IndexError("Device index out of range")
+        device = track.devices[device_index]
+        params_out = []
+        for p_index, p in enumerate(device.parameters):
+            params_out.append({
+                "index": p_index,
+                "name": p.name,
+                "value": p.value,
+                "min": p.min,
+                "max": p.max,
+                "is_quantized": bool(p.is_quantized),
+            })
+        return {
+            "track_index": track_index,
+            "device_index": device_index,
+            "device_name": device.name,
+            "parameters": params_out,
+        }
+
+    def _set_device_parameter(self, track_index, device_index, parameter, value):
+        """Set a single parameter on a device by name (case-insensitive) or index."""
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        if device_index < 0 or device_index >= len(track.devices):
+            raise IndexError("Device index out of range")
+        device = track.devices[device_index]
+
+        target = None
+        if isinstance(parameter, bool):
+            raise ValueError("parameter must be a name or index, not a bool")
+        if isinstance(parameter, int):
+            if parameter < 0 or parameter >= len(device.parameters):
+                raise IndexError("Parameter index out of range")
+            target = device.parameters[parameter]
+        else:
+            name_lower = str(parameter).lower()
+            for p in device.parameters:
+                if p.name.lower() == name_lower:
+                    target = p
+                    break
+            if target is None:
+                available = [p.name for p in device.parameters]
+                raise ValueError("Parameter '" + str(parameter) + "' not found. Available: " + ", ".join(available[:20]))
+
+        clamped = max(target.min, min(target.max, float(value)))
+        target.value = clamped
+
+        return {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameter_name": target.name,
+            "value": target.value,
+            "min": target.min,
+            "max": target.max,
+        }
+
     def _set_tempo(self, tempo):
         """Set the tempo of the session"""
         try:

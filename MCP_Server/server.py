@@ -467,6 +467,73 @@ def set_tempo(ctx: Context, tempo: float, user_prompt: str = "") -> str:
 
 
 @mcp.tool()
+@telemetry_tool("get_device_parameters")
+def get_device_parameters(ctx: Context, track_index: int, device_index: int, user_prompt: str = "") -> str:
+    """
+    List all parameters on a device with current values, ranges, and quantized flag.
+
+    Use this to discover the exact parameter names before calling set_device_parameter.
+    Get device_index from get_track_info — devices on a track are 0-indexed.
+
+    Parameters:
+    - track_index: The index of the track containing the device
+    - device_index: The index of the device on the track
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_index": device_index,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device parameters: {str(e)}")
+        return f"Error getting device parameters: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_device_parameter")
+def set_device_parameter(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    parameter: str,
+    value: float,
+    user_prompt: str = "",
+) -> str:
+    """
+    Set a single parameter on a device by name (case-insensitive) or numeric index.
+
+    The value is clamped to the parameter's min/max. For quantized (stepped) parameters
+    pass the integer step as a float (e.g. 2.0).
+
+    Parameters:
+    - track_index: The index of the track containing the device
+    - device_index: The index of the device on the track
+    - parameter: Parameter name (e.g. "Dry/Wet", "Decay Time") or stringified index (e.g. "3")
+    - value: The new value (clamped to min/max)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        try:
+            param_id = int(parameter)
+        except (TypeError, ValueError):
+            param_id = parameter
+        result = ableton.send_command("set_device_parameter", {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameter": param_id,
+            "value": value,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting device parameter: {str(e)}")
+        return f"Error setting device parameter: {str(e)}"
+
+
+@mcp.tool()
 @rich_telemetry_tool("load_instrument_or_effect")
 def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, user_prompt: str = "") -> str:
     """
