@@ -542,6 +542,33 @@ def stop_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str 
         logger.error(f"Error stopping clip: {str(e)}")
         return f"Error stopping clip: {str(e)}"
 
+
+@mcp.tool()
+@telemetry_tool("delete_clip")
+def delete_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str = "") -> str:
+    """
+    Delete the clip in the given clip slot, freeing it for reuse.
+
+    Use this before create_clip when you want to overwrite an existing clip
+    (create_clip itself refuses to write into an occupied slot).
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the clip slot to clear
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_clip", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error deleting clip: {str(e)}")
+        return f"Error deleting clip: {str(e)}"
+
+
 @mcp.tool()
 @telemetry_tool("start_playback")
 def start_playback(ctx: Context, user_prompt: str = "") -> str:

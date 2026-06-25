@@ -229,6 +229,7 @@ class AbletonMCP(ControlSurface):
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name",
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
+                                 "delete_clip",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback", "load_browser_item",
                                  # Arrangement view – must run on the main thread
@@ -279,6 +280,10 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             result = self._stop_clip(track_index, clip_index)
+                        elif command_type == "delete_clip":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            result = self._delete_clip(track_index, clip_index)
                         elif command_type == "start_playback":
                             result = self._start_playback()
                         elif command_type == "stop_playback":
@@ -709,8 +714,31 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error stopping clip: " + str(e))
             raise
-    
-    
+
+    def _delete_clip(self, track_index, clip_index):
+        """Delete the clip in the given clip slot, freeing the slot for reuse."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                return {"deleted": False, "reason": "Clip slot was already empty"}
+
+            clip_slot.delete_clip()
+
+            return {"deleted": True}
+        except Exception as e:
+            self.log_message("Error deleting clip: " + str(e))
+            raise
+
+
     def _start_playback(self):
         """Start playing the session"""
         try:
