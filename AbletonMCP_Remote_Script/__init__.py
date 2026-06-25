@@ -21,7 +21,7 @@ HOST = "0.0.0.0"
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.6.0"
+SCRIPT_VERSION = "1.7.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -43,6 +43,7 @@ SCRIPT_CAPABILITIES = [
     "duplicate_session_clip_to_arrangement",
     "create_locator",
     "delete_clip",
+    "clear_notes_from_clip",
 ]
 
 def create_instance(c_instance):
@@ -282,6 +283,7 @@ class AbletonMCP(ControlSurface):
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_arrangement_clip_name",
                                  "delete_clip",
+                                 "clear_notes_from_clip",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback",
                                  "load_browser_item", "load_instrument_or_effect",
@@ -322,6 +324,10 @@ class AbletonMCP(ControlSurface):
                             clip_index = params.get("clip_index", 0)
                             notes = params.get("notes", [])
                             result = self._add_notes_to_clip(track_index, clip_index, notes)
+                        elif command_type == "clear_notes_from_clip":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            result = self._clear_notes_from_clip(track_index, clip_index)
                         elif command_type == "set_clip_name":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
@@ -997,6 +1003,66 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error getting arrangement clips: " + str(e))
+            raise
+
+    def _clear_notes_from_clip(self, track_index, clip_index):
+        """Remove all MIDI notes from a Session clip.
+
+        Pairs with _add_notes_to_clip to make a real replace (clear, then add),
+        which the write-only API otherwise can't do. Counts notes first so the
+        result can report how many were removed.
+        """
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+
+            clip_slot = track.clip_slots[clip_index]
+
+            if not clip_slot.has_clip:
+                raise Exception("No clip in slot")
+
+            clip = clip_slot.clip
+
+            if not clip.is_midi_clip:
+                raise Exception("Clip is not a MIDI clip; no notes to clear")
+
+            length = clip.length
+
+            # Count existing notes for the report (best-effort; never fatal).
+            cleared = 0
+            try:
+                getter = getattr(clip, "get_notes_extended", None)
+                if getter is not None:
+                    cleared = len(list(getter(0, 128, 0.0, length)))
+                else:
+                    cleared = len(list(clip.get_notes(0.0, 0, length, 128)))
+            except Exception:
+                cleared = 0
+
+            # Remove every note across the full pitch/time range. Prefer the
+            # modern API (Live 11+); fall back to the legacy signature. Argument
+            # order mirrors the get/remove _extended family:
+            #   remove_notes_extended(from_pitch, pitch_span, from_time, time_span)
+            # vs the legacy remove_notes(from_time, from_pitch, time_span, pitch_span).
+            remover = getattr(clip, "remove_notes_extended", None)
+            if remover is not None:
+                remover(0, 128, 0.0, length)
+            else:
+                clip.remove_notes(0.0, 0, length, 128)
+
+            return {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "clip_name": clip.name,
+                "cleared_count": cleared,
+            }
+        except Exception as e:
+            self.log_message("Error clearing notes from clip: " + str(e))
             raise
 
     def _duplicate_session_clip_to_arrangement(self, track_index, clip_index, destination_time):
