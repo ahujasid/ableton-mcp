@@ -134,6 +134,19 @@ Once the config file has been set on Claude, and the remote script is running in
 - Add notes to MIDI clips
 - Change tempo and other session parameters
 
+## Optimized tools (v1.2.1)
+
+This build adds token-efficient and higher-level tools:
+
+- **Batch arrangement**: `duplicate_to_arrangement_batch` places N copies in one call.
+- **One-call instrument**: `create_instrument_track` creates a track, names it, loads an instrument, makes a clip and adds notes in a single call.
+- **Lean reads**: `get_tracks_overview` (compact all-track summary) and `get_notes_from_clip`.
+- **Guarded deletes** (two-phase confirm): `delete_clip`, `clear_clip_notes`, `delete_arrangement_clips`, `delete_track`. Without `confirm=true` they return a preview and change nothing.
+- **Mix & automation**: `set_track_volume` and `create_volume_fade` (volume automation on a Session clip that carries into the arrangement).
+- **Sync check**: `check_arrangement_sync` reports grid alignment (off-grid, overlaps, gaps).
+
+The `user_prompt` telemetry parameter was removed from all tools and read outputs use compact JSON, cutting token usage substantially.
+
 ## Example Commands
 
 Here are some examples of what you can ask Claude to do:

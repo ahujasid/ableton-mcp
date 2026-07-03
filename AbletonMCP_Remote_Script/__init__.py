@@ -233,7 +233,12 @@ class AbletonMCP(ControlSurface):
                                  "start_playback", "stop_playback", "load_browser_item",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
-                                 "duplicate_session_clip_to_arrangement"]:
+                                 "duplicate_session_clip_to_arrangement",
+                                 "delete_clip", "clear_clip_notes", "delete_track",
+                                 "delete_arrangement_clips",
+                                 "duplicate_session_clip_to_arrangement_batch",
+                                 "create_instrument_track",
+                                 "set_track_volume", "create_volume_fade"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -304,6 +309,23 @@ class AbletonMCP(ControlSurface):
                             result = self._duplicate_session_clip_to_arrangement(
                                 track_index, clip_index, destination_time)
 
+                        elif command_type == "delete_clip":
+                            result = self._delete_clip(params.get("track_index", 0), params.get("clip_index", 0), params.get("dry_run", False))
+                        elif command_type == "clear_clip_notes":
+                            result = self._clear_clip_notes(params.get("track_index", 0), params.get("clip_index", 0), params.get("dry_run", False))
+                        elif command_type == "delete_track":
+                            result = self._delete_track(params.get("track_index", 0), params.get("dry_run", False))
+                        elif command_type == "delete_arrangement_clips":
+                            result = self._delete_arrangement_clips(params.get("track_index", 0), params.get("start_time", 0.0), params.get("end_time", 0.0), params.get("dry_run", False))
+                        elif command_type == "duplicate_session_clip_to_arrangement_batch":
+                            result = self._duplicate_session_clip_to_arrangement_batch(params.get("track_index", 0), params.get("clip_index", 0), params.get("destination_time", 0.0), params.get("count", 1), params.get("spacing", 0.0))
+                        elif command_type == "create_instrument_track":
+                            result = self._create_instrument_track(params.get("name","Track"), params.get("uri",""), params.get("clip_length",4.0), params.get("notes",[]), params.get("clip_name"), params.get("index",-1))
+                        elif command_type == "set_track_volume":
+                            result = self._set_track_volume(params.get("track_index",0), params.get("value",0.85))
+                        elif command_type == "create_volume_fade":
+                            result = self._create_volume_fade(params.get("track_index",0), params.get("clip_index",0), params.get("from_value",0.0), params.get("to_value",1.0), params.get("start_time"), params.get("end_time"), params.get("dry_run",False))
+
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
@@ -322,7 +344,7 @@ class AbletonMCP(ControlSurface):
                 # create_audio_clip, which decodes/imports the audio file on
                 # the main thread) can take longer than the default 10s on
                 # larger files — give them more headroom.
-                long_running_commands = {"create_audio_clip": 60.0}
+                long_running_commands = {"create_audio_clip": 60.0, "duplicate_session_clip_to_arrangement_batch": 60.0, "create_instrument_track": 60.0}
                 queue_timeout = long_running_commands.get(command_type, 10.0)
                 try:
                     task_response = response_queue.get(timeout=queue_timeout)
@@ -356,6 +378,12 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_arrangement_clips":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_arrangement_clips(track_index)
+            elif command_type == "get_notes_from_clip":
+                response["result"] = self._get_notes_from_clip(params.get("track_index", 0), params.get("clip_index", 0))
+            elif command_type == "get_tracks_overview":
+                response["result"] = self._get_tracks_overview()
+            elif command_type == "check_arrangement_sync":
+                response["result"] = self._check_arrangement_sync(params.get("bar_beats", 4.0))
             else:
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
@@ -835,6 +863,219 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error duplicating clip to arrangement: " + str(e))
             raise
+
+
+    # ── Optimization: batch duplicate, safe deletes, lean reads ────────────────
+    # ponytail: guardrail (confirm) lives in the MCP server. These handlers only
+    # execute; delete handlers accept dry_run to power the two-phase preview.
+
+    def _resolve_slot(self, track_index, clip_index):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        if clip_index < 0 or clip_index >= len(track.clip_slots):
+            raise IndexError("Clip slot index out of range")
+        return track, track.clip_slots[clip_index]
+
+    def _delete_clip(self, track_index, clip_index, dry_run=False):
+        track, slot = self._resolve_slot(track_index, clip_index)
+        if not slot.has_clip:
+            raise Exception("No clip in slot " + str(clip_index) + " on track " + str(track_index))
+        info = {"track_index": track_index, "track_name": track.name,
+                "clip_index": clip_index, "clip_name": slot.clip.name}
+        if dry_run:
+            info["dry_run"] = True
+            return info
+        slot.delete_clip()
+        info["deleted"] = True
+        return info
+
+    def _clear_clip_notes(self, track_index, clip_index, dry_run=False):
+        track, slot = self._resolve_slot(track_index, clip_index)
+        if not slot.has_clip:
+            raise Exception("No clip in slot " + str(clip_index) + " on track " + str(track_index))
+        clip = slot.clip
+        if not clip.is_midi_clip:
+            raise Exception("Clip is not a MIDI clip")
+        count = len(clip.get_notes_extended(0, 128, 0.0, clip.length))
+        info = {"track_index": track_index, "clip_index": clip_index,
+                "clip_name": clip.name, "note_count": count}
+        if dry_run:
+            info["dry_run"] = True
+            return info
+        clip.remove_notes_extended(0, 128, 0.0, clip.length)
+        info["cleared"] = True
+        return info
+
+    def _delete_track(self, track_index, dry_run=False):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        info = {"track_index": track_index, "track_name": track.name,
+                "session_clips": sum(1 for s in track.clip_slots if s.has_clip),
+                "devices": [d.name for d in track.devices]}
+        if dry_run:
+            info["dry_run"] = True
+            return info
+        self._song.delete_track(track_index)
+        info["deleted"] = True
+        return info
+
+    def _delete_arrangement_clips(self, track_index, start_time, end_time, dry_run=False):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        start_time = float(start_time)
+        end_time = float(end_time)
+        # overlap test: clip intersects [start_time, end_time)
+        targets = [c for c in track.arrangement_clips
+                   if c.start_time < end_time and c.end_time > start_time]
+        info = {"track_index": track_index, "track_name": track.name,
+                "match_count": len(targets),
+                "clips": [{"name": c.name, "start_time": c.start_time,
+                           "end_time": c.end_time} for c in targets]}
+        if dry_run:
+            info["dry_run"] = True
+            return info
+        # ponytail: LOM has no per-clip arrangement delete. Live's supported
+        # route is a timeline range-delete on the Song for the selected track.
+        removed = 0
+        for c in list(targets):
+            self._song.delete_clip(c) if hasattr(self._song, "delete_clip") else track.delete_clip(c)
+            removed += 1
+        info["deleted"] = removed
+        return info
+
+    def _duplicate_session_clip_to_arrangement_batch(self, track_index, clip_index,
+                                                      destination_time, count, spacing=0.0):
+        track, slot = self._resolve_slot(track_index, clip_index)
+        if not slot.has_clip:
+            raise Exception("No clip in slot " + str(clip_index) + " on track " + str(track_index))
+        clip = slot.clip
+        # ponytail: spacing<=0 means gapless — step by the clip's own length
+        step = float(spacing) if spacing and float(spacing) > 0 else clip.length
+        t = float(destination_time)
+        placed = 0
+        for _ in range(int(count)):
+            track.duplicate_clip_to_arrangement(clip, t)
+            t += step
+            placed += 1
+        return {"track_index": track_index, "track_name": track.name,
+                "clip_name": clip.name, "placed": placed, "spacing": step,
+                "start": float(destination_time), "end": t}
+
+    def _get_notes_from_clip(self, track_index, clip_index):
+        track, slot = self._resolve_slot(track_index, clip_index)
+        if not slot.has_clip:
+            raise Exception("No clip in slot " + str(clip_index) + " on track " + str(track_index))
+        clip = slot.clip
+        if not clip.is_midi_clip:
+            raise Exception("Clip is not a MIDI clip")
+        notes = []
+        for n in clip.get_notes_extended(0, 128, 0.0, clip.length):
+            notes.append({"pitch": n.pitch, "start": n.start_time, "duration": n.duration,
+                          "velocity": n.velocity, "mute": n.mute})
+        return {"track_index": track_index, "clip_index": clip_index, "clip_name": clip.name,
+                "length": clip.length, "note_count": len(notes), "notes": notes}
+
+    def _get_tracks_overview(self):
+        tracks = []
+        for i, t in enumerate(self._song.tracks):
+            ttype = "audio" if t.has_audio_input else ("midi" if t.has_midi_input else "other")
+            tracks.append({"index": i, "name": t.name, "type": ttype,
+                           "clips": sum(1 for s in t.clip_slots if s.has_clip),
+                           "devices": len(t.devices),
+                           "mute": t.mute, "solo": t.solo, "arm": t.arm})
+        return {"tempo": self._song.tempo, "track_count": len(tracks), "tracks": tracks}
+
+
+
+
+    # ── New (round 2): combined creation, sync check, volume-API probe ─────────
+    def _create_instrument_track(self, name, uri, clip_length, notes, clip_name=None, index=-1):
+        # ponytail: collapse 5 calls (create+name+load+clip+notes) into one round trip
+        self._song.create_midi_track(-1 if (index is None or index == -1) else index)
+        ti = len(self._song.tracks) - 1 if (index is None or index == -1) else index
+        track = self._song.tracks[ti]
+        track.name = name
+        if uri:
+            self._load_browser_item(ti, uri)
+        slot = track.clip_slots[0]
+        if slot.has_clip:
+            raise Exception("Clip slot 0 already has a clip on track " + str(ti))
+        slot.create_clip(float(clip_length))
+        clip = slot.clip
+        if clip_name:
+            clip.name = clip_name
+        if notes:
+            self._add_notes_to_clip(ti, 0, notes)
+        return {"track_index": ti, "track_name": track.name, "clip_name": clip.name,
+                "note_count": len(notes or []), "devices": [d.name for d in track.devices]}
+
+    def _check_arrangement_sync(self, bar_beats=4.0):
+        bar = float(bar_beats); tol = 1e-4
+        off_grid = 0; overlaps = 0; gaps = 0; total = 0; tracks = 0; problems = []
+        for i, tr in enumerate(self._song.tracks):
+            clips = sorted(list(tr.arrangement_clips), key=lambda c: c.start_time)
+            if not clips:
+                continue
+            tracks += 1; prev_end = None
+            for c in clips:
+                total += 1
+                ratio = c.start_time / bar
+                if abs(ratio - round(ratio)) > tol:
+                    off_grid += 1
+                    problems.append({"track": tr.name, "clip": c.name, "start": c.start_time, "issue": "off_grid"})
+                if prev_end is not None:
+                    d = c.start_time - prev_end
+                    if d > tol:
+                        gaps += 1
+                    elif d < -tol:
+                        overlaps += 1
+                        problems.append({"track": tr.name, "clip": c.name, "start": c.start_time, "issue": "overlap"})
+                prev_end = c.end_time
+        return {"bar_beats": bar, "tracks_with_clips": tracks, "total_clips": total,
+                "off_grid": off_grid, "overlaps": overlaps, "gaps": gaps,
+                "in_sync": (off_grid == 0 and overlaps == 0), "problems": problems[:20]}
+
+
+
+    # ── New (round 3): arrangement volume control ─────────────────────────────
+    def _set_track_volume(self, track_index, value):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        tr = self._song.tracks[track_index]
+        v = max(0.0, min(1.0, float(value)))
+        tr.mixer_device.volume.value = v
+        return {"track_index": track_index, "track_name": tr.name,
+                "volume": tr.mixer_device.volume.value}
+
+    def _create_volume_fade(self, track_index, clip_index, from_value, to_value, start_time=None, end_time=None, dry_run=False):
+        # Volume automation via Live API only works on SESSION clips; the fade
+        # rides into the arrangement when the clip is duplicated there.
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        tr = self._song.tracks[track_index]
+        vol = tr.mixer_device.volume
+        slot = tr.clip_slots[clip_index]
+        if not slot.has_clip:
+            raise Exception("No clip in session slot " + str(clip_index) + " on track " + str(track_index))
+        clip = slot.clip
+        length = clip.length
+        s = 0.0 if start_time is None else float(start_time)
+        e = length if end_time is None else float(end_time)
+        fv = max(0.0, min(1.0, float(from_value)))
+        tv = max(0.0, min(1.0, float(to_value)))
+        env = clip.automation_envelope(vol)
+        if env is None:
+            env = clip.create_automation_envelope(vol)
+        if dry_run:
+            return {"track_index": track_index, "clip_index": clip_index, "clip_length": length,
+                    "env_methods": sorted([n for n in dir(env) if not n.startswith("__")]) if env else None}
+        env.insert_step(s, 0.0, fv)
+        env.insert_step(e, 0.0, tv)
+        return {"track_index": track_index, "clip_index": clip_index, "clip_name": clip.name,
+                "fade": [s, e, fv, tv]}
 
     # ── Browser implementations ───────────────────────────────────────────────
 
