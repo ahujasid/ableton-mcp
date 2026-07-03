@@ -117,14 +117,18 @@ class AbletonConnection:
             "start_playback", "stop_playback", "load_instrument_or_effect",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
-            "duplicate_session_clip_to_arrangement"
+            "duplicate_session_clip_to_arrangement",
+            "delete_clip", "clear_clip_notes", "delete_track", "delete_arrangement_clips",
+            "duplicate_session_clip_to_arrangement_batch",
+            "create_instrument_track",
+            "set_track_volume", "create_volume_fade"
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
         # than the default modifying-command budget (e.g. importing/decoding a
         # large audio file). Give them a wider socket timeout so we don't time
         # out before the Remote Script's own queue does.
-        long_running_commands = {"create_audio_clip": 65.0}
+        long_running_commands = {"create_audio_clip": 65.0, "duplicate_session_clip_to_arrangement_batch": 65.0, "create_instrument_track": 65.0}
         
         try:
             logger.info(f"Sending command: {command_type} with params: {params}")
@@ -270,47 +274,44 @@ def get_ableton_connection():
 
 @mcp.tool()
 @telemetry_tool("get_session_info")
-def get_session_info(ctx: Context, user_prompt: str = "") -> str:
+def get_session_info(ctx: Context) -> str:
     """Get detailed information about the current Ableton session
 
     Parameters:
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("get_session_info")
-        return json.dumps(result, indent=2)
+        return json.dumps(result, separators=(",", ":"))
     except Exception as e:
         logger.error(f"Error getting session info from Ableton: {str(e)}")
         return f"Error getting session info: {str(e)}"
 
 @mcp.tool()
 @telemetry_tool("get_track_info")
-def get_track_info(ctx: Context, track_index: int, user_prompt: str = "") -> str:
+def get_track_info(ctx: Context, track_index: int) -> str:
     """
     Get detailed information about a specific track in Ableton.
 
     Parameters:
     - track_index: The index of the track to get information about
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("get_track_info", {"track_index": track_index})
-        return json.dumps(result, indent=2)
+        return json.dumps(result, separators=(",", ":"))
     except Exception as e:
         logger.error(f"Error getting track info from Ableton: {str(e)}")
         return f"Error getting track info: {str(e)}"
 
 @mcp.tool()
 @telemetry_tool("create_midi_track")
-def create_midi_track(ctx: Context, index: int = -1, user_prompt: str = "") -> str:
+def create_midi_track(ctx: Context, index: int = -1) -> str:
     """
     Create a new MIDI track in the Ableton session.
 
     Parameters:
     - index: The index to insert the track at (-1 = end of list)
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -323,14 +324,13 @@ def create_midi_track(ctx: Context, index: int = -1, user_prompt: str = "") -> s
 
 @mcp.tool()
 @rich_telemetry_tool("set_track_name")
-def set_track_name(ctx: Context, track_index: int, name: str, user_prompt: str = "") -> str:
+def set_track_name(ctx: Context, track_index: int, name: str) -> str:
     """
     Set the name of a track.
 
     Parameters:
     - track_index: The index of the track to rename
     - name: The new name for the track
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -342,7 +342,7 @@ def set_track_name(ctx: Context, track_index: int, name: str, user_prompt: str =
 
 @mcp.tool()
 @rich_telemetry_tool("create_clip")
-def create_clip(ctx: Context, track_index: int, clip_index: int, length: float = 4.0, user_prompt: str = "") -> str:
+def create_clip(ctx: Context, track_index: int, clip_index: int, length: float = 4.0) -> str:
     """
     Create a new MIDI clip in the specified track and clip slot.
 
@@ -350,7 +350,6 @@ def create_clip(ctx: Context, track_index: int, clip_index: int, length: float =
     - track_index: The index of the track to create the clip in
     - clip_index: The index of the clip slot to create the clip in
     - length: The length of the clip in beats (default: 4.0)
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -366,7 +365,7 @@ def create_clip(ctx: Context, track_index: int, clip_index: int, length: float =
 
 @mcp.tool()
 @rich_telemetry_tool("create_audio_clip")
-def create_audio_clip(ctx: Context, track_index: int, clip_index: int, path: str, user_prompt: str = "") -> str:
+def create_audio_clip(ctx: Context, track_index: int, clip_index: int, path: str) -> str:
     """
     Create a new audio clip in an audio track's clip slot by importing a file.
 
@@ -379,7 +378,6 @@ def create_audio_clip(ctx: Context, track_index: int, clip_index: int, path: str
     - clip_index: The index of the clip slot to create the clip in
     - path: Absolute path to a supported audio file (e.g. a .wav). The target
       track must be an audio track and the clip slot must be empty.
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -399,8 +397,7 @@ def add_notes_to_clip(
     ctx: Context,
     track_index: int,
     clip_index: int,
-    notes: List[Dict[str, Union[int, float, bool]]],
-    user_prompt: str = ""
+    notes: List[Dict[str, Union[int, float, bool]]]
 ) -> str:
     """
     Add MIDI notes to a clip.
@@ -409,7 +406,6 @@ def add_notes_to_clip(
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
     - notes: List of note dictionaries, each with pitch, start_time, duration, velocity, and mute
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -425,7 +421,7 @@ def add_notes_to_clip(
 
 @mcp.tool()
 @rich_telemetry_tool("set_clip_name")
-def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str, user_prompt: str = "") -> str:
+def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) -> str:
     """
     Set the name of a clip.
 
@@ -433,7 +429,6 @@ def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str, us
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
     - name: The new name for the clip
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -449,13 +444,12 @@ def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str, us
 
 @mcp.tool()
 @rich_telemetry_tool("set_tempo")
-def set_tempo(ctx: Context, tempo: float, user_prompt: str = "") -> str:
+def set_tempo(ctx: Context, tempo: float) -> str:
     """
     Set the tempo of the Ableton session.
 
     Parameters:
     - tempo: The new tempo in BPM
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -468,14 +462,13 @@ def set_tempo(ctx: Context, tempo: float, user_prompt: str = "") -> str:
 
 @mcp.tool()
 @rich_telemetry_tool("load_instrument_or_effect")
-def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, user_prompt: str = "") -> str:
+def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
     """
     Load an instrument or effect onto a track using its URI.
 
     Parameters:
     - track_index: The index of the track to load the instrument on
     - uri: The URI of the instrument or effect to load (e.g., 'query:Synths#Instrument%20Rack:Bass:FileId_5116')
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -500,14 +493,13 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, user_pro
 
 @mcp.tool()
 @telemetry_tool("fire_clip")
-def fire_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str = "") -> str:
+def fire_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     """
     Start playing a clip.
 
     Parameters:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -522,14 +514,13 @@ def fire_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str 
 
 @mcp.tool()
 @telemetry_tool("stop_clip")
-def stop_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str = "") -> str:
+def stop_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     """
     Stop playing a clip.
 
     Parameters:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -544,11 +535,10 @@ def stop_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str 
 
 @mcp.tool()
 @telemetry_tool("start_playback")
-def start_playback(ctx: Context, user_prompt: str = "") -> str:
+def start_playback(ctx: Context) -> str:
     """Start playing the Ableton session.
 
     Parameters:
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -560,11 +550,10 @@ def start_playback(ctx: Context, user_prompt: str = "") -> str:
 
 @mcp.tool()
 @telemetry_tool("stop_playback")
-def stop_playback(ctx: Context, user_prompt: str = "") -> str:
+def stop_playback(ctx: Context) -> str:
     """Stop playing the Ableton session.
 
     Parameters:
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -576,13 +565,12 @@ def stop_playback(ctx: Context, user_prompt: str = "") -> str:
 
 @mcp.tool()
 @rich_telemetry_tool("get_browser_tree")
-def get_browser_tree(ctx: Context, category_type: str = "all", user_prompt: str = "") -> str:
+def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
     """
     Get a hierarchical tree of browser categories from Ableton.
 
     Parameters:
     - category_type: Type of categories to get ('all', 'instruments', 'sounds', 'drums', 'audio_effects', 'midi_effects')
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -641,14 +629,13 @@ def get_browser_tree(ctx: Context, category_type: str = "all", user_prompt: str 
 
 @mcp.tool()
 @rich_telemetry_tool("get_browser_items_at_path")
-def get_browser_items_at_path(ctx: Context, path: str, user_prompt: str = "") -> str:
+def get_browser_items_at_path(ctx: Context, path: str) -> str:
     """
     Get browser items at a specific path in Ableton's browser.
 
     Parameters:
     - path: Path in the format "category/folder/subfolder"
             where category is one of the available browser categories in Ableton
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -663,7 +650,7 @@ def get_browser_items_at_path(ctx: Context, path: str, user_prompt: str = "") ->
             return (f"Error: {error}\n"
                    f"Available browser categories: {', '.join(available_cats)}")
         
-        return json.dumps(result, indent=2)
+        return json.dumps(result, separators=(",", ":"))
     except Exception as e:
         error_msg = str(e)
         if "Browser is not available" in error_msg:
@@ -684,7 +671,7 @@ def get_browser_items_at_path(ctx: Context, path: str, user_prompt: str = "") ->
 
 @mcp.tool()
 @rich_telemetry_tool("load_drum_kit")
-def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str, user_prompt: str = "") -> str:
+def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:
     """
     Load a drum rack and then load a specific drum kit into it.
 
@@ -692,7 +679,6 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str, 
     - track_index: The index of the track to load on
     - rack_uri: The URI of the drum rack to load (e.g., 'Drums/Drum Rack')
     - kit_path: Path to the drum kit inside the browser (e.g., 'drums/acoustic/kit1')
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -737,11 +723,10 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str, 
 
 @mcp.tool()
 @telemetry_tool("switch_to_arrangement_view")
-def switch_to_arrangement_view(ctx: Context, user_prompt: str = "") -> str:
+def switch_to_arrangement_view(ctx: Context) -> str:
     """Switch Ableton's main window to the Arrangement view.
 
     Parameters:
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -754,13 +739,12 @@ def switch_to_arrangement_view(ctx: Context, user_prompt: str = "") -> str:
 
 @mcp.tool()
 @rich_telemetry_tool("set_arrangement_time")
-def set_arrangement_time(ctx: Context, time: float, user_prompt: str = "") -> str:
+def set_arrangement_time(ctx: Context, time: float) -> str:
     """
     Move the arrangement playhead to a specific position.
 
     Parameters:
     - time: Position in beats from the start of the arrangement (e.g. 8.0 = bar 3 in 4/4)
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -773,7 +757,7 @@ def set_arrangement_time(ctx: Context, time: float, user_prompt: str = "") -> st
 
 @mcp.tool()
 @telemetry_tool("get_arrangement_clips")
-def get_arrangement_clips(ctx: Context, track_index: int, user_prompt: str = "") -> str:
+def get_arrangement_clips(ctx: Context, track_index: int) -> str:
     """
     List all clips placed in the Arrangement timeline for a track.
 
@@ -781,12 +765,11 @@ def get_arrangement_clips(ctx: Context, track_index: int, user_prompt: str = "")
 
     Parameters:
     - track_index: The index of the track to inspect
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("get_arrangement_clips", {"track_index": track_index})
-        return json.dumps(result, indent=2)
+        return json.dumps(result, separators=(",", ":"))
     except Exception as e:
         logger.error(f"Error getting arrangement clips: {str(e)}")
         return f"Error getting arrangement clips: {str(e)}"
@@ -798,8 +781,7 @@ def duplicate_to_arrangement(
     ctx: Context,
     track_index: int,
     clip_index: int,
-    destination_time: float,
-    user_prompt: str = ""
+    destination_time: float
 ) -> str:
     """
     Copy a Session-view clip into the Arrangement timeline.
@@ -818,7 +800,6 @@ def duplicate_to_arrangement(
     - clip_index:        Index of the clip slot in that track (Session view)
     - destination_time:  Beat position in the arrangement to place the clip
                          (e.g. 0.0 = start, 8.0 = bar 3 in 4/4)
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
@@ -839,6 +820,244 @@ def duplicate_to_arrangement(
     except Exception as e:
         logger.error(f"Error duplicating clip to arrangement: {str(e)}")
         return f"Error duplicating clip to arrangement: {str(e)}"
+
+
+# ── Optimization tools: batch duplicate, guarded deletes, lean reads ──────────
+# ponytail: one helper for the two-phase delete guardrail instead of repeating
+# the confirm/preview dance in every delete tool. Without confirm=True nothing
+# is deleted — the Remote Script returns a dry-run preview the human approves.
+
+def _guarded_delete(delete_cmd: str, params: dict, confirm: bool, what: str) -> str:
+    ableton = get_ableton_connection()
+    if not confirm:
+        preview = ableton.send_command(delete_cmd, dict(params, dry_run=True))
+        return ("CONFIRM REQUIRED - nothing changed yet. Would affect " + what + ": "
+                + json.dumps(preview, separators=(",", ":"))
+                + " | Re-call this tool with confirm=true to proceed.")
+    result = ableton.send_command(delete_cmd, dict(params, dry_run=False))
+    return "Done. " + json.dumps(result, separators=(",", ":"))
+
+
+@mcp.tool()
+def delete_clip(ctx: Context, track_index: int, clip_index: int, confirm: bool = False) -> str:
+    """Delete a Session-view clip from its slot. SAFE: call once to preview, then again with confirm=true to delete.
+
+    Parameters:
+    - track_index: index of the track
+    - clip_index: index of the clip slot
+    - confirm: must be true to actually delete (default false = preview only)
+    """
+    try:
+        return _guarded_delete("delete_clip",
+                               {"track_index": track_index, "clip_index": clip_index},
+                               confirm, "clip at track " + str(track_index) + " slot " + str(clip_index))
+    except Exception as e:
+        logger.error(f"Error deleting clip: {str(e)}")
+        return f"Error deleting clip: {str(e)}"
+
+
+@mcp.tool()
+def clear_clip_notes(ctx: Context, track_index: int, clip_index: int, confirm: bool = False) -> str:
+    """Erase all MIDI notes from a clip but keep the clip. SAFE: call once to preview, then confirm=true to clear.
+
+    Parameters:
+    - track_index: index of the track
+    - clip_index: index of the clip slot
+    - confirm: must be true to actually clear (default false = preview only)
+    """
+    try:
+        return _guarded_delete("clear_clip_notes",
+                               {"track_index": track_index, "clip_index": clip_index},
+                               confirm, "notes in clip at track " + str(track_index) + " slot " + str(clip_index))
+    except Exception as e:
+        logger.error(f"Error clearing clip notes: {str(e)}")
+        return f"Error clearing clip notes: {str(e)}"
+
+
+@mcp.tool()
+def delete_arrangement_clips(ctx: Context, track_index: int, start_time: float,
+                             end_time: float, confirm: bool = False) -> str:
+    """Delete Arrangement clips on a track that overlap a beat range. SAFE: preview first, then confirm=true.
+
+    Parameters:
+    - track_index: index of the track
+    - start_time: range start in beats
+    - end_time: range end in beats
+    - confirm: must be true to actually delete (default false = preview only)
+    """
+    try:
+        return _guarded_delete("delete_arrangement_clips",
+                               {"track_index": track_index, "start_time": start_time, "end_time": end_time},
+                               confirm, "arrangement clips on track " + str(track_index)
+                               + " in beats " + str(start_time) + "-" + str(end_time))
+    except Exception as e:
+        logger.error(f"Error deleting arrangement clips: {str(e)}")
+        return f"Error deleting arrangement clips: {str(e)}"
+
+
+@mcp.tool()
+def delete_track(ctx: Context, track_index: int, confirm: bool = False) -> str:
+    """Delete an entire track and everything on it. SAFE + destructive: preview first, then confirm=true.
+
+    Parameters:
+    - track_index: index of the track to delete
+    - confirm: must be true to actually delete (default false = preview only)
+    """
+    try:
+        return _guarded_delete("delete_track", {"track_index": track_index},
+                               confirm, "track " + str(track_index) + " (and all its clips/devices)")
+    except Exception as e:
+        logger.error(f"Error deleting track: {str(e)}")
+        return f"Error deleting track: {str(e)}"
+
+
+@mcp.tool()
+def duplicate_to_arrangement_batch(ctx: Context, track_index: int, clip_index: int,
+                                   destination_time: float, count: int, spacing: float = 0.0) -> str:
+    """Place COUNT copies of a Session clip into the Arrangement in ONE call (no per-copy round trips).
+
+    Parameters:
+    - track_index: index of the track owning the Session clip
+    - clip_index: index of the clip slot
+    - destination_time: beat position of the first copy
+    - count: how many copies to place
+    - spacing: beats between copy starts; 0 (default) = back-to-back using the clip's own length
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_session_clip_to_arrangement_batch", {
+            "track_index": track_index, "clip_index": clip_index,
+            "destination_time": destination_time, "count": count, "spacing": spacing})
+        return ("Placed " + str(result.get("placed", count)) + " copies of '"
+                + str(result.get("clip_name", "clip")) + "' on '"
+                + str(result.get("track_name", track_index)) + "' from beat "
+                + str(destination_time) + " (spacing " + str(result.get("spacing")) + ").")
+    except Exception as e:
+        logger.error(f"Error batch-duplicating to arrangement: {str(e)}")
+        return f"Error batch-duplicating to arrangement: {str(e)}"
+
+
+@mcp.tool()
+def get_notes_from_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+    """Read the MIDI notes already in a clip so you can edit precisely instead of guessing. Compact JSON.
+
+    Parameters:
+    - track_index: index of the track
+    - clip_index: index of the clip slot
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_notes_from_clip",
+                                      {"track_index": track_index, "clip_index": clip_index})
+        return json.dumps(result, separators=(",", ":"))
+    except Exception as e:
+        logger.error(f"Error reading notes from clip: {str(e)}")
+        return f"Error reading notes from clip: {str(e)}"
+
+
+@mcp.tool()
+def get_tracks_overview(ctx: Context) -> str:
+    """Compact list of ALL tracks (index, name, type, clip count, device count) in one call.
+
+    Use this to orient before drilling into a single track with get_track_info.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_tracks_overview")
+        return json.dumps(result, separators=(",", ":"))
+    except Exception as e:
+        logger.error(f"Error getting tracks overview: {str(e)}")
+        return f"Error getting tracks overview: {str(e)}"
+
+
+
+
+
+@mcp.tool()
+def create_instrument_track(ctx: Context, name: str, uri: str, clip_length: float = 4.0,
+                            notes: List[Dict[str, Union[int, float, bool]]] = None,
+                            clip_name: str = "") -> str:
+    """Create a MIDI track, name it, load an instrument by URI, make a clip and add notes in ONE call.
+
+    Collapses create_midi_track + set_track_name + load_instrument_or_effect + create_clip + add_notes_to_clip.
+
+    Parameters:
+    - name: track name
+    - uri: instrument/preset browser URI to load
+    - clip_length: clip length in beats
+    - notes: list of note dicts (pitch, start_time, duration, velocity, mute); optional
+    - clip_name: optional name for the created clip
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_instrument_track", {
+            "name": name, "uri": uri, "clip_length": clip_length,
+            "notes": notes or [], "clip_name": clip_name})
+        return "Created instrument track '%s' (index %s) with %s notes." % (
+            result.get("track_name", name), result.get("track_index"), result.get("note_count"))
+    except Exception as e:
+        logger.error(f"Error creating instrument track: {str(e)}")
+        return f"Error creating instrument track: {str(e)}"
+
+
+@mcp.tool()
+def check_arrangement_sync(ctx: Context, bar_beats: float = 4.0) -> str:
+    """Check that arrangement clips across all tracks are grid-aligned and free of gaps/overlaps. Compact JSON.
+
+    Parameters:
+    - bar_beats: beats per bar (default 4.0)
+    """
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("check_arrangement_sync", {"bar_beats": bar_beats}), separators=(",", ":"))
+    except Exception as e:
+        logger.error(f"Error checking arrangement sync: {str(e)}")
+        return f"Error checking arrangement sync: {str(e)}"
+
+
+
+
+
+@mcp.tool()
+def set_track_volume(ctx: Context, track_index: int, value: float) -> str:
+    """Set a track's mixer volume immediately (0.0-1.0). Use for static section mix balance.
+
+    Parameters:
+    - track_index: index of the track
+    - value: volume 0.0 (silence) to 1.0 (unity ~0 dB region)
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("set_track_volume", {"track_index": track_index, "value": value})
+        return "Set '%s' volume to %s" % (r.get("track_name", track_index), r.get("volume"))
+    except Exception as e:
+        logger.error(f"Error setting track volume: {str(e)}")
+        return f"Error setting track volume: {str(e)}"
+
+
+@mcp.tool()
+def create_volume_fade(ctx: Context, track_index: int, clip_index: int,
+                       from_value: float, to_value: float) -> str:
+    """Write a volume fade across a Session clip (it carries into the arrangement when duplicated).
+
+    Use long section clips for section-length entrances/exits (fade in an intro, fade out an outro).
+
+    Parameters:
+    - track_index: index of the track
+    - clip_index: session clip slot index that holds the clip
+    - from_value: starting volume 0.0-1.0
+    - to_value: ending volume 0.0-1.0
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("create_volume_fade", {
+            "track_index": track_index, "clip_index": clip_index,
+            "from_value": from_value, "to_value": to_value})
+        return "Volume fade on '%s' clip %s (%s->%s)." % (r.get("clip_name", track_index), clip_index, from_value, to_value)
+    except Exception as e:
+        logger.error(f"Error creating volume fade: {str(e)}")
+        return f"Error creating volume fade: {str(e)}"
+
 
 
 # Main execution
