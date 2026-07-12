@@ -448,6 +448,31 @@ def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str, us
         return f"Error setting clip name: {str(e)}"
 
 @mcp.tool()
+@rich_telemetry_tool("set_arrangement_clip_name")
+def set_arrangement_clip_name(ctx: Context, track_index: int, clip_index: int, name: str, user_prompt: str = "") -> str:
+    """
+    Set the name of a clip placed in the Arrangement timeline.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the clip within track.arrangement_clips, in the
+      same order returned by get_arrangement_clips (i.e. ordered by start_time)
+    - name: The new name for the clip
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_arrangement_clip_name", {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "name": name
+        })
+        return f"Renamed arrangement clip at track {track_index}, index {clip_index} to '{name}'"
+    except Exception as e:
+        logger.error(f"Error setting arrangement clip name: {str(e)}")
+        return f"Error setting arrangement clip name: {str(e)}"
+
+@mcp.tool()
 @rich_telemetry_tool("set_tempo")
 def set_tempo(ctx: Context, tempo: float, user_prompt: str = "") -> str:
     """
