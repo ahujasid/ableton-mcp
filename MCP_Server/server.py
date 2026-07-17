@@ -117,7 +117,11 @@ class AbletonConnection:
             "start_playback", "stop_playback", "load_instrument_or_effect",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
-            "duplicate_session_clip_to_arrangement"
+            "duplicate_session_clip_to_arrangement",
+            # Device/chain graph editing
+            "insert_device_in_chain", "insert_chain_in_rack",
+            "set_chain_properties", "set_track_midi_channel", "set_macro_count",
+            "load_sample_into_device", "delete_device", "delete_track"
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
@@ -839,6 +843,393 @@ def duplicate_to_arrangement(
     except Exception as e:
         logger.error(f"Error duplicating clip to arrangement: {str(e)}")
         return f"Error duplicating clip to arrangement: {str(e)}"
+
+
+# ── Device / chain graph editing tools ──────────────────────────────────────
+#
+# These operate on a "device_path": a list of ints that alternately index a
+# container's device list and a rack device's chain list, starting from the
+# track's top-level devices. Examples:
+#   []        -> the track itself (root device chain)
+#   [0]       -> track.devices[0]                      (a device)
+#   [0, 2]    -> track.devices[0].chains[2]             (a chain, e.g. a drum pad)
+#   [0, 2, 1] -> track.devices[0].chains[2].devices[1]  (a device inside that chain)
+#
+# Typical Drum Rack pad build:
+#   1. insert_chain_in_rack(track, [0])              -> new pad chain at [0, N]
+#   2. set_chain_properties(track, [0, N], in_note=36)  -> pins it to pad C1
+#   3. insert_device_in_chain(track, [0, N], "Simpler")   -> devices land at [0, N, 0], [0, N, 1], ...
+#   4. insert_device_in_chain(track, [0, N], "Saturator")
+#   5. set_device_parameter(track, [0, N, 1], "Drive", 0.5)
+#
+# Requires Ableton Live 12.3+ (Track.insert_device / Chain.insert_device /
+# RackDevice.insert_chain were added in that release).
+
+@mcp.tool()
+@rich_telemetry_tool("insert_device_in_chain")
+def insert_device_in_chain(
+    ctx: Context,
+    track_index: int,
+    device_path: List[int],
+    device_name: str,
+    target_index: int = None,
+    user_prompt: str = ""
+) -> str:
+    """
+    Insert a native Live device by its UI name (e.g. 'Simpler', 'Saturator',
+    'EQ Three', 'EQ Eight', 'Auto Filter', 'Utility', 'Reverb', 'Delay',
+    'Audio Effect Rack') into a track's root chain or into a specific chain
+    addressed by device_path. Requires Live 12.3+. Only native Live devices
+    are supported (no plugins/M4L).
+
+    Parameters:
+    - track_index: The index of the track
+    - device_path: Path to a track ([]) or a chain (e.g. [0, 2]) to append the device to
+    - device_name: The device's exact UI name, e.g. "Saturator"
+    - target_index: Optional position within the chain's device list (default: append at end)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("insert_device_in_chain", {
+            "track_index": track_index,
+            "device_path": device_path,
+            "device_name": device_name,
+            "target_index": target_index
+        })
+        return (f"Inserted '{result.get('name', device_name)}' at device_path "
+                f"{result.get('device_path')} on track {track_index}")
+    except Exception as e:
+        logger.error(f"Error inserting device in chain: {str(e)}")
+        return f"Error inserting device in chain: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("insert_chain_in_rack")
+def insert_chain_in_rack(
+    ctx: Context,
+    track_index: int,
+    device_path: List[int],
+    target_index: int = None,
+    user_prompt: str = ""
+) -> str:
+    """
+    Insert a new chain into a rack device (Instrument Rack, Audio Effect
+    Rack, or Drum Rack) addressed by device_path. For a Drum Rack this
+    creates a pad chain (DrumChain) defaulted to 'All Notes' — pin it to a
+    specific pad afterward with set_chain_properties(in_note=...). Requires
+    Live 12.3+.
+
+    Parameters:
+    - track_index: The index of the track
+    - device_path: Path to the rack device, e.g. [0] for the first device on the track
+    - target_index: Optional chain position (default: append at end)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("insert_chain_in_rack", {
+            "track_index": track_index,
+            "device_path": device_path,
+            "target_index": target_index
+        })
+        return (f"Inserted chain '{result.get('name')}' at device_path "
+                f"{result.get('device_path')} (is_drum_chain={result.get('is_drum_chain')})")
+    except Exception as e:
+        logger.error(f"Error inserting chain in rack: {str(e)}")
+        return f"Error inserting chain in rack: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_chain_properties")
+def set_chain_properties(
+    ctx: Context,
+    track_index: int,
+    device_path: List[int],
+    name: str = None,
+    in_note: int = None,
+    choke_group: int = None,
+    user_prompt: str = ""
+) -> str:
+    """
+    Set a chain's name, and for Drum Rack pad chains, the MIDI note that
+    triggers it (in_note, e.g. 36 for C1) and/or its choke group (chains
+    sharing a nonzero choke group silence each other when triggered — use
+    this to make a closed hat cut off an open hat).
+
+    Parameters:
+    - track_index: The index of the track
+    - device_path: Path to the chain, e.g. [0, 2]
+    - name: Optional new name for the chain
+    - in_note: Optional MIDI note number (0-127) that triggers this Drum Rack pad chain
+    - choke_group: Optional choke group number (1-16); chains sharing a group choke each other
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_chain_properties", {
+            "track_index": track_index,
+            "device_path": device_path,
+            "name": name,
+            "in_note": in_note,
+            "choke_group": choke_group
+        })
+        return f"Chain properties: {json.dumps(result)}"
+    except Exception as e:
+        logger.error(f"Error setting chain properties: {str(e)}")
+        return f"Error setting chain properties: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_device_parameter")
+def set_device_parameter(
+    ctx: Context,
+    track_index: int,
+    device_path: List[int],
+    parameter_name: str,
+    value: float,
+    user_prompt: str = ""
+) -> str:
+    """
+    Set a device parameter's value by name (e.g. 'Drive', 'Dry/Wet', 'Decay
+    Time', 'Frequency'). Values are in the parameter's native range — use
+    get_device_parameters first to see each parameter's current value, min,
+    and max. Matching is exact first, then case-insensitive, then substring.
+
+    Parameters:
+    - track_index: The index of the track
+    - device_path: Path to the device, e.g. [0, 2, 1]
+    - parameter_name: The parameter's name as shown in Live's UI
+    - value: The new value, within [min, max] for that parameter
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_device_parameter", {
+            "track_index": track_index,
+            "device_path": device_path,
+            "parameter_name": parameter_name,
+            "value": value
+        })
+        return (f"Set '{result.get('device_name')}' -> '{result.get('parameter_name')}' "
+                f"= {result.get('display_value')} (raw {result.get('value')}, "
+                f"range {result.get('min')}-{result.get('max')})")
+    except Exception as e:
+        logger.error(f"Error setting device parameter: {str(e)}")
+        return f"Error setting device parameter: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("get_device_parameters")
+def get_device_parameters(
+    ctx: Context,
+    track_index: int,
+    device_path: List[int],
+    user_prompt: str = ""
+) -> str:
+    """
+    List all automatable parameters on a device with their current value,
+    min, and max. Use this to discover exact parameter names before calling
+    set_device_parameter.
+
+    Parameters:
+    - track_index: The index of the track
+    - device_path: Path to the device, e.g. [0, 2, 1]
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_parameters", {
+            "track_index": track_index,
+            "device_path": device_path
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device parameters: {str(e)}")
+        return f"Error getting device parameters: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("get_device_chains")
+def get_device_chains(
+    ctx: Context,
+    track_index: int,
+    device_path: List[int],
+    user_prompt: str = ""
+) -> str:
+    """
+    List the chains inside a rack device (Instrument Rack, Audio Effect
+    Rack, or Drum Rack), including each chain's devices, in_note (Drum Rack
+    pad trigger note), and choke_group.
+
+    Parameters:
+    - track_index: The index of the track
+    - device_path: Path to the rack device, e.g. [0]
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_chains", {
+            "track_index": track_index,
+            "device_path": device_path
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device chains: {str(e)}")
+        return f"Error getting device chains: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_macro_count")
+def set_macro_count(
+    ctx: Context,
+    track_index: int,
+    device_path: List[int],
+    count: int,
+    user_prompt: str = ""
+) -> str:
+    """
+    Set how many Macro knobs are visible on a rack device (Instrument Rack,
+    Audio Effect Rack, or Drum Rack). Requires Live 11.0+.
+
+    Parameters:
+    - track_index: The index of the track
+    - device_path: Path to the rack device, e.g. [0, 0, 0] for an Instrument Rack nested in a drum pad
+    - count: Desired number of visible macros (typically 0-16)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_macro_count", {
+            "track_index": track_index,
+            "device_path": device_path,
+            "count": count
+        })
+        return f"'{result.get('device_name')}' now has {result.get('visible_macro_count')} visible macros"
+    except Exception as e:
+        logger.error(f"Error setting macro count: {str(e)}")
+        return f"Error setting macro count: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("load_sample_into_device")
+def load_sample_into_device(
+    ctx: Context,
+    track_index: int,
+    device_path: List[int],
+    item_uri: str,
+    user_prompt: str = ""
+) -> str:
+    """
+    Load a browser sample (or preset) into an EMPTY chain or the track root
+    (device_path resolving to a chain/track) — this reliably auto-creates a
+    Simpler, exactly like dragging a sample onto an empty track. Prefer this
+    over targeting an existing device: hot-swapping a sample directly onto
+    an existing Simpler is known to fail on this Live build with a
+    boost.python argument-type error. If a device is already sitting where
+    you need the sample, delete it first with delete_device, then load into
+    the now-empty chain.
+
+    Use get_browser_items_at_path to find the sample's URI first (e.g.
+    under 'drums/drum hits/kick').
+
+    Parameters:
+    - track_index: The index of the track
+    - device_path: Path to an EMPTY chain (or [] for track root) to load into, e.g. [0, 0, 0, 0]
+    - item_uri: URI of the browser sample/preset to load, from get_browser_items_at_path
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("load_sample_into_device", {
+            "track_index": track_index,
+            "device_path": device_path,
+            "item_uri": item_uri
+        })
+        if result.get("load_error"):
+            return f"Failed to load '{result.get('item_name')}': {result.get('load_error')}"
+        return (f"Loaded '{result.get('item_name')}' -> new device '{result.get('new_device_name')}' "
+                f"at index {result.get('new_device_index')} "
+                f"(devices: {result.get('device_count_before')} -> {result.get('device_count_after')})")
+    except Exception as e:
+        logger.error(f"Error loading sample into device: {str(e)}")
+        return f"Error loading sample into device: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("delete_device")
+def delete_device(
+    ctx: Context,
+    track_index: int,
+    device_path: List[int],
+    user_prompt: str = ""
+) -> str:
+    """
+    Delete the device at device_path. Requires Live 12.3+.
+
+    Parameters:
+    - track_index: The index of the track
+    - device_path: Path to the device to delete, e.g. [0, 0, 0, 0, 0]
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_device", {
+            "track_index": track_index,
+            "device_path": device_path
+        })
+        return f"Deleted '{result.get('name')}' ({result.get('remaining_count')} devices remain in that chain)"
+    except Exception as e:
+        logger.error(f"Error deleting device: {str(e)}")
+        return f"Error deleting device: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("delete_track")
+def delete_track(ctx: Context, track_index: int, user_prompt: str = "") -> str:
+    """
+    Delete a top-level track (e.g. to clean up a scratch/test track).
+
+    Parameters:
+    - track_index: The index of the track to delete
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_track", {"track_index": track_index})
+        return f"Deleted track '{result.get('name')}' ({result.get('remaining_track_count')} tracks remain)"
+    except Exception as e:
+        logger.error(f"Error deleting track: {str(e)}")
+        return f"Error deleting track: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_track_midi_channel")
+def set_track_midi_channel(
+    ctx: Context,
+    track_index: int,
+    channel: int = None,
+    user_prompt: str = ""
+) -> str:
+    """
+    Filter a MIDI track's input to a single MIDI channel (1-16). Pass
+    channel=None or 0 to reset to 'All Channels'.
+
+    Parameters:
+    - track_index: The index of the MIDI track
+    - channel: MIDI channel number 1-16, or None/0 for all channels
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_midi_channel", {
+            "track_index": track_index,
+            "channel": channel
+        })
+        return f"Track {track_index} MIDI input routing channel: {result.get('input_routing_channel')}"
+    except Exception as e:
+        logger.error(f"Error setting track MIDI channel: {str(e)}")
+        return f"Error setting track MIDI channel: {str(e)}"
 
 
 # Main execution

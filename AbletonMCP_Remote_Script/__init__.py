@@ -226,6 +226,14 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "get_device_parameters":
+                track_index = params.get("track_index", 0)
+                device_path = params.get("device_path", [])
+                response["result"] = self._get_device_parameters(track_index, device_path)
+            elif command_type == "get_device_chains":
+                track_index = params.get("track_index", 0)
+                device_path = params.get("device_path", [])
+                response["result"] = self._get_device_chains(track_index, device_path)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name",
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
@@ -233,7 +241,12 @@ class AbletonMCP(ControlSurface):
                                  "start_playback", "stop_playback", "load_browser_item",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
-                                 "duplicate_session_clip_to_arrangement"]:
+                                 "duplicate_session_clip_to_arrangement",
+                                 # Device/chain graph editing – must run on the main thread
+                                 "insert_device_in_chain", "insert_chain_in_rack",
+                                 "set_chain_properties", "set_device_parameter",
+                                 "set_track_midi_channel", "set_macro_count",
+                                 "load_sample_into_device", "delete_device", "delete_track"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -303,6 +316,56 @@ class AbletonMCP(ControlSurface):
                             destination_time = params.get("destination_time", 0.0)
                             result = self._duplicate_session_clip_to_arrangement(
                                 track_index, clip_index, destination_time)
+                        # ── Device/chain graph editing ──────────────────────
+                        elif command_type == "insert_device_in_chain":
+                            track_index = params.get("track_index", 0)
+                            device_path = params.get("device_path", [])
+                            device_name = params.get("device_name", "")
+                            target_index = params.get("target_index", None)
+                            result = self._insert_device_in_chain(
+                                track_index, device_path, device_name, target_index)
+                        elif command_type == "insert_chain_in_rack":
+                            track_index = params.get("track_index", 0)
+                            device_path = params.get("device_path", [])
+                            target_index = params.get("target_index", None)
+                            result = self._insert_chain_in_rack(
+                                track_index, device_path, target_index)
+                        elif command_type == "set_chain_properties":
+                            track_index = params.get("track_index", 0)
+                            device_path = params.get("device_path", [])
+                            result = self._set_chain_properties(
+                                track_index, device_path,
+                                params.get("name", None),
+                                params.get("in_note", None),
+                                params.get("choke_group", None))
+                        elif command_type == "set_device_parameter":
+                            track_index = params.get("track_index", 0)
+                            device_path = params.get("device_path", [])
+                            parameter_name = params.get("parameter_name", "")
+                            value = params.get("value", 0.0)
+                            result = self._set_device_parameter(
+                                track_index, device_path, parameter_name, value)
+                        elif command_type == "set_track_midi_channel":
+                            track_index = params.get("track_index", 0)
+                            channel = params.get("channel", None)
+                            result = self._set_track_midi_channel(track_index, channel)
+                        elif command_type == "set_macro_count":
+                            track_index = params.get("track_index", 0)
+                            device_path = params.get("device_path", [])
+                            count = params.get("count", 4)
+                            result = self._set_macro_count(track_index, device_path, count)
+                        elif command_type == "load_sample_into_device":
+                            track_index = params.get("track_index", 0)
+                            device_path = params.get("device_path", [])
+                            item_uri = params.get("item_uri", "")
+                            result = self._load_sample_into_device(track_index, device_path, item_uri)
+                        elif command_type == "delete_device":
+                            track_index = params.get("track_index", 0)
+                            device_path = params.get("device_path", [])
+                            result = self._delete_device(track_index, device_path)
+                        elif command_type == "delete_track":
+                            track_index = params.get("track_index", 0)
+                            result = self._delete_track(track_index)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -463,6 +526,500 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting track info: " + str(e))
             raise
     
+    # ── Device / chain graph addressing ─────────────────────────────────────
+    #
+    # A "device_path" is a list of ints that alternately index into a
+    # container's .devices list and a rack device's .chains list, starting
+    # from the track's top-level .devices list. This lets any device or
+    # chain, at any nesting depth (e.g. a device inside a Drum Rack pad,
+    # inside an Instrument Rack, on a track) be addressed uniformly:
+    #
+    #   []        -> the track itself (a device can be appended here)
+    #   [0]        -> track.devices[0]                        (a Device)
+    #   [0, 2]     -> track.devices[0].chains[2]               (a Chain)
+    #   [0, 2, 1]  -> track.devices[0].chains[2].devices[1]    (a Device)
+
+    def _resolve_device_path(self, track, device_path):
+        """Resolve a device_path against a track. Returns (obj, kind) where
+        kind is 'track', 'device', or 'chain'."""
+        obj = track
+        kind = "track"
+        for i, idx in enumerate(device_path):
+            if kind in ("track", "chain"):
+                devices = obj.devices
+                if idx < 0 or idx >= len(devices):
+                    raise IndexError(
+                        "Device index {0} out of range at path position {1} (path {2})".format(
+                            idx, i, device_path))
+                obj = devices[idx]
+                kind = "device"
+            elif kind == "device":
+                if not obj.can_have_chains:
+                    raise ValueError(
+                        "Device '{0}' at path position {1} has no chains (path {2})".format(
+                            obj.name, i, device_path))
+                chains = obj.chains
+                if idx < 0 or idx >= len(chains):
+                    raise IndexError(
+                        "Chain index {0} out of range at path position {1} (path {2})".format(
+                            idx, i, device_path))
+                obj = chains[idx]
+                kind = "chain"
+            else:
+                raise ValueError("Unreachable path state")
+        return obj, kind
+
+    def _find_parameter_by_name(self, device, parameter_name):
+        """Find a DeviceParameter on a device by name, with a fallback to
+        case-insensitive and substring matching."""
+        for p in device.parameters:
+            if p.name == parameter_name:
+                return p
+        lowered = parameter_name.lower()
+        for p in device.parameters:
+            if p.name.lower() == lowered:
+                return p
+        for p in device.parameters:
+            if lowered in p.name.lower():
+                return p
+        available = [p.name for p in device.parameters]
+        raise ValueError(
+            "Parameter '{0}' not found on device '{1}'. Available: {2}".format(
+                parameter_name, device.name, available))
+
+    def _get_track_for_index(self, track_index):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        return self._song.tracks[track_index]
+
+    def _insert_device_in_chain(self, track_index, device_path, device_name, target_index):
+        """Insert a native Live device (by its UI name, e.g. 'Saturator') at
+        the end of a chain (or the track's root chain), or at target_index if
+        given. Live 12.3+ only (Track.insert_device / Chain.insert_device)."""
+        try:
+            if not device_name:
+                raise ValueError("device_name is required")
+            track = self._get_track_for_index(track_index)
+            obj, kind = self._resolve_device_path(track, device_path)
+            if kind not in ("track", "chain"):
+                raise ValueError(
+                    "device_path must resolve to a track or a chain to insert a device "
+                    "(got a device — did you mean to address one level up?)")
+            if not hasattr(obj, "insert_device"):
+                raise RuntimeError(
+                    "insert_device is not available — requires Ableton Live 12.3 or newer")
+
+            if target_index is None:
+                obj.insert_device(device_name)
+            else:
+                obj.insert_device(device_name, int(target_index))
+
+            devices = obj.devices
+            new_index = int(target_index) if target_index is not None else len(devices) - 1
+            new_device = devices[new_index]
+            return {
+                "device_path": list(device_path) + [new_index],
+                "index": new_index,
+                "name": new_device.name,
+                "class_name": new_device.class_name
+            }
+        except Exception as e:
+            self.log_message("Error inserting device in chain: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _insert_chain_in_rack(self, track_index, device_path, target_index):
+        """Insert a new chain into a rack device (Instrument/Audio Effect/
+        Drum Rack). For Drum Racks this creates a DrumChain with in_note
+        defaulted to -1 ('All Notes') — set it with set_chain_properties.
+        Live 12.3+ only (RackDevice.insert_chain)."""
+        try:
+            track = self._get_track_for_index(track_index)
+            obj, kind = self._resolve_device_path(track, device_path)
+            if kind != "device":
+                raise ValueError("device_path must resolve to a rack device")
+            if not obj.can_have_chains:
+                raise ValueError("Device '{0}' is not a rack (has no chains)".format(obj.name))
+            if not hasattr(obj, "insert_chain"):
+                raise RuntimeError(
+                    "insert_chain is not available — requires Ableton Live 12.3 or newer")
+
+            if target_index is None:
+                obj.insert_chain()
+            else:
+                obj.insert_chain(int(target_index))
+
+            chains = obj.chains
+            new_index = int(target_index) if target_index is not None else len(chains) - 1
+            new_chain = chains[new_index]
+            return {
+                "device_path": list(device_path) + [new_index],
+                "chain_index": new_index,
+                "name": new_chain.name,
+                "is_drum_chain": hasattr(new_chain, "in_note")
+            }
+        except Exception as e:
+            self.log_message("Error inserting chain in rack: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _set_chain_properties(self, track_index, device_path, name, in_note, choke_group):
+        """Set a chain's name and, for Drum Rack pad chains (DrumChain),
+        its triggering note (in_note) and/or choke_group."""
+        try:
+            track = self._get_track_for_index(track_index)
+            obj, kind = self._resolve_device_path(track, device_path)
+            if kind != "chain":
+                raise ValueError("device_path must resolve to a chain")
+
+            if name is not None:
+                obj.name = name
+            if in_note is not None:
+                if not hasattr(obj, "in_note"):
+                    raise ValueError("Chain '{0}' is not a Drum Rack pad chain (no in_note)".format(obj.name))
+                obj.in_note = int(in_note)
+            if choke_group is not None:
+                if not hasattr(obj, "choke_group"):
+                    raise ValueError("Chain '{0}' is not a Drum Rack pad chain (no choke_group)".format(obj.name))
+                obj.choke_group = int(choke_group)
+
+            return {
+                "name": obj.name,
+                "in_note": getattr(obj, "in_note", None),
+                "choke_group": getattr(obj, "choke_group", None)
+            }
+        except Exception as e:
+            self.log_message("Error setting chain properties: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _set_device_parameter(self, track_index, device_path, parameter_name, value):
+        """Set a device parameter's value by name (e.g. 'Drive', 'Dry/Wet',
+        'Decay Time'). Matches exact name first, then case-insensitive,
+        then substring."""
+        try:
+            track = self._get_track_for_index(track_index)
+            obj, kind = self._resolve_device_path(track, device_path)
+            if kind != "device":
+                raise ValueError("device_path must resolve to a device")
+
+            param = self._find_parameter_by_name(obj, parameter_name)
+            param.value = float(value)
+
+            display_value = None
+            try:
+                display_value = param.str_for_value(param.value)
+            except Exception:
+                pass
+
+            return {
+                "device_name": obj.name,
+                "parameter_name": param.name,
+                "value": param.value,
+                "display_value": display_value,
+                "min": param.min,
+                "max": param.max
+            }
+        except Exception as e:
+            self.log_message("Error setting device parameter: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _get_device_parameters(self, track_index, device_path):
+        """List all automatable parameters on a device with their current
+        value, min, max, and human-readable display_value (e.g. "2.50 s",
+        "1.00 kHz") — many Live parameters use non-linear curves, so
+        display_value is the reliable way to see/target a real-world value
+        rather than guessing from the raw 0-1 'value'. Use this to discover
+        exact parameter names and current values before calling
+        set_device_parameter."""
+        try:
+            track = self._get_track_for_index(track_index)
+            obj, kind = self._resolve_device_path(track, device_path)
+            if kind != "device":
+                raise ValueError("device_path must resolve to a device")
+
+            parameters = []
+            for i, p in enumerate(obj.parameters):
+                display_value = None
+                try:
+                    display_value = p.str_for_value(p.value)
+                except Exception:
+                    pass
+                parameters.append({
+                    "index": i,
+                    "name": p.name,
+                    "value": p.value,
+                    "display_value": display_value,
+                    "min": p.min,
+                    "max": p.max,
+                    "is_quantized": p.is_quantized
+                })
+
+            return {
+                "device_name": obj.name,
+                "class_name": obj.class_name,
+                "parameters": parameters
+            }
+        except Exception as e:
+            self.log_message("Error getting device parameters: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _get_device_chains(self, track_index, device_path):
+        """List the chains inside a rack device (Instrument/Audio Effect/
+        Drum Rack), including each chain's devices, in_note, and
+        choke_group (for Drum Rack pad chains)."""
+        try:
+            track = self._get_track_for_index(track_index)
+            obj, kind = self._resolve_device_path(track, device_path)
+            if kind != "device":
+                raise ValueError("device_path must resolve to a device")
+            if not obj.can_have_chains:
+                return {"device_name": obj.name, "can_have_chains": False, "chains": []}
+
+            chains = []
+            for i, c in enumerate(obj.chains):
+                chains.append({
+                    "index": i,
+                    "name": c.name,
+                    "is_drum_chain": hasattr(c, "in_note"),
+                    "in_note": getattr(c, "in_note", None),
+                    "choke_group": getattr(c, "choke_group", None),
+                    "devices": [
+                        {"index": j, "name": d.name, "class_name": d.class_name}
+                        for j, d in enumerate(c.devices)
+                    ]
+                })
+
+            return {
+                "device_name": obj.name,
+                "can_have_chains": True,
+                "chains": chains
+            }
+        except Exception as e:
+            self.log_message("Error getting device chains: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _set_track_midi_channel(self, track_index, channel):
+        """Filter a MIDI track's input to a single MIDI channel (1-16), or
+        pass channel=None/0 to reset to 'All Channels'."""
+        try:
+            track = self._get_track_for_index(track_index)
+            if not hasattr(track, "available_input_routing_channels"):
+                raise ValueError(
+                    "Track '{0}' does not support MIDI channel routing (not a MIDI track?)".format(track.name))
+
+            available = track.available_input_routing_channels
+            target = None
+
+            if channel is None or int(channel) == 0:
+                for ch in available:
+                    dn = ch.get("display_name", "") if isinstance(ch, dict) else getattr(ch, "display_name", "")
+                    if "all" in dn.lower():
+                        target = ch
+                        break
+            else:
+                wanted = str(int(channel))
+                for ch in available:
+                    dn = ch.get("display_name", "") if isinstance(ch, dict) else getattr(ch, "display_name", "")
+                    dn_clean = dn.strip().lower()
+                    if dn_clean in ("ch. " + wanted, "ch " + wanted, "channel " + wanted) or \
+                       dn_clean.endswith(" " + wanted):
+                        target = ch
+                        break
+
+            if target is None:
+                available_names = [
+                    (ch.get("display_name", "") if isinstance(ch, dict) else getattr(ch, "display_name", ""))
+                    for ch in available
+                ]
+                raise ValueError(
+                    "Could not find MIDI channel {0} among available routing channels: {1}".format(
+                        channel, available_names))
+
+            track.input_routing_channel = target
+            result_channel = track.input_routing_channel
+            result_dn = result_channel.get("display_name", "") if isinstance(result_channel, dict) \
+                else getattr(result_channel, "display_name", "")
+            return {"input_routing_channel": result_dn}
+        except Exception as e:
+            self.log_message("Error setting track MIDI channel: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _set_macro_count(self, track_index, device_path, count):
+        """Set how many Macro knobs are visible on a rack device (Instrument
+        Rack, Audio Effect Rack, or Drum Rack) by repeatedly calling
+        add_macro()/remove_macro() (Live 11.0+ — visible_macro_count itself
+        is read-only)."""
+        try:
+            track = self._get_track_for_index(track_index)
+            obj, kind = self._resolve_device_path(track, device_path)
+            if kind != "device":
+                raise ValueError("device_path must resolve to a rack device")
+            if not obj.can_have_chains:
+                raise ValueError("Device '{0}' is not a rack (has no macros)".format(obj.name))
+            if not hasattr(obj, "add_macro") or not hasattr(obj, "remove_macro"):
+                raise RuntimeError(
+                    "add_macro/remove_macro are not available — requires Ableton Live 11.0 or newer")
+
+            target = int(count)
+            # Guard against runaway loops if the rack refuses to change count
+            # (e.g. hitting Live's max) — cap iterations to the requested delta plus slack.
+            max_iterations = abs(target - obj.visible_macro_count) + 4
+            iterations = 0
+            while obj.visible_macro_count < target and iterations < max_iterations:
+                obj.add_macro()
+                iterations += 1
+            while obj.visible_macro_count > target and iterations < max_iterations:
+                obj.remove_macro()
+                iterations += 1
+
+            return {"device_name": obj.name, "visible_macro_count": obj.visible_macro_count}
+        except Exception as e:
+            self.log_message("Error setting macro count: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _load_sample_into_device(self, track_index, device_path, item_uri):
+        """Load a browser sample (or preset). device_path may resolve to:
+          - a chain or the track root ([]) — the item is loaded into an
+            EMPTY slot there, e.g. Live auto-creates a Simpler for a raw
+            sample, exactly like dragging a sample onto an empty track.
+            This is the reliable path — use it.
+          - an existing device — attempts an in-place hot-swap. On this
+            Live build, hot-swapping a sample directly onto an existing
+            SimplerDevice raises a boost.python argument-type error
+            ("SimplerDevice did not match C++ signature: ADevice") — a
+            genuine Ableton bug, not something callable-side can avoid.
+            Prefer deleting the device and loading into the empty chain
+            instead (see delete_device).
+
+        Reports device_count_before/after and the newly-appeared device
+        (if any) so the caller can verify what actually happened."""
+        try:
+            if not item_uri:
+                raise ValueError("item_uri is required")
+            track = self._get_track_for_index(track_index)
+            obj, kind = self._resolve_device_path(track, device_path)
+            if kind not in ("device", "chain", "track"):
+                raise ValueError("device_path must resolve to a device, chain, or track")
+
+            app = self.application()
+            item = self._find_browser_item_by_uri(app.browser, item_uri)
+            if not item:
+                raise ValueError("Browser item with URI '{0}' not found".format(item_uri))
+
+            # Select the top-level track first.
+            self._song.view.selected_track = track
+
+            # Walk the path, selecting each intermediate chain so the
+            # browser's implicit load target cascades down through nested racks.
+            cursor = track
+            cursor_kind = "track"
+            chain_selection_log = []
+            for idx in device_path:
+                if cursor_kind in ("track", "chain"):
+                    cursor = cursor.devices[idx]
+                    cursor_kind = "device"
+                elif cursor_kind == "device":
+                    chain = cursor.chains[idx]
+                    if hasattr(cursor, "view") and hasattr(cursor.view, "selected_chain"):
+                        try:
+                            cursor.view.selected_chain = chain
+                            chain_selection_log.append("{0}:ok".format(cursor.name))
+                        except Exception as e:
+                            chain_selection_log.append("{0}:failed({1})".format(cursor.name, str(e)))
+                    cursor = chain
+                    cursor_kind = "chain"
+
+            # Container whose device list we diff to see what the load did.
+            if kind == "device":
+                container, container_kind = self._resolve_device_path(track, device_path[:-1])
+            else:
+                container = obj
+                container_kind = kind
+            before_count = len(container.devices)
+
+            try:
+                app.browser.load_item(item)
+                load_error = None
+            except Exception as e:
+                load_error = str(e)
+                self.log_message("browser.load_item failed: " + load_error)
+                self.log_message(traceback.format_exc())
+
+            after_devices = list(container.devices)
+            new_device_name = None
+            new_device_index = None
+            if load_error is None:
+                if len(after_devices) > before_count:
+                    new_device_index = len(after_devices) - 1
+                    new_device_name = after_devices[new_device_index].name
+                elif kind == "device":
+                    idx = device_path[-1]
+                    if 0 <= idx < len(after_devices):
+                        new_device_index = idx
+                        new_device_name = after_devices[idx].name
+
+            return {
+                "loaded": load_error is None,
+                "load_error": load_error,
+                "item_name": item.name,
+                "target_kind": kind,
+                "chain_selection_log": chain_selection_log,
+                "device_count_before": before_count,
+                "device_count_after": len(after_devices),
+                "new_device_name": new_device_name,
+                "new_device_index": new_device_index
+            }
+        except Exception as e:
+            self.log_message("Error loading sample into device: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _delete_device(self, track_index, device_path):
+        """Delete the device at device_path (its parent — a chain or the
+        track root — must support delete_device; Live 12.3+)."""
+        try:
+            if not device_path:
+                raise ValueError("device_path must address a device (non-empty list)")
+            track = self._get_track_for_index(track_index)
+            parent, parent_kind = self._resolve_device_path(track, device_path[:-1])
+            if parent_kind not in ("track", "chain"):
+                raise ValueError("device_path's parent must be a track or chain")
+            if not hasattr(parent, "delete_device"):
+                raise RuntimeError(
+                    "delete_device is not available — requires Ableton Live 12.3 or newer")
+
+            idx = device_path[-1]
+            devices = parent.devices
+            if idx < 0 or idx >= len(devices):
+                raise IndexError("Device index out of range")
+            deleted_name = devices[idx].name
+            parent.delete_device(idx)
+
+            return {"deleted": True, "name": deleted_name, "remaining_count": len(parent.devices)}
+        except Exception as e:
+            self.log_message("Error deleting device: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
+    def _delete_track(self, track_index):
+        """Delete a top-level track (e.g. to clean up scratch/test tracks)."""
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            name = self._song.tracks[track_index].name
+            self._song.delete_track(track_index)
+            return {"deleted": True, "name": name, "remaining_track_count": len(self._song.tracks)}
+        except Exception as e:
+            self.log_message("Error deleting track: " + str(e))
+            self.log_message(traceback.format_exc())
+            raise
+
     def _create_midi_track(self, index):
         """Create a new MIDI track at the specified index"""
         try:
