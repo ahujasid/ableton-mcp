@@ -29,7 +29,7 @@ class AbletonMCP(ControlSurface):
     def __init__(self, c_instance):
         """Initialize the control surface"""
         ControlSurface.__init__(self, c_instance)
-        self.log_message("AbletonMCP Remote Script initializing...")
+        self.log_message("AbletonMCP Remote Script initializing... (macro-map build)")
         
         # Socket server for communication
         self.server = None
@@ -233,7 +233,8 @@ class AbletonMCP(ControlSurface):
                                  "start_playback", "stop_playback", "load_browser_item",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
-                                 "duplicate_session_clip_to_arrangement"]:
+                                 "duplicate_session_clip_to_arrangement",
+                                 "map_rack_magnitude", "inspect_rack"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -303,6 +304,16 @@ class AbletonMCP(ControlSurface):
                             destination_time = params.get("destination_time", 0.0)
                             result = self._duplicate_session_clip_to_arrangement(
                                 track_index, clip_index, destination_time)
+                        elif command_type == "map_rack_magnitude":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            macro_name = params.get("macro_name", "Magnitude")
+                            result = self._map_rack_magnitude(
+                                track_index, device_index, macro_name)
+                        elif command_type == "inspect_rack":
+                            track_index = params.get("track_index", 0)
+                            device_index = params.get("device_index", 0)
+                            result = self._inspect_rack(track_index, device_index)
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -1052,6 +1063,131 @@ class AbletonMCP(ControlSurface):
             return None
     
     # Helper methods
+
+    def _find_blend_parameter(self, device):
+        """Find Dry/Wet, Mix, or Amount on a device for Magnitude mapping."""
+        preferred = ("Dry/Wet", "Dry Wet", "Mix", "Amount")
+        by_name = {}
+        for param in device.parameters:
+            try:
+                by_name[param.name] = param
+            except Exception:
+                continue
+        for name in preferred:
+            if name in by_name:
+                return by_name[name], name
+        # Case-insensitive fallback
+        lowered = dict((k.lower(), (v, k)) for k, v in by_name.items())
+        for name in preferred:
+            hit = lowered.get(name.lower())
+            if hit:
+                return hit[0], hit[1]
+        return None, None
+
+    def _inspect_rack(self, track_index, device_index=0):
+        """Inspect a rack's nested devices and blend parameters."""
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        if device_index < 0 or device_index >= len(track.devices):
+            raise IndexError("Device index out of range")
+        rack = track.devices[device_index]
+        if not getattr(rack, "can_have_chains", False):
+            raise ValueError("Device '{0}' is not a rack".format(rack.name))
+
+        devices_info = []
+        for chain_index, chain in enumerate(rack.chains):
+            for nested in chain.devices:
+                blend, blend_name = self._find_blend_parameter(nested)
+                param_names = []
+                try:
+                    param_names = [p.name for p in nested.parameters]
+                except Exception:
+                    pass
+                devices_info.append({
+                    "chain_index": chain_index,
+                    "name": nested.name,
+                    "class_name": nested.class_name,
+                    "blend_param": blend_name,
+                    "parameters": param_names,
+                })
+
+        return {
+            "track_index": track_index,
+            "device_index": device_index,
+            "rack_name": rack.name,
+            "has_macro_map": hasattr(rack, "macro_map"),
+            "has_rename_macro": hasattr(rack, "rename_macro"),
+            "macros_mapped": list(getattr(rack, "macros_mapped", [])),
+            "devices": devices_info,
+        }
+
+    def _map_rack_magnitude(self, track_index, device_index=0, macro_name="Magnitude"):
+        """Rename Macro 1 and map nested Dry/Wet (or Mix/Amount) params to it."""
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        if device_index < 0 or device_index >= len(track.devices):
+            raise IndexError("Device index out of range")
+        rack = track.devices[device_index]
+        if not getattr(rack, "can_have_chains", False):
+            raise ValueError("Device '{0}' is not a rack".format(rack.name))
+        if not hasattr(rack, "macro_map"):
+            raise RuntimeError(
+                "RackDevice.macro_map is unavailable in this Live version")
+
+        # Ensure at least one macro is visible
+        try:
+            visible = int(getattr(rack, "visible_macro_count", 1) or 1)
+            while visible < 1 and hasattr(rack, "add_macro"):
+                rack.add_macro()
+                visible = int(rack.visible_macro_count)
+        except Exception as e:
+            self.log_message("Could not adjust visible macros: {0}".format(e))
+
+        if hasattr(rack, "rename_macro"):
+            rack.rename_macro(0, macro_name)
+        else:
+            # Fallback: Macro 1 is usually parameters[1] (0 = Device On)
+            try:
+                if len(rack.parameters) > 1:
+                    rack.parameters[1].name = macro_name
+            except Exception:
+                pass
+
+        mapped = []
+        skipped = []
+        for chain_index, chain in enumerate(rack.chains):
+            for nested in chain.devices:
+                blend, blend_name = self._find_blend_parameter(nested)
+                if not blend:
+                    skipped.append({
+                        "device": nested.name,
+                        "reason": "no Dry/Wet, Mix, or Amount parameter",
+                    })
+                    continue
+                try:
+                    rack.macro_map(0, blend)
+                    mapped.append({
+                        "device": nested.name,
+                        "parameter": blend_name,
+                        "chain_index": chain_index,
+                    })
+                except Exception as e:
+                    skipped.append({
+                        "device": nested.name,
+                        "parameter": blend_name,
+                        "reason": str(e),
+                    })
+
+        return {
+            "rack_name": rack.name,
+            "macro_name": macro_name,
+            "macro_index": 0,
+            "mapped": mapped,
+            "skipped": skipped,
+            "macros_mapped": list(getattr(rack, "macros_mapped", [])),
+        }
     
     def _get_device_type(self, device):
         """Get the type of a device"""
