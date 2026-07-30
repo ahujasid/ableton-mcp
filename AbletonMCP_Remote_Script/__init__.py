@@ -230,7 +230,8 @@ class AbletonMCP(ControlSurface):
             elif command_type in ["create_midi_track", "set_track_name",
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item",
+                                 "start_playback", "stop_playback",
+                                 "load_browser_item", "load_instrument_or_effect",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement"]:
@@ -924,6 +925,18 @@ class AbletonMCP(ControlSurface):
     
     
     
+    def _load_instrument_or_effect(self, track_index, uri):
+        """Load an instrument or effect onto a track by its browser URI.
+
+        The command dispatcher above calls this method, but it was never
+        defined — and "load_instrument_or_effect" was missing from the list of
+        main-thread commands as well, so the command fell through to the final
+        "Unknown command" branch. Loading a device is exactly what
+        _load_browser_item does, so delegate to it; the only difference is the
+        parameter name the MCP server uses ("uri" vs "item_uri").
+        """
+        return self._load_browser_item(track_index, uri)
+
     def _load_browser_item(self, track_index, item_uri):
         """Load a browser item onto a track by its URI"""
         try:
