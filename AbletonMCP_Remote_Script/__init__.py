@@ -9,6 +9,11 @@ import threading
 import time
 import traceback
 
+try:
+    import Live
+except ImportError:
+    Live = None
+
 # Change queue import for Python 2
 try:
     import Queue as queue  # Python 2
@@ -1421,6 +1426,12 @@ class AbletonMCP(ControlSurface):
             "clip.get_all_notes_extended": self._safe_callable(sample_clip, "get_all_notes_extended") if sample_clip else False,
             "clip.get_notes_extended": self._safe_callable(sample_clip, "get_notes_extended") if sample_clip else False,
             "clip.add_new_notes": self._safe_callable(sample_clip, "add_new_notes") if sample_clip else False,
+            "clip.MidiNoteSpecification": bool(
+                Live is not None and callable(self._safe_getattr(
+                    self._safe_getattr(Live, "Clip", None),
+                    "MidiNoteSpecification", None
+                ))
+            ),
             "clip.apply_note_modifications": self._safe_callable(sample_clip, "apply_note_modifications") if sample_clip else False,
             "clip.remove_notes_extended": self._safe_callable(sample_clip, "remove_notes_extended") if sample_clip else False,
             "clip.remove_notes_by_id": self._safe_callable(sample_clip, "remove_notes_by_id") if sample_clip else False,
@@ -1686,6 +1697,27 @@ class AbletonMCP(ControlSurface):
             return
         add_new = self._safe_getattr(clip, "add_new_notes", None)
         if callable(add_new):
+            specification_class = None
+            if Live is not None:
+                specification_class = self._safe_getattr(
+                    self._safe_getattr(Live, "Clip", None),
+                    "MidiNoteSpecification", None
+                )
+            if callable(specification_class):
+                specifications = []
+                for note in notes:
+                    specifications.append(specification_class(
+                        int(note["pitch"]),
+                        float(note["start_time"]),
+                        float(note["duration"]),
+                        float(note.get("velocity", 100.0)),
+                        bool(note.get("mute", False)),
+                        float(note.get("probability", 1.0)),
+                        float(note.get("velocity_deviation", 0.0)),
+                        float(note.get("release_velocity", 64.0)),
+                    ))
+                add_new(tuple(specifications))
+                return
             payload = [self._note_payload(note) for note in notes]
             # Max documentation shows {"notes": [...]}; Python Remote
             # Script builds have also accepted the list/tuple directly.

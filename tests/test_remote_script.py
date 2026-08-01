@@ -333,6 +333,44 @@ def test_replace_clip_notes_restores_snapshot_after_write_failure():
     assert clip.notes == before
 
 
+def test_modern_note_write_builds_live_midi_note_specifications(monkeypatch):
+    created = []
+
+    class MidiNoteSpecification:
+        def __init__(self, *values):
+            self.values = values
+            created.append(values)
+
+    class ModernClip:
+        def __init__(self):
+            self.payload = None
+
+        def add_new_notes(self, payload):
+            self.payload = payload
+
+    monkeypatch.setattr(
+        remote,
+        "Live",
+        types.SimpleNamespace(
+            Clip=types.SimpleNamespace(MidiNoteSpecification=MidiNoteSpecification)
+        ),
+    )
+    clip = ModernClip()
+    make_remote(Song([]))._add_clip_notes(clip, [{
+        "pitch": 41,
+        "start_time": 0.0,
+        "duration": 0.5,
+        "velocity": 92,
+        "mute": False,
+        "probability": 0.75,
+        "velocity_deviation": -2.0,
+        "release_velocity": 63.0,
+    }])
+    assert created == [(41, 0.0, 0.5, 92.0, False, 0.75, -2.0, 63.0)]
+    assert isinstance(clip.payload, tuple)
+    assert isinstance(clip.payload[0], MidiNoteSpecification)
+
+
 def test_duplicate_preflight_rejects_occupied_destination_without_mutation():
     source_clip = Clip("[MCP TEST] Source")
     destination_clip = Clip("[MCP TEST] Existing")
