@@ -1,11 +1,12 @@
 import inspect
 import json
+import os
 import re
 import socket
 import unittest
 from unittest.mock import MagicMock, call, patch
 
-from MCP_Server import server
+from MCP_Server import config, server
 
 
 NEW_TOOLS = {
@@ -68,6 +69,18 @@ class ServerContractTests(unittest.TestCase):
             return_value=_Telemetry(),
         ):
             return function(None, *args, **kwargs)
+
+    def test_published_telemetry_config_is_owned_by_the_checkout(self):
+        self.assertTrue(config.telemetry_config.enabled)
+        self.assertEqual(config.telemetry_config.timeout, 1.5)
+        self.assertEqual(
+            config.telemetry_config.supabase_url,
+            os.environ.get("ABLETON_MCP_TELEMETRY_SUPABASE_URL", ""),
+        )
+        self.assertEqual(
+            config.telemetry_config.supabase_anon_key,
+            os.environ.get("ABLETON_MCP_TELEMETRY_SUPABASE_ANON_KEY", ""),
+        )
 
     def test_existing_and_mvp_tools_are_registered_with_json_schemas(self):
         registered = set(server.mcp._tool_manager._tools)

@@ -125,6 +125,10 @@ Once the config file has been set on Claude, and the remote script is running in
 
 ## Capabilities
 
+The maintained production-control profile, safety contracts, reproducible
+installation, rollback, telemetry payload, and unsupported Live operations are
+documented in [docs/production-control-mvp.md](docs/production-control-mvp.md).
+
 - Get session and track information
 - Create and modify MIDI and audio tracks
 - Create full song arrangements from start to finish in Arrangement View
