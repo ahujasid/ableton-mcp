@@ -6,7 +6,9 @@ import logging
 import os
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Any, List, Union
+from typing import AsyncIterator, Dict, Any, List, Union, Optional
+
+from typing_extensions import Literal, TypedDict
 
 from .telemetry import record_startup
 from .telemetry_decorator import telemetry_tool, rich_telemetry_tool
@@ -18,6 +20,105 @@ ABLETON_PORT = int(os.environ.get("ABLETON_PORT", "9877"))
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("AbletonMCPServer")
+
+
+class AbletonError(Exception):
+    """Structured error raised while talking to the Remote Script."""
+
+    error_type = "ableton_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        command: Optional[str] = None,
+        code: Optional[str] = None,
+        details: Any = None,
+    ):
+        super().__init__(message)
+        self.message = message
+        self.command = command
+        self.code = code
+        self.details = details
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "type": self.error_type,
+            "message": self.message,
+            "command": self.command,
+            "code": self.code,
+            "details": self.details,
+        }
+
+
+class AbletonRemoteError(AbletonError):
+    """An error returned by the Remote Script, retaining its full payload."""
+
+    error_type = "remote_error"
+
+
+class AbletonTimeoutError(AbletonError):
+    """The client timed out waiting for Live's main-thread response."""
+
+    error_type = "timeout"
+
+
+class AbletonConnectionError(AbletonError):
+    """The socket could not be used for a command."""
+
+    error_type = "connection_error"
+
+
+class AbletonProtocolError(AbletonError):
+    """The Remote Script returned a response that was not valid JSON."""
+
+    error_type = "protocol_error"
+
+
+# The Remote Script waits up to ten seconds for a scheduled main-thread task.
+# Keep the client budget above that queue budget so a valid mutation is not
+# reported as a client timeout first.  Long-running audio import retains its
+# existing wider budget.
+MUTATION_TIMEOUT_SECONDS = 15.0
+READ_TIMEOUT_SECONDS = 10.0
+LONG_RUNNING_COMMAND_TIMEOUTS = {"create_audio_clip": 65.0}
+
+MODIFYING_COMMANDS = frozenset(
+    {
+        "create_midi_track",
+        "create_audio_track",
+        "set_track_name",
+        "create_clip",
+        "create_audio_clip",
+        "add_notes_to_clip",
+        "set_clip_name",
+        "set_tempo",
+        "fire_clip",
+        "stop_clip",
+        "set_mixer_parameter",
+        "set_mixer_parameters",
+        "set_device_parameter",
+        "set_device_parameters",
+        "replace_clip_notes",
+        "clear_clip_notes",
+        "set_clip_loop",
+        "delete_session_clip",
+        "duplicate_session_clip",
+        "duplicate_session_scene_clips",
+        "fire_scene",
+        "stop_all_clips",
+        "back_to_arrangement",
+        "start_playback",
+        "stop_playback",
+        "load_instrument_or_effect",
+        "load_browser_item",
+        "switch_to_arrangement_view",
+        "set_current_song_time",
+        "duplicate_session_clip_to_arrangement",
+        "delete_arrangement_clip",
+    }
+)
+
 
 @dataclass
 class AbletonConnection:
@@ -55,89 +156,81 @@ class AbletonConnection:
     def receive_full_response(self, sock, buffer_size=8192):
         """Receive the complete response, potentially in multiple chunks"""
         chunks = []
-        sock.settimeout(15.0)  # Increased timeout for operations that might take longer
-        
+
         try:
             while True:
+                chunk = sock.recv(buffer_size)
+                if not chunk:
+                    if not chunks:
+                        raise ConnectionError("Connection closed before receiving any data")
+                    raise ValueError("Incomplete JSON response received")
+
+                chunks.append(chunk)
+
+                # The Remote Script sends one JSON object per request without a
+                # delimiter.  Parse only when the accumulated bytes form a
+                # complete object; socket.timeout is intentionally allowed to
+                # propagate so send_command can classify it correctly.
+                data = b"".join(chunks)
                 try:
-                    chunk = sock.recv(buffer_size)
-                    if not chunk:
-                        if not chunks:
-                            raise Exception("Connection closed before receiving any data")
-                        break
-                    
-                    chunks.append(chunk)
-                    
-                    # Check if we've received a complete JSON object
-                    try:
-                        data = b''.join(chunks)
-                        json.loads(data.decode('utf-8'))
-                        logger.info(f"Received complete response ({len(data)} bytes)")
-                        return data
-                    except json.JSONDecodeError:
-                        # Incomplete JSON, continue receiving
-                        continue
-                except socket.timeout:
-                    logger.warning("Socket timeout during chunked receive")
-                    break
-                except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
-                    logger.error(f"Socket connection error during receive: {str(e)}")
-                    raise
-        except Exception as e:
-            logger.error(f"Error during receive: {str(e)}")
-            raise
-            
-        # If we get here, we either timed out or broke out of the loop
-        if chunks:
-            data = b''.join(chunks)
-            logger.info(f"Returning data after receive completion ({len(data)} bytes)")
-            try:
-                json.loads(data.decode('utf-8'))
+                    json.loads(data.decode("utf-8"))
+                except json.JSONDecodeError:
+                    continue
+                logger.info(f"Received complete response ({len(data)} bytes)")
                 return data
-            except json.JSONDecodeError:
-                raise Exception("Incomplete JSON response received")
+
+        except (socket.timeout, ConnectionError, BrokenPipeError, ConnectionResetError):
+            raise
+        except Exception as exc:
+            logger.error(f"Error during receive: {exc}")
+            raise
+
+    @staticmethod
+    def is_modifying_command(command_type: str) -> bool:
+        return command_type in MODIFYING_COMMANDS
+
+    @classmethod
+    def timeout_for_command(cls, command_type: str) -> float:
+        if command_type in LONG_RUNNING_COMMAND_TIMEOUTS:
+            return LONG_RUNNING_COMMAND_TIMEOUTS[command_type]
+        if cls.is_modifying_command(command_type):
+            return MUTATION_TIMEOUT_SECONDS
+        return READ_TIMEOUT_SECONDS
+
+    @staticmethod
+    def _remote_error_payload(command_type: str, response: Dict[str, Any]):
+        error = response.get("error")
+        if isinstance(error, dict):
+            message = error.get("message") or response.get("message") or "Unknown error from Ableton"
+            code = error.get("code", response.get("code"))
+            details = error.get("details", error.get("data", response.get("details")))
         else:
-            raise Exception("No data received")
+            message = response.get("message") or "Unknown error from Ableton"
+            code = response.get("code", response.get("error_code"))
+            details = response.get("details")
+        return AbletonRemoteError(
+            str(message), command=command_type, code=code, details=details
+        )
 
     def send_command(self, command_type: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """Send a command to Ableton and return the response"""
         if not self.sock and not self.connect():
-            raise ConnectionError("Not connected to Ableton")
-        
+            raise AbletonConnectionError(
+                "Not connected to Ableton", command=command_type
+            )
+
         command = {
             "type": command_type,
             "params": params or {}
         }
-        
-        # Check if this is a state-modifying command
-        is_modifying_command = command_type in [
-            "create_midi_track", "create_audio_track", "set_track_name",
-            "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
-            "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
-            "start_playback", "stop_playback", "load_instrument_or_effect",
-            # Arrangement view commands
-            "switch_to_arrangement_view", "set_current_song_time",
-            "duplicate_session_clip_to_arrangement"
-        ]
 
-        # Commands whose work on Live's main thread can take noticeably longer
-        # than the default modifying-command budget (e.g. importing/decoding a
-        # large audio file). Give them a wider socket timeout so we don't time
-        # out before the Remote Script's own queue does.
-        long_running_commands = {"create_audio_clip": 65.0}
-        
+        timeout = self.timeout_for_command(command_type)
         try:
             logger.info(f"Sending command: {command_type} with params: {params}")
-            
+
             # Send the command
             self.sock.sendall(json.dumps(command).encode('utf-8'))
             logger.info(f"Command sent, waiting for response...")
-            
-            # Set timeout based on command type
-            if command_type in long_running_commands:
-                timeout = long_running_commands[command_type]
-            else:
-                timeout = 15.0 if is_modifying_command else 10.0
             self.sock.settimeout(timeout)
 
             # Receive the response
@@ -150,27 +243,42 @@ class AbletonConnection:
 
             if response.get("status") == "error":
                 logger.error(f"Ableton error: {response.get('message')}")
-                raise Exception(response.get("message", "Unknown error from Ableton"))
-            
+                raise self._remote_error_payload(command_type, response)
+
             return response.get("result", {})
         except socket.timeout:
             logger.error("Socket timeout while waiting for response from Ableton")
-            self.sock = None
-            raise Exception("Timeout waiting for Ableton response")
+            self.disconnect()
+            raise AbletonTimeoutError(
+                f"Timeout waiting for Ableton response after {timeout:.1f}s",
+                command=command_type,
+                code="socket_timeout",
+                details={"timeout_seconds": timeout},
+            )
         except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
             logger.error(f"Socket connection error: {str(e)}")
-            self.sock = None
-            raise Exception(f"Connection to Ableton lost: {str(e)}")
+            self.disconnect()
+            raise AbletonConnectionError(
+                f"Connection to Ableton lost: {str(e)}", command=command_type
+            ) from e
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON response from Ableton: {str(e)}")
             if 'response_data' in locals() and response_data:
                 logger.error(f"Raw response (first 200 bytes): {response_data[:200]}")
-            self.sock = None
-            raise Exception(f"Invalid response from Ableton: {str(e)}")
+            self.disconnect()
+            raise AbletonProtocolError(
+                f"Invalid response from Ableton: {str(e)}", command=command_type
+            ) from e
+        except AbletonError:
+            # Remote errors are operation failures, not socket failures. Keep a
+            # healthy connection available for the next command.
+            raise
         except Exception as e:
             logger.error(f"Error communicating with Ableton: {str(e)}")
-            self.sock = None
-            raise Exception(f"Communication error with Ableton: {str(e)}")
+            self.disconnect()
+            raise AbletonError(
+                f"Communication error with Ableton: {str(e)}", command=command_type
+            ) from e
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
@@ -264,6 +372,104 @@ def get_ableton_connection():
             raise Exception("Could not connect to Ableton. Make sure the Remote Script is running.")
     
     return _ableton_connection
+
+
+class DevicePathItem(TypedDict, total=False):
+    """One expected device in a rack/chain path."""
+
+    type: Literal["device", "chain"]
+    kind: Literal["device", "chain"]
+    index: int
+    device_index: int
+    chain_index: int
+    expected_name: str
+    expected_device_name: str
+    expected_chain_name: str
+    expected_class_name: str
+    expected_device_class_name: str
+    expected_chain_class_name: str
+
+
+class TrackSelector(TypedDict, total=False):
+    """A track subset item with an optional return/main kind."""
+
+    track_index: int
+    expected_track_name: str
+    track_kind: Literal["track", "return", "main", "master"]
+
+
+class ClipNote(TypedDict, total=False):
+    """JSON-safe MIDI note fields accepted by Live 12 when exposed."""
+
+    pitch: int
+    start_time: float
+    duration: float
+    velocity: int
+    mute: bool
+    probability: float
+    velocity_deviation: float
+    release_velocity: int
+
+
+class MixerParameterChange(TypedDict, total=False):
+    track_index: int
+    expected_track_name: str
+    track_kind: Literal["track", "return", "main", "master"]
+    parameter_name: str
+    parameter_index: int
+    expected_parameter_name: str
+    value: Union[bool, int, float]
+    expected_current_value: Union[bool, int, float]
+    tolerance: float
+
+
+class DeviceParameterChange(TypedDict, total=False):
+    track_index: int
+    expected_track_name: str
+    track_kind: Literal["track", "return", "main", "master"]
+    device_path: List[DevicePathItem]
+    parameter_index: int
+    expected_parameter_name: str
+    value: Union[bool, int, float]
+    expected_current_value: Union[bool, int, float]
+    tolerance: float
+
+
+def _structured_error(command_type: str, exc: Exception) -> Dict[str, Any]:
+    """Serialize a command failure without losing Remote Script details."""
+    if isinstance(exc, AbletonError):
+        error = exc.as_dict()
+        if error.get("command") is None:
+            error["command"] = command_type
+        return error
+    return {
+        "type": "tool_error",
+        "message": str(exc),
+        "command": command_type,
+        "code": None,
+        "details": None,
+    }
+
+
+def _production_command(
+    command_type: str, params: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Run one production-control command through the existing connection."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command(command_type, params or {})
+        return {
+            "status": "success",
+            "command": command_type,
+            "result": result,
+        }
+    except Exception as exc:
+        logger.error("Error running %s: %s", command_type, exc)
+        return {
+            "status": "error",
+            "command": command_type,
+            "error": _structured_error(command_type, exc),
+        }
 
 
 # Core Tool endpoints
@@ -773,7 +979,12 @@ def set_arrangement_time(ctx: Context, time: float, user_prompt: str = "") -> st
 
 @mcp.tool()
 @telemetry_tool("get_arrangement_clips")
-def get_arrangement_clips(ctx: Context, track_index: int, user_prompt: str = "") -> str:
+def get_arrangement_clips(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: Optional[str] = None,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
     """
     List all clips placed in the Arrangement timeline for a track.
 
@@ -783,13 +994,10 @@ def get_arrangement_clips(ctx: Context, track_index: int, user_prompt: str = "")
     - track_index: The index of the track to inspect
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
-    try:
-        ableton = get_ableton_connection()
-        result = ableton.send_command("get_arrangement_clips", {"track_index": track_index})
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        logger.error(f"Error getting arrangement clips: {str(e)}")
-        return f"Error getting arrangement clips: {str(e)}"
+    params: Dict[str, Any] = {"track_index": track_index}
+    if expected_track_name is not None:
+        params["expected_track_name"] = expected_track_name
+    return _production_command("get_arrangement_clips", params)
 
 
 @mcp.tool()
@@ -839,6 +1047,552 @@ def duplicate_to_arrangement(
     except Exception as e:
         logger.error(f"Error duplicating clip to arrangement: {str(e)}")
         return f"Error duplicating clip to arrangement: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_capabilities")
+def get_capabilities(ctx: Context, user_prompt: str = "") -> Dict[str, Any]:
+    """Read Live version and safe LOM capability probes from the Remote Script."""
+    return _production_command("get_capabilities")
+
+
+@mcp.tool()
+@telemetry_tool("get_mixer_parameters")
+def get_mixer_parameters(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    track_kind: Literal["track", "return", "main", "master"] = "track",
+    parameters: Optional[List[str]] = None,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Read mixer values for a validated track, return track, or Main track."""
+    params: Dict[str, Any] = {
+        "track_index": track_index,
+        "expected_track_name": expected_track_name,
+        "track_kind": track_kind,
+    }
+    if parameters is not None:
+        params["parameters"] = parameters
+    return _production_command("get_mixer_parameters", params)
+
+
+@mcp.tool()
+@telemetry_tool("set_mixer_parameter")
+def set_mixer_parameter(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    parameter_name: str,
+    value: Union[bool, int, float],
+    track_kind: Literal["track", "return", "main", "master"] = "track",
+    parameter_index: Optional[int] = None,
+    expected_parameter_name: Optional[str] = None,
+    expected_current_value: Optional[Union[bool, int, float]] = None,
+    tolerance: float = 0.0,
+    dry_run: bool = False,
+    overwrite: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Set one mixer value after Remote Script target resolution and preflight."""
+    params: Dict[str, Any] = {
+        "track_index": track_index,
+        "expected_track_name": expected_track_name,
+        "track_kind": track_kind,
+        "parameter_name": parameter_name,
+        "value": value,
+        "tolerance": tolerance,
+        "dry_run": dry_run,
+        "overwrite": overwrite,
+    }
+    if parameter_index is not None:
+        params["parameter_index"] = parameter_index
+    if expected_parameter_name is not None:
+        params["expected_parameter_name"] = expected_parameter_name
+    if expected_current_value is not None:
+        params["expected_current_value"] = expected_current_value
+    return _production_command("set_mixer_parameter", params)
+
+
+@mcp.tool()
+@telemetry_tool("set_mixer_parameters")
+def set_mixer_parameters(
+    ctx: Context,
+    parameters: List[MixerParameterChange],
+    dry_run: bool = False,
+    overwrite: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Preflight and apply a validated batch of mixer changes atomically."""
+    return _production_command(
+        "set_mixer_parameters",
+        {"parameters": parameters, "dry_run": dry_run, "overwrite": overwrite},
+    )
+
+
+@mcp.tool()
+@telemetry_tool("get_device_parameters")
+def get_device_parameters(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    device_path: List[DevicePathItem],
+    track_kind: Literal["track", "return", "main", "master"] = "track",
+    parameter_index: Optional[int] = None,
+    expected_parameter_name: Optional[str] = None,
+    parameters: Optional[List[int]] = None,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Read parameters for a device path validated by index, name, and class."""
+    params: Dict[str, Any] = {
+        "track_index": track_index,
+        "expected_track_name": expected_track_name,
+        "track_kind": track_kind,
+        "device_path": device_path,
+    }
+    if parameter_index is not None:
+        params["parameter_index"] = parameter_index
+    if expected_parameter_name is not None:
+        params["expected_parameter_name"] = expected_parameter_name
+    if parameters is not None:
+        params["parameters"] = parameters
+    return _production_command("get_device_parameters", params)
+
+
+@mcp.tool()
+@telemetry_tool("set_device_parameter")
+def set_device_parameter(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    device_path: List[DevicePathItem],
+    parameter_index: int,
+    expected_parameter_name: str,
+    value: Union[bool, int, float],
+    track_kind: Literal["track", "return", "main", "master"] = "track",
+    expected_current_value: Optional[Union[bool, int, float]] = None,
+    tolerance: float = 0.0,
+    dry_run: bool = False,
+    overwrite: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Set one continuous or quantized device parameter and read it back."""
+    params: Dict[str, Any] = {
+        "track_index": track_index,
+        "expected_track_name": expected_track_name,
+        "track_kind": track_kind,
+        "device_path": device_path,
+        "parameter_index": parameter_index,
+        "expected_parameter_name": expected_parameter_name,
+        "value": value,
+        "tolerance": tolerance,
+        "dry_run": dry_run,
+        "overwrite": overwrite,
+    }
+    if expected_current_value is not None:
+        params["expected_current_value"] = expected_current_value
+    return _production_command("set_device_parameter", params)
+
+
+@mcp.tool()
+@telemetry_tool("set_device_parameters")
+def set_device_parameters(
+    ctx: Context,
+    parameters: List[DeviceParameterChange],
+    dry_run: bool = False,
+    overwrite: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Preflight and apply a batch of nested device parameter changes."""
+    return _production_command(
+        "set_device_parameters",
+        {"parameters": parameters, "dry_run": dry_run, "overwrite": overwrite},
+    )
+
+
+@mcp.tool()
+@telemetry_tool("get_clip_notes")
+def get_clip_notes(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    clip_index: int,
+    expected_clip_name: str,
+    from_time: Optional[float] = None,
+    from_pitch: Optional[int] = None,
+    time_span: Optional[float] = None,
+    pitch_span: Optional[int] = None,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Read MIDI notes from one strictly identified Session clip."""
+    params: Dict[str, Any] = {
+        "track_index": track_index,
+        "expected_track_name": expected_track_name,
+        "clip_index": clip_index,
+        "expected_clip_name": expected_clip_name,
+    }
+    if from_time is not None:
+        params["from_time"] = from_time
+    if from_pitch is not None:
+        params["from_pitch"] = from_pitch
+    if time_span is not None:
+        params["time_span"] = time_span
+    if pitch_span is not None:
+        params["pitch_span"] = pitch_span
+    return _production_command("get_clip_notes", params)
+
+
+@mcp.tool()
+@telemetry_tool("replace_clip_notes")
+def replace_clip_notes(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    clip_index: int,
+    expected_clip_name: str,
+    notes: List[ClipNote],
+    from_time: Optional[float] = None,
+    from_pitch: Optional[int] = None,
+    time_span: Optional[float] = None,
+    pitch_span: Optional[int] = None,
+    dry_run: bool = False,
+    overwrite: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Replace a clip or range of notes with Remote Script read-back/rollback."""
+    params: Dict[str, Any] = {
+        "track_index": track_index,
+        "expected_track_name": expected_track_name,
+        "clip_index": clip_index,
+        "expected_clip_name": expected_clip_name,
+        "notes": notes,
+        "dry_run": dry_run,
+        "overwrite": overwrite,
+    }
+    if from_time is not None:
+        params["from_time"] = from_time
+    if from_pitch is not None:
+        params["from_pitch"] = from_pitch
+    if time_span is not None:
+        params["time_span"] = time_span
+    if pitch_span is not None:
+        params["pitch_span"] = pitch_span
+    return _production_command("replace_clip_notes", params)
+
+
+@mcp.tool()
+@telemetry_tool("clear_clip_notes")
+def clear_clip_notes(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    clip_index: int,
+    expected_clip_name: str,
+    from_time: Optional[float] = None,
+    from_pitch: Optional[int] = None,
+    time_span: Optional[float] = None,
+    pitch_span: Optional[int] = None,
+    dry_run: bool = False,
+    overwrite: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Clear all notes or one time range from a strictly identified clip."""
+    params: Dict[str, Any] = {
+        "track_index": track_index,
+        "expected_track_name": expected_track_name,
+        "clip_index": clip_index,
+        "expected_clip_name": expected_clip_name,
+        "dry_run": dry_run,
+        "overwrite": overwrite,
+    }
+    if from_time is not None:
+        params["from_time"] = from_time
+    if from_pitch is not None:
+        params["from_pitch"] = from_pitch
+    if time_span is not None:
+        params["time_span"] = time_span
+    if pitch_span is not None:
+        params["pitch_span"] = pitch_span
+    return _production_command("clear_clip_notes", params)
+
+
+@mcp.tool()
+@telemetry_tool("get_clip_properties")
+def get_clip_properties(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    clip_index: int,
+    expected_clip_name: str,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Read properties for one strictly identified Session clip."""
+    return _production_command(
+        "get_clip_properties",
+        {
+            "track_index": track_index,
+            "expected_track_name": expected_track_name,
+            "clip_index": clip_index,
+            "expected_clip_name": expected_clip_name,
+        },
+    )
+
+
+@mcp.tool()
+@telemetry_tool("get_output_meter_levels")
+def get_output_meter_levels(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    track_kind: Literal["track", "return", "main", "master"] = "track",
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Read current output meter levels for one strictly identified track."""
+    return _production_command(
+        "get_output_meter_levels",
+        {
+            "track_index": track_index,
+            "expected_track_name": expected_track_name,
+            "track_kind": track_kind,
+        },
+    )
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_loop")
+def set_clip_loop(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    clip_index: int,
+    expected_clip_name: str,
+    loop: Optional[bool] = None,
+    loop_start: Optional[float] = None,
+    loop_end: Optional[float] = None,
+    start_marker: Optional[float] = None,
+    end_marker: Optional[float] = None,
+    dry_run: bool = False,
+    overwrite: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Set clip loop and marker positions with strict clip resolution."""
+    params: Dict[str, Any] = {
+        "track_index": track_index,
+        "expected_track_name": expected_track_name,
+        "clip_index": clip_index,
+        "expected_clip_name": expected_clip_name,
+        "dry_run": dry_run,
+        "overwrite": overwrite,
+    }
+    if loop is not None:
+        params["loop"] = loop
+    for name, value in (
+        ("loop_start", loop_start),
+        ("loop_end", loop_end),
+        ("start_marker", start_marker),
+        ("end_marker", end_marker),
+    ):
+        if value is not None:
+            params[name] = value
+    return _production_command("set_clip_loop", params)
+
+
+@mcp.tool()
+@telemetry_tool("delete_session_clip")
+def delete_session_clip(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    clip_index: int,
+    expected_clip_name: str,
+    dry_run: bool = False,
+    overwrite: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Delete only a Session clip whose expected name matches exactly."""
+    return _production_command(
+        "delete_session_clip",
+        {
+            "track_index": track_index,
+            "expected_track_name": expected_track_name,
+            "clip_index": clip_index,
+            "expected_clip_name": expected_clip_name,
+            "dry_run": dry_run,
+            "overwrite": overwrite,
+        },
+    )
+
+
+@mcp.tool()
+@telemetry_tool("duplicate_session_clip")
+def duplicate_session_clip(
+    ctx: Context,
+    source_track_index: int,
+    expected_source_track_name: str,
+    source_clip_index: int,
+    expected_source_clip_name: str,
+    destination_track_index: int,
+    expected_destination_track_name: str,
+    destination_clip_index: int,
+    expected_destination_clip_name: Optional[str] = None,
+    source_track_kind: Literal["track", "return", "main", "master"] = "track",
+    destination_track_kind: Literal["track", "return", "main", "master"] = "track",
+    overwrite: bool = False,
+    dry_run: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Preflight and duplicate one Session clip to one destination slot."""
+    params: Dict[str, Any] = {
+        "source_track_index": source_track_index,
+        "expected_source_track_name": expected_source_track_name,
+        "source_clip_index": source_clip_index,
+        "expected_source_clip_name": expected_source_clip_name,
+        "destination_track_index": destination_track_index,
+        "expected_destination_track_name": expected_destination_track_name,
+        "destination_clip_index": destination_clip_index,
+        "source_track_kind": source_track_kind,
+        "destination_track_kind": destination_track_kind,
+        "overwrite": overwrite,
+        "dry_run": dry_run,
+    }
+    if expected_destination_clip_name is not None:
+        params["expected_destination_clip_name"] = expected_destination_clip_name
+    return _production_command("duplicate_session_clip", params)
+
+
+@mcp.tool()
+@telemetry_tool("duplicate_session_scene_clips")
+def duplicate_session_scene_clips(
+    ctx: Context,
+    source_scene_index: int,
+    expected_source_scene_name: str,
+    destination_scene_index: int,
+    expected_destination_scene_name: Optional[str] = None,
+    track_subset: Optional[List[TrackSelector]] = None,
+    overwrite: bool = False,
+    dry_run: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Duplicate a scene with an optional explicit track subset after preflight."""
+    params: Dict[str, Any] = {
+        "source_scene_index": source_scene_index,
+        "expected_source_scene_name": expected_source_scene_name,
+        "destination_scene_index": destination_scene_index,
+        "overwrite": overwrite,
+        "dry_run": dry_run,
+    }
+    if expected_destination_scene_name is not None:
+        params["expected_destination_scene_name"] = expected_destination_scene_name
+    if track_subset is not None:
+        params["track_subset"] = track_subset
+    return _production_command("duplicate_session_scene_clips", params)
+
+
+@mcp.tool()
+@telemetry_tool("fire_scene")
+def fire_scene(
+    ctx: Context,
+    scene_index: int,
+    expected_scene_name: str,
+    expected_global_quantization: Optional[int] = None,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Fire one scene after optionally verifying Live's global quantization."""
+    params: Dict[str, Any] = {
+        "scene_index": scene_index,
+        "expected_scene_name": expected_scene_name,
+    }
+    if expected_global_quantization is not None:
+        params["expected_global_quantization"] = expected_global_quantization
+    return _production_command("fire_scene", params)
+
+
+@mcp.tool()
+@telemetry_tool("stop_all_clips")
+def stop_all_clips(
+    ctx: Context,
+    track_subset: Optional[List[TrackSelector]] = None,
+    quantized: Optional[bool] = None,
+    dry_run: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Stop Session clips, optionally limited to an explicit track subset."""
+    params: Dict[str, Any] = {}
+    if track_subset is not None:
+        params["track_subset"] = track_subset
+    if quantized is not None:
+        params["quantized"] = quantized
+    params["dry_run"] = dry_run
+    return _production_command("stop_all_clips", params)
+
+
+@mcp.tool()
+@telemetry_tool("back_to_arrangement")
+def back_to_arrangement(
+    ctx: Context,
+    dry_run: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Return playback control to Arrangement when Live exposes the operation."""
+    return _production_command("back_to_arrangement", {"dry_run": dry_run})
+
+
+@mcp.tool()
+@telemetry_tool("duplicate_session_clip_to_arrangement")
+def duplicate_session_clip_to_arrangement(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    clip_index: int,
+    expected_clip_name: str,
+    destination_time: float,
+    track_kind: Literal["track", "return", "main", "master"] = "track",
+    dry_run: bool = False,
+    overwrite: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Copy one strictly identified Session clip into Arrangement."""
+    return _production_command(
+        "duplicate_session_clip_to_arrangement",
+        {
+            "track_index": track_index,
+            "expected_track_name": expected_track_name,
+            "clip_index": clip_index,
+            "expected_clip_name": expected_clip_name,
+            "destination_time": destination_time,
+            "track_kind": track_kind,
+            "dry_run": dry_run,
+            "overwrite": overwrite,
+        },
+    )
+
+
+@mcp.tool()
+@telemetry_tool("delete_arrangement_clip")
+def delete_arrangement_clip(
+    ctx: Context,
+    track_index: int,
+    expected_track_name: str,
+    expected_clip_name: str,
+    start_time: float,
+    duration: float,
+    dry_run: bool = False,
+    overwrite: bool = False,
+    user_prompt: str = "",
+) -> Dict[str, Any]:
+    """Guarded deletion for one uniquely identified Arrangement clip."""
+    return _production_command(
+        "delete_arrangement_clip",
+        {
+            "track_index": track_index,
+            "expected_track_name": expected_track_name,
+            "expected_clip_name": expected_clip_name,
+            "start_time": start_time,
+            "duration": duration,
+            "dry_run": dry_run,
+            "overwrite": overwrite,
+        },
+    )
 
 
 # Main execution
