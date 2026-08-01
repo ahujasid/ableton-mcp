@@ -459,6 +459,17 @@ class AbletonMCP(ControlSurface):
     def _get_session_info(self):
         """Get information about the current session"""
         try:
+            scenes = []
+            for scene_index, scene in enumerate(getattr(self._song, "scenes", ())):
+                clip_slots = getattr(scene, "clip_slots", ()) or ()
+                scenes.append({
+                    "index": scene_index,
+                    "name": self._safe_getattr(scene, "name", None),
+                    "is_empty": not any(
+                        bool(self._safe_getattr(slot, "has_clip", False))
+                        for slot in clip_slots
+                    ),
+                })
             result = {
                 "tempo": self._song.tempo,
                 "signature_numerator": self._song.signature_numerator,
@@ -481,6 +492,7 @@ class AbletonMCP(ControlSurface):
                 "loop":              self._safe_song_property("loop",              bool,  False),
                 "loop_start":        self._safe_song_property("loop_start",        float, 0.0),
                 "loop_length":       self._safe_song_property("loop_length",       float, 0.0),
+                "scenes": scenes,
             }
             return result
         except Exception as e:
@@ -2029,6 +2041,13 @@ class AbletonMCP(ControlSurface):
         if occupied and not overwrite:
             raise _RemoteScriptError(
                 "destination_occupied", "Destination session slot is occupied",
+                {"destination_track_index": destination_track_index,
+                 "destination_clip_index": destination_index}
+            )
+        if occupied and overwrite:
+            raise _RemoteScriptError(
+                "overwrite_unsupported",
+                "Occupied Session clip overwrite is unavailable without a complete recovery API",
                 {"destination_track_index": destination_track_index,
                  "destination_clip_index": destination_index}
             )

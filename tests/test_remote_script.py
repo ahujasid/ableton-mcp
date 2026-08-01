@@ -481,6 +481,46 @@ def test_scene_quantization_is_verified_instead_of_simulated():
     assert scene.fire_args == (False, True)
 
 
+def test_session_info_exposes_scene_identity_and_empty_state():
+    song, track, _clip = session_with_clip()
+    song.tempo = 120.0
+    song.signature_numerator = 4
+    song.signature_denominator = 4
+    empty_slot = ClipSlot()
+    occupied_slot = track.clip_slots[0]
+    scene_a = Scene("A")
+    scene_a.clip_slots = [occupied_slot]
+    scene_b = Scene("B")
+    scene_b.clip_slots = [empty_slot]
+    song.scenes = [scene_a, scene_b]
+    result = make_remote(song)._get_session_info()
+    assert result["scenes"] == [
+        {"index": 0, "name": "A", "is_empty": False},
+        {"index": 1, "name": "B", "is_empty": True},
+    ]
+
+
+def test_session_duplicate_refuses_unrecoverable_occupied_overwrite():
+    song, track, clip = session_with_clip()
+    destination = ClipSlot(Clip("Existing", notes=[]))
+    track.clip_slots.append(destination)
+    instance = make_remote(song)
+    with pytest.raises(remote._RemoteScriptError) as error:
+        instance._duplicate_session_clip({
+            "source_track_index": 0,
+            "expected_source_track_name": track.name,
+            "source_clip_index": 0,
+            "expected_source_clip_name": clip.name,
+            "destination_track_index": 0,
+            "expected_destination_track_name": track.name,
+            "destination_clip_index": len(track.clip_slots) - 1,
+            "expected_destination_clip_name": "Existing",
+            "overwrite": True,
+        })
+    assert error.value.code == "overwrite_unsupported"
+    assert destination.clip.name == "Existing"
+
+
 def test_arrangement_duplicate_readback_failure_removes_inserted_clip():
     song, track, clip = session_with_clip()
     track.arrangement_duplicate_length_override = clip.length + 1.0
