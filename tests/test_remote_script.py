@@ -371,6 +371,22 @@ def test_modern_note_write_builds_live_midi_note_specifications(monkeypatch):
     assert isinstance(clip.payload[0], MidiNoteSpecification)
 
 
+def test_note_readback_compares_optional_fields_per_expected_note():
+    instance = make_remote(Song([]))
+    expected = [
+        {"pitch": 41, "start_time": 0.0, "duration": 0.5,
+         "velocity": 92, "mute": False, "probability": 0.75},
+        {"pitch": 43, "start_time": 1.0, "duration": 0.5,
+         "velocity": 88, "mute": False},
+    ]
+    actual = [
+        dict(expected[0], velocity_deviation=0.0, release_velocity=64.0),
+        dict(expected[1], probability=1.0,
+             velocity_deviation=0.0, release_velocity=64.0),
+    ]
+    assert instance._notes_equal(actual, expected)
+
+
 def test_duplicate_preflight_rejects_occupied_destination_without_mutation():
     source_clip = Clip("[MCP TEST] Source")
     destination_clip = Clip("[MCP TEST] Existing")

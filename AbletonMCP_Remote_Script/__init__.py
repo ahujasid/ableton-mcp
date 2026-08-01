@@ -1633,11 +1633,6 @@ class AbletonMCP(ControlSurface):
                     note.get("velocity"), note.get("mute"))
         actual_sorted = sorted(actual, key=key)
         expected_sorted = sorted(expected, key=key)
-        optional = set()
-        for note in expected_sorted:
-            optional.update([name for name in note if name in (
-                "probability", "velocity_deviation", "release_velocity"
-            )])
         for actual_note, expected_note in zip(actual_sorted, expected_sorted):
             for name in ("pitch", "velocity", "mute"):
                 if actual_note.get(name) != expected_note.get(name):
@@ -1645,7 +1640,9 @@ class AbletonMCP(ControlSurface):
             for name in ("start_time", "duration"):
                 if not self._state_value_equal(actual_note.get(name), expected_note.get(name), tolerance):
                     return False
-            for name in optional:
+            for name in ("probability", "velocity_deviation", "release_velocity"):
+                if name not in expected_note:
+                    continue
                 if not self._state_value_equal(actual_note.get(name), expected_note.get(name), tolerance):
                     return False
         return True
