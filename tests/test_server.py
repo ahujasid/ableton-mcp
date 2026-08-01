@@ -92,6 +92,12 @@ class ServerContractTests(unittest.TestCase):
         self.assertEqual(note_schema["properties"]["notes"]["type"], "array")
         self.assertIn("ClipNote", note_schema["$defs"])
 
+        scene_schema = server.mcp._tool_manager._tools["duplicate_session_scene_clips"].parameters
+        selector_schema = scene_schema["$defs"]["TrackSelector"]
+        self.assertEqual(
+            selector_schema["properties"]["expected_clip_name"]["type"], "string"
+        )
+
     def test_new_tools_use_basic_telemetry_only(self):
         source = inspect.getsource(server)
         for name in NEW_TOOLS:

@@ -521,6 +521,25 @@ def test_session_duplicate_refuses_unrecoverable_occupied_overwrite():
     assert destination.clip.name == "Existing"
 
 
+def test_scene_duplicate_validates_expected_clip_name_from_track_subset():
+    song, track, clip = session_with_clip()
+    song.scenes = [Scene("A"), Scene("B")]
+    instance = make_remote(song)
+    with pytest.raises(remote._RemoteScriptError) as error:
+        instance._duplicate_session_scene_clips({
+            "source_scene_index": 0,
+            "expected_source_scene_name": "A",
+            "destination_scene_index": 1,
+            "expected_destination_scene_name": "B",
+            "track_subset": [{
+                "track_index": 0,
+                "expected_track_name": track.name,
+                "expected_clip_name": clip.name + " wrong",
+            }],
+        })
+    assert error.value.code == "clip_identity_mismatch"
+
+
 def test_arrangement_duplicate_readback_failure_removes_inserted_clip():
     song, track, clip = session_with_clip()
     track.arrangement_duplicate_length_override = clip.length + 1.0

@@ -2170,10 +2170,12 @@ class AbletonMCP(ControlSurface):
                 if track_index is None:
                     raise _RemoteScriptError("invalid_track_subset", "track_subset item needs track_index")
                 item_expected_track = track_item.get("expected_track_name")
+                item_expected_clip = track_item.get("expected_clip_name")
                 item_track_kind = track_item.get("track_kind", track_item.get("track_type", "normal"))
             else:
                 track_index = track_item
                 item_expected_track = None
+                item_expected_clip = None
                 item_track_kind = "normal"
             if isinstance(expected_source_tracks, (list, tuple)):
                 source_expected_track = expected_source_tracks[position] if position < len(expected_source_tracks) else None
@@ -2191,6 +2193,8 @@ class AbletonMCP(ControlSurface):
                 source_expected_clip = expected_source_clips[position] if position < len(expected_source_clips) else None
             else:
                 source_expected_clip = expected_source_clips.get(str(track_index), expected_source_clips.get(track_index)) if isinstance(expected_source_clips, dict) else None
+            if source_expected_clip is None:
+                source_expected_clip = item_expected_clip
             pair_values = dict(values)
             pair_values.update({
                 "track_index": track_index,

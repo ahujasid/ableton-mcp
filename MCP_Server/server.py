@@ -395,6 +395,7 @@ class TrackSelector(TypedDict, total=False):
 
     track_index: int
     expected_track_name: str
+    expected_clip_name: str
     track_kind: Literal["track", "return", "main", "master"]
 
 
