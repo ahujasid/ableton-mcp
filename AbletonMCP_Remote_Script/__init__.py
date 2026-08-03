@@ -229,6 +229,7 @@ class AbletonMCP(ControlSurface):
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "set_track_name",
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
+                                 "set_arrangement_clip_name",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback",
                                  "load_browser_item", "load_instrument_or_effect",
@@ -270,6 +271,11 @@ class AbletonMCP(ControlSurface):
                             clip_index = params.get("clip_index", 0)
                             name = params.get("name", "")
                             result = self._set_clip_name(track_index, clip_index, name)
+                        elif command_type == "set_arrangement_clip_name":
+                            track_index = params.get("track_index", 0)
+                            clip_index = params.get("clip_index", 0)
+                            name = params.get("name", "")
+                            result = self._set_arrangement_clip_name(track_index, clip_index, name)
                         elif command_type == "set_tempo":
                             tempo = params.get("tempo", 120.0)
                             result = self._set_tempo(tempo)
@@ -659,7 +665,34 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error setting clip name: " + str(e))
             raise
-    
+
+    def _set_arrangement_clip_name(self, track_index, clip_index, name):
+        """Set the name of a clip placed in the Arrangement timeline.
+
+        clip_index indexes into track.arrangement_clips, in the same order
+        as returned by _get_arrangement_clips (i.e. ordered by start_time).
+        """
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+
+            track = self._song.tracks[track_index]
+            arrangement_clips = list(track.arrangement_clips)
+
+            if clip_index < 0 or clip_index >= len(arrangement_clips):
+                raise IndexError("Clip index out of range")
+
+            clip = arrangement_clips[clip_index]
+            clip.name = name
+
+            result = {
+                "name": clip.name
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error setting arrangement clip name: " + str(e))
+            raise
+
     def _set_tempo(self, tempo):
         """Set the tempo of the session"""
         try:
