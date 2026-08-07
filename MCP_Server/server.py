@@ -570,6 +570,157 @@ def delete_clip(ctx: Context, track_index: int, clip_index: int) -> str:
 
 
 @mcp.tool()
+def delete_device(ctx: Context, track_index: int, device_index: int) -> str:
+    """Delete a device from a track's device chain. Use get_track_info to see devices.
+    Needed to swap instruments, since loading always appends to the chain."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "delete_device", {"track_index": track_index, "device_index": device_index}
+        )
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error deleting device: {str(e)}")
+        raise Exception(f"Failed to delete device: {str(e)}")
+
+
+@mcp.tool()
+def get_clip_notes(ctx: Context, track_index: int, clip_index: int) -> str:
+    """Read all MIDI notes (pitch, start_time, duration, velocity, mute) from a session clip.
+    Use before modifying an existing clip so edits build on what is actually there."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "get_clip_notes", {"track_index": track_index, "clip_index": clip_index}
+        )
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error reading clip notes: {str(e)}")
+        raise Exception(f"Failed to read clip notes: {str(e)}")
+
+
+@mcp.tool()
+def get_device_params(ctx: Context, track_index: int, device_index: int) -> str:
+    """List a device's parameters: index, name, value, min, max, display string.
+    Use to discover what a device exposes before setting values."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "get_device_params",
+            {"track_index": track_index, "device_index": device_index},
+        )
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error getting device params: {str(e)}")
+        raise Exception(f"Failed to get device params: {str(e)}")
+
+
+@mcp.tool()
+def set_device_param(
+    ctx: Context, track_index: int, device_index: int, param: str, value: float
+) -> str:
+    """Set a device parameter by name (or numeric index) to a value in its native range.
+    Returns the resulting display value (e.g. '2.50 dB', '450 Hz') for verification.
+    Frequencies on EQ Eight are log-normalized 0-1; set, read the display, iterate."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "set_device_param",
+            {
+                "track_index": track_index,
+                "device_index": device_index,
+                "param": param,
+                "value": value,
+            },
+        )
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error setting device param: {str(e)}")
+        raise Exception(f"Failed to set device param: {str(e)}")
+
+
+@mcp.tool()
+def get_device_chains(ctx: Context, track_index: int, device_index: int) -> str:
+    """List the chains of a rack device (e.g. drum rack pads) with names and volumes."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "get_device_chains",
+            {"track_index": track_index, "device_index": device_index},
+        )
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error listing device chains: {str(e)}")
+        raise Exception(f"Failed to list device chains: {str(e)}")
+
+
+@mcp.tool()
+def set_chain_volume(
+    ctx: Context, track_index: int, device_index: int, chain_index: int, value: float
+) -> str:
+    """Set the mixer volume (0.0-1.0, 0.85 = 0dB) of a rack chain, e.g. one drum pad.
+    The right fix for a single overbearing sample across all clips."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "set_chain_volume",
+            {
+                "track_index": track_index,
+                "device_index": device_index,
+                "chain_index": chain_index,
+                "value": value,
+            },
+        )
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error setting chain volume: {str(e)}")
+        raise Exception(f"Failed to set chain volume: {str(e)}")
+
+
+@mcp.tool()
+def set_track_volume(ctx: Context, track_index: int, value: float) -> str:
+    """Set a track's mixer volume. 0.0-1.0 where 0.85 = 0dB."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "set_track_volume", {"track_index": track_index, "value": value}
+        )
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error setting track volume: {str(e)}")
+        raise Exception(f"Failed to set track volume: {str(e)}")
+
+
+@mcp.tool()
+def set_send_level(
+    ctx: Context, track_index: int, send_index: int, value: float
+) -> str:
+    """Set a track's send level (0.0-1.0) to a return track."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "set_send_level",
+            {"track_index": track_index, "send_index": send_index, "value": value},
+        )
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error setting send level: {str(e)}")
+        raise Exception(f"Failed to set send level: {str(e)}")
+
+
+@mcp.tool()
+def set_master_volume(ctx: Context, value: float) -> str:
+    """Set the master output volume. 0.0-1.0 where 0.85 = 0dB."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_master_volume", {"value": value})
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error setting master volume: {str(e)}")
+        raise Exception(f"Failed to set master volume: {str(e)}")
+
+
+@mcp.tool()
 def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
     """
     Get a hierarchical tree of browser categories from Ableton.
