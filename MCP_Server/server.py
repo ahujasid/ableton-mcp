@@ -678,6 +678,67 @@ def set_chain_volume(
 
 
 @mcp.tool()
+def get_clip_envelope(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    device_index: int,
+    param: str,
+    resolution: float = 0.25,
+) -> str:
+    """Sample a clip's recorded automation envelope for a device parameter (by name).
+    Returns time/value/display samples across the clip, or has_envelope: false."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "get_clip_envelope",
+            {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "device_index": device_index,
+                "param": param,
+                "resolution": resolution,
+            },
+        )
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error reading clip envelope: {str(e)}")
+        raise Exception(f"Failed to read clip envelope: {str(e)}")
+
+
+@mcp.tool()
+def set_clip_envelope(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    device_index: int,
+    param: str,
+    steps: list[dict[str, float]],
+    clear: bool = True,
+) -> str:
+    """Write step automation into a clip's envelope for a device parameter.
+    steps: [{"time": beats, "length": beats, "value": native-range value}, ...].
+    Clears any existing envelope for that parameter first unless clear=False."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "set_clip_envelope",
+            {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "device_index": device_index,
+                "param": param,
+                "steps": steps,
+                "clear": clear,
+            },
+        )
+        return json.dumps(result)
+    except Exception as e:
+        logger.error(f"Error writing clip envelope: {str(e)}")
+        raise Exception(f"Failed to write clip envelope: {str(e)}")
+
+
+@mcp.tool()
 def set_track_volume(ctx: Context, track_index: int, value: float) -> str:
     """Set a track's mixer volume. 0.0-1.0 where 0.85 = 0dB."""
     try:

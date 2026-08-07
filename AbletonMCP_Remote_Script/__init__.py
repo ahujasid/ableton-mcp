@@ -236,6 +236,7 @@ class AbletonMCP(ControlSurface):
                                  "get_device_params", "set_device_param",
                                  "set_track_volume", "set_send_level", "set_master_volume",
                                  "get_clip_notes", "get_device_chains", "set_chain_volume",
+                                 "get_clip_envelope", "set_clip_envelope",
                                  "load_browser_item", "load_instrument_or_effect",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
@@ -320,6 +321,23 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             value = params.get("value", 0.85)
                             result = self._set_track_volume(track_index, value)
+                        elif command_type == "get_clip_envelope":
+                            result = self._get_clip_envelope(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("device_index", 0),
+                                params.get("param", ""),
+                                params.get("resolution", 0.25),
+                            )
+                        elif command_type == "set_clip_envelope":
+                            result = self._set_clip_envelope(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("device_index", 0),
+                                params.get("param", ""),
+                                params.get("steps", []),
+                                params.get("clear", True),
+                            )
                         elif command_type == "get_clip_notes":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
@@ -813,6 +831,70 @@ class AbletonMCP(ControlSurface):
             return {"track": track.name, "volume": track.mixer_device.volume.value}
         except Exception as e:
             self.log_message("Error setting track volume: " + str(e))
+            raise
+
+    def _resolve_clip_and_param(self, track_index, clip_index, device_index, param):
+        """Resolve a session clip plus a device parameter by name or index"""
+        clip_slot = self._song.tracks[track_index].clip_slots[clip_index]
+        if not clip_slot.has_clip:
+            raise Exception("No clip in slot")
+        device = self._song.tracks[track_index].devices[device_index]
+        target = None
+        if isinstance(param, int):
+            target = device.parameters[param]
+        else:
+            for p in device.parameters:
+                if p.name == param:
+                    target = p
+                    break
+        if target is None:
+            raise Exception("Parameter not found: " + str(param))
+        return clip_slot.clip, target
+
+    def _get_clip_envelope(self, track_index, clip_index, device_index, param, resolution=0.25):
+        """Sample a clip's automation envelope for a device parameter"""
+        try:
+            clip, target = self._resolve_clip_and_param(track_index, clip_index, device_index, param)
+            env = clip.automation_envelope(target)
+            if env is None:
+                return {"has_envelope": False, "param": target.name}
+            samples = []
+            t = 0.0
+            step = max(0.05, float(resolution))
+            while t < clip.length:
+                v = env.value_at_time(t)
+                samples.append({
+                    "time": round(t, 4),
+                    "value": v,
+                    "display": str(target.str_for_value(v)),
+                })
+                t += step
+            return {"has_envelope": True, "param": target.name,
+                    "clip_length": clip.length, "samples": samples}
+        except Exception as e:
+            self.log_message("Error reading clip envelope: " + str(e))
+            raise
+
+    def _set_clip_envelope(self, track_index, clip_index, device_index, param, steps, clear=True):
+        """Write step automation into a clip envelope. steps: [{time, length, value}]"""
+        try:
+            clip, target = self._resolve_clip_and_param(track_index, clip_index, device_index, param)
+            if clear:
+                try:
+                    clip.clear_envelope(target)
+                except Exception:
+                    pass
+            env = clip.automation_envelope(target)
+            if env is None:
+                env = clip.create_automation_envelope(target)
+            for s in steps:
+                start = float(s.get("time", 0.0))
+                length = float(s.get("length", 0.0))
+                value = max(target.min, min(target.max, float(s.get("value", 0.0))))
+                env.insert_step(start, length, value)
+            return {"param": target.name, "steps_written": len(steps)}
+        except Exception as e:
+            self.log_message("Error writing clip envelope: " + str(e))
             raise
 
     def _get_clip_notes(self, track_index, clip_index):
