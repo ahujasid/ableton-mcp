@@ -227,9 +227,16 @@ def load_browser_item(song, track_index, item_uri, track_type="track", ctrl=None
         raise
 
 
-def load_instrument_or_effect(song, track_index, uri, ctrl=None):
-    """Load an instrument or effect onto a track by URI (alias for load_browser_item)."""
-    return load_browser_item(song, track_index, uri, ctrl)
+def load_instrument_or_effect(song, track_index, uri, track_type="track", ctrl=None):
+    """Load an instrument or effect onto a track by URI (alias for load_browser_item).
+
+    `ctrl` MUST be passed by keyword. load_browser_item's fourth positional
+    parameter is `track_type`, so `load_browser_item(song, i, uri, ctrl)` silently
+    handed the control surface to track_type and left ctrl=None — which surfaced
+    as "load_browser_item requires ctrl for application()" on every call through
+    this alias, while the MCP tool (which calls load_browser_item directly) worked.
+    """
+    return load_browser_item(song, track_index, uri, track_type=track_type, ctrl=ctrl)
 
 
 def load_on_master_track(song, uri, ctrl=None):

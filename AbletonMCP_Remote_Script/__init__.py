@@ -542,7 +542,11 @@ def _dispatch_modifying(command_type, params, song, ctrl):
         return handlers.session.stop_playback(song, ctrl)
     if command_type == "load_instrument_or_effect":
         return handlers.browser.load_instrument_or_effect(
-            song, p.get("track_index", 0), p.get("uri", ""), ctrl
+            song,
+            p.get("track_index", 0),
+            p.get("uri", ""),
+            track_type=p.get("track_type", "track"),
+            ctrl=ctrl,  # keyword: positionally this lands in track_type
         )
     if command_type == "load_browser_item":
         return handlers.browser.load_browser_item(
