@@ -224,3 +224,76 @@ def insert_silence(song, position, length, ctrl=None):
         if ctrl:
             ctrl.log_message("Error inserting silence: " + str(e))
         raise
+
+def create_arrangement_automation(song, track_index, parameter_name,
+                                  automation_points, start_bar=1, end_bar=None,
+                                  ctrl=None):
+    """Write an automation envelope onto ARRANGEMENT clips over a bar range.
+
+    Live's Python API cannot write free-standing arrangement automation, but
+    arrangement clips are Clip objects and carry their own envelopes — so a
+    transition (a filter sweep through a build, a volume dip into a breakdown)
+    is written onto the clips that occupy those bars.
+
+    `automation_points` times are 0..1 across the RANGE, not beats, so a caller
+    can describe "sweep open across the build" without knowing where the clip
+    boundaries fall.
+    """
+    try:
+        if track_index < 0 or track_index >= len(song.tracks):
+            raise IndexError("Track index out of range")
+        track = song.tracks[track_index]
+        parameter = _find_parameter(track, parameter_name)
+        if parameter is None:
+            raise ValueError("Parameter '{0}' not found".format(parameter_name))
+
+        start_beat = (start_bar - 1) * 4.0
+        end_beat = (end_bar - 1) * 4.0 if end_bar else start_beat + 16.0
+        span = max(1e-6, end_beat - start_beat)
+
+        written, debug = 0, []
+        for clip in list(track.arrangement_clips):
+            # Only clips that overlap the requested range.
+            if clip.end_time <= start_beat or clip.start_time >= end_beat:
+                continue
+
+            envelope = None
+            try:
+                envelope = clip.automation_envelope(parameter)
+            except Exception:
+                pass
+            if envelope is None:
+                try:
+                    envelope = clip.create_automation_envelope(parameter)
+                except Exception as e:
+                    debug.append("envelope failed: {0}".format(e))
+                    continue
+            if envelope is None:
+                continue
+
+            for pt in automation_points:
+                # Position within the range -> absolute beat -> beat within clip.
+                frac = max(0.0, min(1.0, float(pt["time"])))
+                absolute = start_beat + frac * span
+                if absolute < clip.start_time or absolute > clip.end_time:
+                    continue
+                local = absolute - clip.start_time
+                value = max(0.0, min(1.0, float(pt["value"])))
+                try:
+                    envelope.insert_step(local, 0.0, value)
+                    written += 1
+                except Exception as e:
+                    debug.append("insert_step: {0}".format(e))
+
+        return {
+            "parameter": parameter_name,
+            "track_index": track_index,
+            "start_bar": start_bar,
+            "end_bar": end_bar,
+            "points_added": written,
+            "debug": debug[:5],
+        }
+    except Exception as e:
+        if ctrl:
+            ctrl.log_message("Error in create_arrangement_automation: " + str(e))
+        raise

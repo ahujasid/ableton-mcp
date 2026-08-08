@@ -6,7 +6,7 @@ Toggle control surface off/on to pick up changes.
 
 from __future__ import absolute_import, print_function, unicode_literals
 
-from . import tracks, browser, devices, arrangement, audio
+from . import tracks, browser, devices, arrangement, audio, automation
 
 
 def _resolve_track(song, track_index, track_type):
@@ -1109,6 +1109,18 @@ def _get_registry():
         },
         "set_clip_quantization": {
             "handler": lambda song, p, ctrl: _set_clip_quantization(song, p, ctrl),
+            "modifying": True,
+        },
+        "create_arrangement_automation": {
+            "handler": lambda song, p, ctrl: automation.create_arrangement_automation(
+                song,
+                p.get("track_index", 0),
+                p.get("parameter_name", "Volume"),
+                p.get("automation_points", []),
+                start_bar=p.get("start_bar", 1),
+                end_bar=p.get("end_bar"),
+                ctrl=ctrl,
+            ),
             "modifying": True,
         },
         "get_project_overview": {
