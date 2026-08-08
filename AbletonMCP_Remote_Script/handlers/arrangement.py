@@ -15,15 +15,28 @@ def copy_clip_to_arrangement(song, track_index, clip_index, arrangement_time, ct
         if not clip_slot.has_clip:
             raise Exception("No clip in slot")
         clip = clip_slot.clip
-        try:
-            clip.duplicate_clip_to(track, arrangement_time)
-            return {
-                "copied": True,
-                "track_index": track_index,
-                "clip_index": clip_index,
-                "arrangement_time": arrangement_time,
-            }
-        except AttributeError:
+
+        # The Live Object Model puts this on the TRACK, not the clip:
+        #   Track.duplicate_clip_to_arrangement(clip, beat_time)
+        # The previous code called clip.duplicate_clip_to(track, time), which is
+        # not a LOM method at all, so every placement fell through to the
+        # "not supported in this API version" branch and silently placed nothing.
+        for attempt in (
+            lambda: track.duplicate_clip_to_arrangement(clip, arrangement_time),
+            lambda: clip.duplicate_clip_to(track, arrangement_time),
+        ):
+            try:
+                attempt()
+                return {
+                    "copied": True,
+                    "track_index": track_index,
+                    "clip_index": clip_index,
+                    "arrangement_time": arrangement_time,
+                }
+            except AttributeError:
+                continue
+
+        if True:
             if ctrl:
                 ctrl.log_message("Using alternative clip copy method")
             clip_length = clip.length
