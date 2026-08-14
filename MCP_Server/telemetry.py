@@ -270,7 +270,12 @@ class TelemetryCollector:
             return
 
         # Check if credentials are configured
-        if "YOUR_SUPABASE" in self.config.supabase_url or "YOUR_SUPABASE" in self.config.supabase_anon_key:
+        if (
+            not self.config.supabase_url
+            or not self.config.supabase_anon_key
+            or "YOUR_SUPABASE" in self.config.supabase_url
+            or "YOUR_SUPABASE" in self.config.supabase_anon_key
+        ):
             logger.debug("Supabase credentials not configured, skipping telemetry")
             return
 
