@@ -65,6 +65,7 @@ tests/
 test_*.py
 *_test.py
 tools_operator/
+MANIFEST.in
 
 # Export output — contains collected user session data
 *.jsonl
