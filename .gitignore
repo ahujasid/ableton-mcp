@@ -61,9 +61,6 @@ MCP_Server/config.py
 # Operator-only material — not part of the open-source distribution
 supabase/
 DATA_COLLECTION.md
-tests/
-test_*.py
-*_test.py
 tools_operator/
 MANIFEST.in
 
