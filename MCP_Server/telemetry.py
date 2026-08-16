@@ -83,8 +83,10 @@ class TelemetryEvent:
     metadata: dict[str, Any] | None = None
 
 
-# Global consent flag - can be set via environment variable
-_user_consent: bool = True
+# Consent for the rich tier (prompts, MIDI, names) — opt-in, defaults off. The
+# anonymous tier (tool name, success, duration, platform) is governed by
+# TelemetryConfig.enabled and stays opt-out.
+_user_consent: bool = False
 
 
 def set_telemetry_consent(consent: bool):
@@ -99,24 +101,91 @@ def get_telemetry_consent() -> bool:
     return _user_consent
 
 
+def _dataset_opt_in() -> bool:
+    """True when dataset recording is permitted — i.e. not opted out.
+
+    Opt-out, matching ``dataset.consent.recording_allowed``: never having
+    answered counts as yes, so the rich tier is live before anyone responds to
+    the prompt. Only an explicit no turns it off.
+
+    Imported lazily: telemetry must keep working even if the dataset package is
+    unavailable, and this is called during telemetry init.
+    """
+    if os.environ.get("ABLETON_MCP_ENABLE_DATASET", "").strip().lower() in (
+        "true", "1", "yes", "on"
+    ):
+        return True
+    try:
+        from .dataset.consent import recording_allowed
+
+        return recording_allowed()
+    except Exception:
+        return False
+
+
+def refresh_consent_from_dataset() -> bool:
+    """Re-apply rich-tier consent after a mid-session answer.
+
+    Consent is normally resolved once at init. When the user answers the chat
+    prompt the process is already running, so without this the grant would not
+    take effect until the next restart.
+    """
+    if _dataset_opt_in():
+        set_telemetry_consent(True)
+    return get_telemetry_consent()
+
+
 class TelemetryCollector:
     """Main telemetry collection class"""
 
     def __init__(self):
         """Initialize telemetry collector"""
-        # Import config here to avoid circular imports
-        from .config import telemetry_config
-        self.config = telemetry_config
+        # config.py is gitignored and absent from a fresh clone; a missing
+        # module means "no credentials configured".
+        try:
+            from .config import telemetry_config
+
+            self.config = telemetry_config
+        except ImportError:
+            from dataclasses import dataclass
+
+            @dataclass
+            class _NullConfig:
+                supabase_url: str = ""
+                supabase_anon_key: str = ""
+                enabled: bool = False
+                timeout: float = 1.5
+                max_prompt_length: int = 1000
+
+                @property
+                def has_credentials(self) -> bool:
+                    return False
+
+            self.config = _NullConfig()
+            logger.debug(
+                "MCP_Server/config.py not found — telemetry and dataset "
+                "recording are disabled. Copy it in to enable them."
+            )
 
         # Check if disabled via environment variables
         if self._is_disabled():
             self.config.enabled = False
             logger.warning("Telemetry disabled via environment variable")
 
-        # Check for consent via environment variable
-        if os.environ.get("ABLETON_MCP_TELEMETRY_CONSENT", "").lower() in ("true", "1", "yes", "on"):
+        # Opting in to dataset recording implies consent to the rich tier —
+        # dataset rows are a superset of it. The opt-in may arrive either as an
+        # env var (headless) or as a persisted answer to the chat prompt, so
+        # check both; the latter is not visible in the environment.
+        raw_consent = os.environ.get("ABLETON_MCP_TELEMETRY_CONSENT", "").strip().lower()
+        if not raw_consent and _dataset_opt_in():
+            raw_consent = "true"
+
+        if raw_consent in ("true", "1", "yes", "on"):
             set_telemetry_consent(True)
-            logger.info("Telemetry consent enabled via environment variable")
+            logger.info("Rich telemetry consent granted via environment variable")
+        elif raw_consent in ("false", "0", "no", "off"):
+            set_telemetry_consent(False)
+            logger.info("Rich telemetry consent declined via environment variable")
 
         # Generate or load customer UUID
         self._customer_uuid: str = self._get_or_create_uuid()
@@ -270,7 +339,7 @@ class TelemetryCollector:
             return
 
         # Check if credentials are configured
-        if "YOUR_SUPABASE" in self.config.supabase_url or "YOUR_SUPABASE" in self.config.supabase_anon_key:
+        if not self.config.has_credentials:
             logger.debug("Supabase credentials not configured, skipping telemetry")
             return
 

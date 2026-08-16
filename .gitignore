@@ -55,8 +55,21 @@ logs/
 .env.local
 .env.*.local
 
-# Telemetry config (contains Supabase credentials)
+MCP_Server/secrets.py
 MCP_Server/config.py
+
+# Operator-only material — not part of the open-source distribution
+supabase/
+DATA_COLLECTION.md
+tests/
+test_*.py
+*_test.py
+tools_operator/
+
+# Export output — contains collected user session data
+*.jsonl
+exports/
+
 
 # Lock files (optional - uncomment if you don't want to track)
 # uv.lock
