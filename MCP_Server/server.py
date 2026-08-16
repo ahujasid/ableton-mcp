@@ -242,10 +242,13 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
             reason = "unknown"
             try:
                 from .config import telemetry_config  # noqa: F401
+                from .dataset.consent import recording_allowed
                 from .telemetry import get_telemetry_consent, is_telemetry_enabled
 
                 if not is_telemetry_enabled():
                     reason = "telemetry disabled (config.enabled=False or DISABLE_TELEMETRY)"
+                elif not recording_allowed():
+                    reason = "awaiting dataset opt-in (enable_dataset or first-run prompt)"
                 elif not get_telemetry_consent():
                     reason = "no telemetry consent"
                 else:
@@ -355,6 +358,87 @@ def get_ableton_connection():
 
 # Core Tool endpoints
 
+def _activate_dataset_after_consent() -> str:
+    """Shared success path after a mid-session opt-in."""
+    try:
+        from .telemetry import refresh_consent_from_dataset
+
+        refresh_consent_from_dataset()
+        recorder = get_recorder()
+    except Exception as e:
+        logger.error(f"Consent saved but recording failed to start: {str(e)}")
+        return (
+            "Consent saved, but recording could not start in this session. "
+            "It will begin after a restart."
+        )
+
+    if recorder is None:
+        return (
+            "Consent saved, but recording is unavailable (telemetry may be "
+            "disabled, or Supabase credentials are missing)."
+        )
+
+    try:
+        from .dataset.passive_poller import start_passive_poller
+
+        start_passive_poller()
+    except Exception as e:
+        logger.debug(f"Could not start passive poller after consent: {e}")
+
+    return (
+        "Thank you — this session is now being contributed to the open dataset. "
+        "Say so at any time to stop, use disable_dataset, or set "
+        "ABLETON_MCP_DISABLE_DATASET=1."
+    )
+
+
+@mcp.tool()
+def enable_dataset(ctx: Context, user_prompt: str = "") -> str:
+    """Turn ON dataset recording (opt-in).
+
+    Use this when the user clearly wants to help improve Ableton MCP, opt in to
+    the training dataset, or start contributing session data. Writes the same
+    consent switch as the first-run prompt and set_dataset_consent. Takes effect
+    immediately.
+    """
+    try:
+        from .dataset.consent import record_consent
+
+        record_consent(True, quote=user_prompt or "(via enable_dataset)")
+    except Exception as e:
+        logger.error(f"Could not enable dataset recording: {str(e)}")
+        return f"Error turning on dataset recording: {str(e)}"
+
+    return _activate_dataset_after_consent()
+
+
+@mcp.tool()
+def disable_dataset(ctx: Context, user_prompt: str = "") -> str:
+    """Turn OFF dataset recording.
+
+    Use this whenever the user asks to stop contributing, opt out of the
+    training dataset, or stop sharing session data. Writes the same consent
+    switch as the first-run prompt and set_dataset_consent. Takes effect
+    immediately.
+    """
+    try:
+        from .dataset.consent import record_consent
+        from .telemetry import refresh_consent_from_dataset
+
+        record_consent(False, quote=user_prompt or "(via disable_dataset)")
+        refresh_consent_from_dataset()
+    except Exception as e:
+        logger.error(f"Could not disable dataset recording: {str(e)}")
+        return f"Error turning off dataset recording: {str(e)}"
+
+    return (
+        "Dataset contribution is now OFF. Prompts, MIDI, names, and device "
+        "settings are no longer recorded. Minimal anonymous usage counts "
+        "(tool name, success, duration) still apply unless telemetry is "
+        "disabled. To opt in again, use enable_dataset or say yes when asked."
+    )
+
+
 @mcp.tool()
 def set_dataset_consent(ctx: Context, consent: bool, user_said: str = "") -> str:
     """Record the user's answer to the dataset consent question.
@@ -363,6 +447,9 @@ def set_dataset_consent(ctx: Context, consent: bool, user_said: str = "") -> str
     the answer, never call it on their behalf, and never call it because
     contributing seems helpful — consent the user did not give is not consent.
     If they have not been asked yet, ask first and wait for their reply.
+
+    For a clear request to turn collection on or off without a prior prompt,
+    prefer enable_dataset / disable_dataset instead.
 
     Parameters:
     - consent: True if the user agreed to contribute, False if they declined
@@ -379,32 +466,19 @@ def set_dataset_consent(ctx: Context, consent: bool, user_said: str = "") -> str
         return f"Error recording consent: {str(e)}"
 
     if not consent:
+        try:
+            from .telemetry import refresh_consent_from_dataset
+
+            refresh_consent_from_dataset()
+        except Exception:
+            pass
         return (
             "Recorded: dataset contribution declined. Nothing from this session "
-            "is uploaded, and you will not be asked again."
+            "is uploaded, and you will not be asked again. You can opt in later "
+            "with enable_dataset."
         )
 
-    try:
-        from .telemetry import refresh_consent_from_dataset
-
-        refresh_consent_from_dataset()
-        recorder = get_recorder()
-    except Exception as e:
-        logger.error(f"Consent saved but recording failed to start: {str(e)}")
-        return (
-            "Consent saved, but recording could not start in this session. "
-            "It will begin after a restart."
-        )
-
-    if recorder is None:
-        return (
-            "Consent saved, but recording is unavailable (telemetry may be "
-            f"disabled). State: {state}."
-        )
-    return (
-        "Thank you — this session is now being contributed to the open dataset. "
-        "Say so at any time to stop, or set ABLETON_MCP_DISABLE_DATASET=1."
-    )
+    return _activate_dataset_after_consent()
 
 
 @mcp.tool()

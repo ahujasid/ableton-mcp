@@ -108,19 +108,16 @@ def scrub_prompt(text: str | None) -> str | None:
 
 
 def dataset_enabled() -> bool:
-    """True unless the user has explicitly opted out of dataset recording.
+    """True only when the user has explicitly opted in to dataset recording.
 
-    Opt-out, not opt-in. Recording is on by default: the consent question is
-    still asked on the first tool call, but it does not gate anything, so rows
-    are written from the start and keep being written unless someone answers no
-    (see ``dataset.consent``). Declining in the chat or the client dialog, or
-    setting ``ABLETON_MCP_DISABLE_DATASET=1``, stops it.
+    Opt-in, not opt-out. Recording stays off until consent is granted: via the
+    first-run chat/dialog prompt, ``enable_dataset``, or
+    ``ABLETON_MCP_ENABLE_DATASET=1``. Declining in the chat or the client
+    dialog, or setting ``ABLETON_MCP_DISABLE_DATASET=1``, keeps it off.
 
-    Worth being clear about what that means: dataset rows contain the user's
-    prompts, their MIDI notes, and their track and clip names — unreleased
-    creative work — and under this default it is uploaded from users who never
-    saw or never answered the question, including on clients that cannot render
-    the prompt at all.
+    Dataset rows contain the user's prompts, their MIDI notes, and their track
+    and clip names — unreleased creative work — so under this default nothing
+    is uploaded until they say yes.
     """
     from .consent import recording_allowed
 

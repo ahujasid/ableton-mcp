@@ -6,18 +6,17 @@ the question be asked in the chat itself, once, and remembers the answer.
 
 Three states, and the distinction matters:
 
-    UNKNOWN  — never answered. Recording is ON (opt-out default); the next tool
-               call still surfaces the prompt so the user can decline.
+    UNKNOWN  — never answered. Recording is OFF (opt-in default); the next tool
+               call still surfaces the prompt so the user can grant consent.
     GRANTED  — the user said yes, in their own words. Recording is ON.
     DENIED   — the user said no. Recording is OFF, permanently, and the question
                is never asked again.
 
-Default-on for UNKNOWN makes this opt-out: recording starts without waiting for
-an answer, and a user who wants no part of it must actively decline — in the
-chat, in the client dialog, or with ``ABLETON_MCP_DISABLE_DATASET``. Note the
-consequence: a client that cannot render the prompt, or a user who never reads
-it, is recorded without having answered. Dataset rows contain prompts, MIDI, and
-device state, so that window is not free — see ``dataset_enabled``.
+Default-off for UNKNOWN makes this opt-in: recording does not start until the
+user explicitly agrees — in the chat, in the client dialog, via the
+``enable_dataset`` tool, or with ``ABLETON_MCP_ENABLE_DATASET``. Note the
+consequence: a client that cannot render the prompt, or a user who never
+answers, is not recorded. Dataset rows contain prompts, MIDI, and device state.
 
 ``ABLETON_MCP_DISABLE_DATASET`` still overrides everything, and the env-var
 opt-in still works for headless/CI use where no one can answer a chat prompt.
@@ -39,16 +38,25 @@ UNKNOWN = "unknown"
 GRANTED = "granted"
 DENIED = "denied"
 
+# Bump to re-ask everyone (e.g. if what gets collected changes materially, or
+# the default flips between opt-in and opt-out).
+CONSENT_PROMPT_VERSION = 2
+
 # Consent is per-install, not per-project: the same person answering once should
 # not be re-asked because they opened a different Live set.
-_STATE_DIR = Path(
-    os.environ.get("ABLETON_MCP_STATE_DIR", "")
-    or (Path.home() / ".ableton-mcp")
-)
-_STATE_FILE = _STATE_DIR / "consent.json"
-
 _lock = threading.Lock()
 _cache: dict[str, Any] | None = None
+
+
+def _state_dir() -> Path:
+    return Path(
+        os.environ.get("ABLETON_MCP_STATE_DIR", "")
+        or (Path.home() / ".ableton-mcp")
+    )
+
+
+def _state_file() -> Path:
+    return _state_dir() / "consent.json"
 
 
 def _read_state() -> dict[str, Any]:
@@ -57,7 +65,7 @@ def _read_state() -> dict[str, Any]:
     if _cache is not None:
         return _cache
     try:
-        with open(_STATE_FILE, encoding="utf-8") as f:
+        with open(_state_file(), encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict):
             raise ValueError("consent state is not an object")
@@ -76,11 +84,13 @@ def _write_state(state: dict[str, Any]) -> None:
     global _cache
     _cache = state
     try:
-        _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = _STATE_FILE.with_suffix(".json.tmp")
+        directory = _state_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        path = _state_file()
+        tmp = path.with_suffix(".json.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
-        os.replace(tmp, _STATE_FILE)
+        os.replace(tmp, path)
     except Exception as e:
         # Losing the answer means re-asking next session — annoying, not fatal.
         logger.warning("Could not persist dataset consent: %s", e)
@@ -110,13 +120,14 @@ def consent_state() -> str:
 
 
 def recording_allowed() -> bool:
-    """True when consent permits recording. Opt-out: UNKNOWN counts as yes.
+    """True when consent permits recording. Opt-in: only GRANTED counts as yes.
 
-    Only an explicit DENIED — the user declining in chat or in the client
-    dialog, or ``ABLETON_MCP_DISABLE_DATASET`` — stops recording. Never having
-    answered does not.
+    Never having answered does not start recording. Only an explicit grant —
+    the user agreeing in chat, in the client dialog, via ``enable_dataset``, or
+    ``ABLETON_MCP_ENABLE_DATASET`` — turns it on. ``ABLETON_MCP_DISABLE_DATASET``
+    always wins.
     """
-    return consent_state() != DENIED
+    return consent_state() == GRANTED
 
 
 def record_consent(granted: bool, quote: str | None = None) -> str:
@@ -131,6 +142,7 @@ def record_consent(granted: bool, quote: str | None = None) -> str:
         payload.update({
             "state": state,
             "answered_at": time.time(),
+            "prompt_version": CONSENT_PROMPT_VERSION,
             "user_said": (quote or "").strip()[:500] or None,
         })
         _write_state(payload)
@@ -139,7 +151,7 @@ def record_consent(granted: bool, quote: str | None = None) -> str:
 
 
 def needs_prompt() -> bool:
-    """True when the user has never been asked."""
+    """True when the user has never answered."""
     return consent_state() == UNKNOWN
 
 
@@ -148,6 +160,7 @@ def mark_prompted() -> None:
     with _lock:
         payload = dict(_read_state())
         payload["last_prompted_at"] = time.time()
+        payload["prompt_version"] = CONSENT_PROMPT_VERSION
         _write_state(payload)
 
 
@@ -155,27 +168,29 @@ CONSENT_NOTICE = (
     "\n\n---\n"
     "[Ask the user this now, before continuing. Do not answer it yourself, and "
     "do not assume — relay their reply verbatim.]\n\n"
-    "**This session is being contributed to the open Ableton MCP training "
-    "dataset. Do you want to keep contributing?**\n\n"
-    "Recording is on by default. What you make here — your prompts, MIDI "
-    "notes, track and clip names, and device settings — is uploaded and may be "
-    "published as part of an open dataset used to train music-production "
-    "models. Email addresses and file paths are stripped first.\n\n"
-    "Reply **no** to stop recording, or **yes** to keep contributing. You will "
-    "only be asked once; you can change your mind later by saying so.\n"
+    "**Help improve Ableton MCP by contributing this session to the open "
+    "training dataset?**\n\n"
+    "Collection is off unless you opt in. What you make here — your prompts, "
+    "MIDI notes, track and clip names, and device settings — would be uploaded "
+    "and may be published as part of an open dataset used to train "
+    "music-production models. Email addresses and file paths are stripped "
+    "first.\n\n"
+    "Reply **yes** to opt in, or **no** to stay opted out. You will only be "
+    "asked once; you can change your mind later by saying so (or ask to run "
+    "`enable_dataset` / `disable_dataset`).\n"
     "---"
 )
 
 
 ELICIT_MESSAGE = (
-    "This session is being contributed to the open Ableton MCP training "
-    "dataset. Keep contributing?\n\n"
-    "Recording is on by default. What you make here — your prompts, MIDI "
-    "notes, track and clip names, and device settings — is uploaded and may be "
-    "published as part of an open dataset used to train music-production "
-    "models. Email addresses and file paths are stripped first.\n\n"
-    "Decline to stop recording. You are asked once, and can change your mind "
-    "later."
+    "Help improve Ableton MCP by contributing this session to the open "
+    "training dataset?\n\n"
+    "Collection is off unless you opt in. What you make here — your prompts, "
+    "MIDI notes, track and clip names, and device settings — would be uploaded "
+    "and may be published as part of an open dataset used to train "
+    "music-production models. Email addresses and file paths are stripped "
+    "first.\n\n"
+    "Accept to opt in. You are asked once, and can change your mind later."
 )
 
 
@@ -198,7 +213,7 @@ async def try_elicit_consent(ctx: Any) -> str | None:
         class DatasetConsent(BaseModel):
             contribute: bool = Field(
                 description=(
-                    "Yes, contribute my sessions to the open dataset"
+                    "Yes, opt in and contribute my sessions to the open dataset"
                 ),
             )
 
@@ -216,9 +231,9 @@ async def try_elicit_consent(ctx: Any) -> str | None:
     if action == "decline":
         return record_consent(False, quote="(declined in client dialog)")
     # "cancel" — dismissed without answering. Left UNKNOWN so the question can
-    # be asked again in a later session. Under the opt-out default this means
-    # recording continues in the meantime: only an explicit no stops it.
-    logger.debug("Consent dialog dismissed without an answer — recording continues")
+    # be asked again in a later session. Under the opt-in default this means
+    # recording stays off in the meantime: only an explicit yes starts it.
+    logger.debug("Consent dialog dismissed without an answer — recording stays off")
     mark_prompted()
     return UNKNOWN
 
@@ -227,14 +242,18 @@ def maybe_consent_notice() -> str:
     """Return the consent question to append to a tool result, or "".
 
     Empty once the user has answered, or if they were already asked this
-    session — the prompt should read as a question, not a nag.
+    session — the prompt should read as a question, not a nag. A bumped
+    ``CONSENT_PROMPT_VERSION`` bypasses the hourly throttle so unanswered
+    installs see the new opt-in wording.
     """
     if not needs_prompt():
         return ""
     with _lock:
-        last = _read_state().get("last_prompted_at") or 0
-    # Re-ask on a later session if it went unanswered, but never twice in a row
-    if time.time() - last < 3600:
+        state = _read_state()
+        last = state.get("last_prompted_at") or 0
+        seen_version = state.get("prompt_version")
+    version_bumped = seen_version != CONSENT_PROMPT_VERSION
+    if not version_bumped and time.time() - last < 3600:
         return ""
     mark_prompted()
     return CONSENT_NOTICE

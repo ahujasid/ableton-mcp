@@ -115,7 +115,7 @@ That's it — ask Claude to build something.
 | **Clip creation** | Create and edit MIDI clips with notes |
 | **Arrangement view composition** | Build full songs autonomously in Arrangement View, including sections like intro, buildup, drop, breakdown, and outro |
 | **Session control** | Start and stop playback, fire clips, and control transport across Session View and Arrangement View |
-| **Anonymous telemetry** | Usage tracking to help improve the tool (can be disabled) |
+| **Anonymous telemetry** | Minimal usage counts (can be disabled); rich session data is opt-in |
 
 ## Components
 
@@ -289,18 +289,29 @@ The system uses a simple JSON-based protocol over TCP sockets:
 
 ## Telemetry
 
-AbletonMCP collects usage data to help improve the tool. This includes:
+AbletonMCP can collect usage data to help improve the tool. There are two tiers:
 
-- Anonymous tool usage statistics (which features are used)
-- Anonymous session start information (for daily/monthly active user counts)
-- Anonymous rates and performance metrics
-- Prompts, MIDI notes, track and clip names, and device settings
+|  | Anonymous telemetry | Dataset recording |
+|---|---|---|
+| Default | On | **Off (opt-in)** |
+| Contents | Tool names, success/failure, duration, versions | Prompts, MIDI, names, device settings |
+| Toggle | `ABLETON_MCP_DISABLE_TELEMETRY=true` | First-run prompt, `enable_dataset` / `disable_dataset`, or env vars |
 
-Telemetry is **on** by default. To see exactly what data is collected, see the [Terms & Data Use](TERMS.md).
+### Dataset recording (opt-in)
 
-### Opting Out
+Rich session data is **off by default**. Everything below writes the same consent switch (`~/.ableton-mcp/consent.json`):
 
-To disable telemetry, set one of these environment variables before starting the MCP server:
+1. **From chat (easiest)** — ask the assistant to turn collection on or off (`enable_dataset` / `disable_dataset`).
+2. **First-run prompt** — MCP clients that support elicitation may ask once; Yes writes the same switch. Others get a short question appended to a tool result.
+3. **Environment** — `ABLETON_MCP_ENABLE_DATASET=true` for headless/CI opt-in; `ABLETON_MCP_DISABLE_DATASET=true` hard-kills recording.
+
+With consent: prompts, MIDI notes, track/clip names, and device settings may be uploaded for the open training dataset (emails and paths stripped). See the [Terms & Data Use](TERMS.md).
+
+Without consent (default): only minimal anonymous usage counts.
+
+### Disabling anonymous telemetry
+
+To disable all telemetry (including minimal counts), set one of these before starting the MCP server:
 
 ```bash
 export ABLETON_MCP_DISABLE_TELEMETRY=true
