@@ -102,11 +102,11 @@ def get_telemetry_consent() -> bool:
 
 
 def _dataset_opt_in() -> bool:
-    """True when dataset recording is permitted — i.e. not opted out.
+    """True when dataset recording is permitted — i.e. the user opted in.
 
-    Opt-out, matching ``dataset.consent.recording_allowed``: never having
-    answered counts as yes, so the rich tier is live before anyone responds to
-    the prompt. Only an explicit no turns it off.
+    Opt-in, matching ``dataset.consent.recording_allowed``: never having
+    answered counts as no, so the rich tier stays off until someone grants
+    consent. Only an explicit yes turns it on.
 
     Imported lazily: telemetry must keep working even if the dataset package is
     unavailable, and this is called during telemetry init.
@@ -128,10 +128,13 @@ def refresh_consent_from_dataset() -> bool:
 
     Consent is normally resolved once at init. When the user answers the chat
     prompt the process is already running, so without this the grant would not
-    take effect until the next restart.
+    take effect until the next restart. Declining clears the in-memory flag so
+    rich telemetry stops immediately too.
     """
     if _dataset_opt_in():
         set_telemetry_consent(True)
+    else:
+        set_telemetry_consent(False)
     return get_telemetry_consent()
 
 
