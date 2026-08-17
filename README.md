@@ -241,6 +241,40 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Read and set mixer levels — volume, panning and sends
+
+### Mixer control
+
+`get_mixer`, `set_track_volume`, `set_track_panning` and `set_send` work on
+regular tracks, return tracks and the master (`track_type` is `"track"`,
+`"return"` or `"master"`).
+
+Levels are set in decibels:
+
+```
+set_track_volume(track_index=0, db=-4)
+set_send(track_index=0, send_index=0, db=-12)
+```
+
+Prefer `db` over the raw `value`. Live's fader position is not proportional to
+level — 0.85 is 0 dB and 1.0 is +6 dB — and the taper has no published closed
+form, so approximating it drifts away from unity gain. Passing `db` resolves the
+exact fader position by bisecting against `DeviceParameter.str_for_value()`,
+i.e. asking Live what a position actually reads as. Accuracy is bounded by
+Live's own 0.01 dB display resolution. Targets beyond the fader range clamp to
+its ends.
+
+`get_mixer` reports each parameter three ways — the raw value, the dB, and the
+string Live displays:
+
+```json
+{
+  "name": "1-Drums",
+  "volume": { "value": 0.85, "db": 0.0, "display": "0.0 dB" },
+  "panning": { "value": 0.0, "db": null, "display": "C" },
+  "sends": [ { "index": 0, "name": "A Reverb", "db": -12.0, "display": "-12.0 dB" } ]
+}
+```
 
 ### Example Commands
 
@@ -259,6 +293,8 @@ Here are some examples of what you can ask Claude to do:
 | *"Add a jazz chord progression to the clip in track 1"* | |
 | *"Set the tempo to 120 BPM"* | |
 | *"Play the clip in track 2"* | |
+| *"Set every track to -4 dB"* | |
+| *"Pan the hats 30% left and send them to the reverb at -12 dB"* | |
 
 ---
 
