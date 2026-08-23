@@ -9,10 +9,11 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 import os
 import re
+import threading
 import time
 import traceback
 
-VERSION = 3
+VERSION = 4
 
 MAIN_THREAD_COMMANDS = set(['create_midi_track', 'set_track_name', 'create_clip', 'create_audio_clip', 'add_notes_to_clip', 'set_clip_name', 'set_arrangement_clip_name', 'set_tempo', 'fire_clip', 'stop_clip', 'start_playback', 'stop_playback', 'delete_clip', 'delete_track', 'delete_device', 'get_device_params', 'set_device_param', 'set_track_volume', 'get_clip_envelope', 'set_clip_envelope', 'get_clip_notes', 'get_device_chains', 'set_chain_volume', 'set_master_volume', 'set_send_level', 'load_instrument_or_effect', 'load_browser_item', 'switch_to_arrangement_view', 'set_current_song_time', 'duplicate_session_clip_to_arrangement', 'map_rack_magnitude', 'inspect_rack', 'introspect', 'get_set_overview', 'get_routing', 'get_params', 'set_param', 'set_routing'])
 
@@ -235,11 +236,16 @@ class Handlers(object):
             params.get("routing_channel", None))
 
     def cmd_sample_meters(self, params):
-        return self._sample_meters(
-            params.get("seconds", 4.0),
-            params.get("interval", 0.05),
-            params.get("play", False),
-            params.get("start_time", None))
+        return self._sample_meters(params.get("seconds", 8.0), params.get("interval", 0.05))
+
+    def cmd_start_meter_capture(self, params):
+        return self._start_meter_capture(params.get("interval", 0.05))
+
+    def cmd_get_meter_capture(self, params):
+        return self._meter_capture_report()
+
+    def cmd_stop_meter_capture(self, params):
+        return self._stop_meter_capture()
 
     def cmd_get_session_info(self, params):
         return self._get_session_info()
@@ -1581,50 +1587,91 @@ class Handlers(object):
             obj.input_routing_channel = match[0]
         return {"path": path, "routing": self._routing_summary(obj)}
 
+    # ── metering ─────────────────────────────────────────────────────
+    # values are Live's raw 0.0-1.0 output meter readings (peak, smoothed by Live).
+    # no dB mapping is documented, so compare them relatively. reads happen on a
+    # background thread; they never touch Live state, so no main-thread scheduling.
+
     def _meter_targets(self):
         t = [("tracks[%d]" % i, tr.name, tr) for i, tr in enumerate(self._song.tracks)]
         t += [("return_tracks[%d]" % i, tr.name, tr) for i, tr in enumerate(self._song.return_tracks)]
         t += [("master_track", "Main", self._song.master_track)]
         return t
 
-    def _sample_meters(self, seconds=4.0, interval=0.05, play=False, start_time=None):
-        """poll every track's output meters while the
-        set plays. values are Live's raw 0.0-1.0 meter readings (peak, smoothed by Live);
-        no dB mapping is documented, so compare them relatively. runs on the socket thread
-        so it can sleep without blocking Live."""
-        targets = self._meter_targets()
-        stats = {}
-        for path, name, _ in targets:
-            stats[path] = {"name": name, "peak_l": 0.0, "peak_r": 0.0, "sum": 0.0, "n": 0,
-                           "clip_frames": 0}
-        if play:
-            if start_time is not None:
-                self._song.current_song_time = float(start_time)
-            self._song.start_playing()
-        t_end = time.time() + float(seconds)
-        while time.time() < t_end:
-            for path, name, tr in targets:
-                st = stats[path]
-                l, r = tr.output_meter_left, tr.output_meter_right
-                st["peak_l"] = max(st["peak_l"], l)
-                st["peak_r"] = max(st["peak_r"], r)
-                st["sum"] += (l + r) / 2.0
-                st["n"] += 1
-                if l >= 1.0 or r >= 1.0:
-                    st["clip_frames"] += 1
+    def _new_meter_stats(self):
+        return dict((path, {"name": name, "peak": 0.0, "sum": 0.0, "n": 0, "clip_frames": 0})
+                    for path, name, _ in self._meter_targets())
+
+    def _meter_tick(self, stats):
+        for path, name, tr in self._meter_targets():
+            st = stats.get(path)
+            if st is None:
+                continue
+            l, r = tr.output_meter_left, tr.output_meter_right
+            st["peak"] = max(st["peak"], l, r)
+            st["sum"] += (l + r) / 2.0
+            st["n"] += 1
+            if l >= 1.0 or r >= 1.0:
+                st["clip_frames"] += 1
+
+    def _meter_report(self, stats, seconds, state):
+        rows = [{"path": path, "name": st["name"], "peak": st["peak"],
+                 "mean": (st["sum"] / st["n"]) if st["n"] else 0.0,
+                 "clip_frames": st["clip_frames"]} for path, st in stats.items()]
+        rows.sort(key=lambda x: -x["peak"])
+        return {"state": state, "seconds": seconds,
+                "samples": stats["master_track"]["n"] if "master_track" in stats else 0,
+                "tracks": rows}
+
+    def _sample_meters(self, seconds=8.0, interval=0.05):
+        """blocking read for short windows (the socket caller's timeout bounds it)."""
+        stats = self._new_meter_stats()
+        t0 = time.time()
+        while time.time() - t0 < float(seconds):
+            self._meter_tick(stats)
             time.sleep(float(interval))
-        if play:
-            self._song.stop_playing()
-        out = []
-        for path, name, _ in targets:
-            st = stats[path]
-            out.append({"path": path, "name": name,
-                        "peak": max(st["peak_l"], st["peak_r"]),
-                        "mean": (st["sum"] / st["n"]) if st["n"] else 0.0,
-                        "clip_frames": st["clip_frames"]})
-        out.sort(key=lambda x: -x["peak"])
-        return {"seconds": seconds, "samples": stats["master_track"]["n"],
-                "tracks": out}
+        return self._meter_report(stats, time.time() - t0, "done")
+
+    _capture = None
+
+    def _start_meter_capture(self, interval=0.05):
+        """accumulate meters on a background thread until stop. survives any socket timeout;
+        the caller drives playback separately."""
+        if self._capture and self._capture["running"]:
+            return self._meter_capture_report()
+        cap = {"running": True, "stats": self._new_meter_stats(), "t0": time.time(), "t1": None}
+
+        def run():
+            while cap["running"]:
+                try:
+                    self._meter_tick(cap["stats"])
+                except Exception as e:
+                    self.log_message("meter capture tick error: " + str(e))
+                time.sleep(float(interval))
+            cap["t1"] = time.time()
+
+        th = threading.Thread(target=run)
+        th.daemon = True
+        cap["thread"] = th
+        Handlers._capture = cap
+        th.start()
+        return {"state": "running", "started": True}
+
+    def _meter_capture_report(self):
+        cap = Handlers._capture
+        if cap is None:
+            return {"state": "none"}
+        end = cap["t1"] or time.time()
+        return self._meter_report(cap["stats"], end - cap["t0"],
+                                  "running" if cap["running"] else "stopped")
+
+    def _stop_meter_capture(self):
+        cap = Handlers._capture
+        if cap is None:
+            return {"state": "none"}
+        cap["running"] = False
+        cap["thread"].join(2.0)
+        return self._meter_capture_report()
 
     def _get_device_type(self, device):
         """Get the type of a device"""
