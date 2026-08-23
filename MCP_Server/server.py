@@ -979,6 +979,71 @@ def get_automation(ctx: Context, path: str | None = None, track: str | None = No
 
 
 @mcp.tool()
+def play_from(ctx: Context, time: float) -> str:
+    """Start playback at a position in beats (starts, then seeks — start_playing alone
+    begins at the start marker regardless of a prior seek)."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("play_from", {"time": time}), indent=2)
+    except Exception as e:
+        return f"Error playing from {time}: {str(e)}"
+
+
+@mcp.tool()
+def record_automation(ctx: Context, param_path: str, points: list[list[float]], pre_roll: float = 1.0, post_roll: float = 0.5) -> str:
+    """Write arrangement automation for one parameter by having Live record it: seeks
+    to pre_roll beats before the first point, enables record, plays, and applies the
+    linearly-interpolated value each tick (~10/s) until post_roll beats past the last
+    point, then stops and restores record mode / playhead / track arms. points are
+    [[beat, value], ...] in the parameter's native range (see get_params min/max; the
+    'display' field shows what a value means). Existing lane content in that span is
+    replaced, as with any automation recording. One undo step. Returns immediately;
+    poll get_record_automation until state is 'done'. The section plays audibly once."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("record_automation", {"param_path": param_path, "points": points, "pre_roll": pre_roll, "post_roll": post_roll}), indent=2)
+    except Exception as e:
+        return f"Error recording automation on {param_path!r}: {str(e)}"
+
+
+@mcp.tool()
+def get_record_automation(ctx: Context) -> str:
+    """Status of the current/last record_automation pass (recording/done/error, values applied)."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("get_record_automation"), indent=2)
+    except Exception as e:
+        return f"Error reading record status: {str(e)}"
+
+
+@mcp.tool()
+def call(ctx: Context, path: str, method: str, args: list[Any] | None = None) -> str:
+    """Low-level: call a method on any Live Object Model object by path — e.g.
+    call('', 'begin_undo_step'), call('', 'undo'), call('tracks[3].arrangement_clips[0]',
+    'create_automation_envelope', [{"path": "tracks[3].devices[1].parameters[16]"}]).
+    An arg of the form {"path": ...} is resolved to the LOM object at that path.
+    Use introspect(include_methods=True) to see what a path offers."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("call", {"path": path, "method": method, "args": args or []}), indent=2)
+    except Exception as e:
+        return f"Error calling {method} on {path!r}: {str(e)}"
+
+
+@mcp.tool()
+def set_attr(ctx: Context, path: str, attr: str, value: Any) -> str:
+    """Low-level: set an attribute on any LOM object by path (e.g. path='' attr='loop'
+    value=false; path='tracks[3]' attr='mute' value=true). Returns before/after. Note the
+    read-back in the same call can be stale for some properties (Live applies them on the
+    next tick)."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("set_attr", {"path": path, "attr": attr, "value": value}), indent=2)
+    except Exception as e:
+        return f"Error setting {attr} on {path!r}: {str(e)}"
+
+
+@mcp.tool()
 def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
     """
     Get a hierarchical tree of browser categories from Ableton.

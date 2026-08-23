@@ -13,7 +13,7 @@ import re
 import time
 import traceback
 
-VERSION = 10
+VERSION = 13
 
 
 
@@ -233,6 +233,28 @@ class Handlers(object):
             params.get("path", ""),
             params.get("routing_type", None),
             params.get("routing_channel", None))
+
+    def cmd_record_automation(self, params):
+        return self._record_automation(params.get("param_path", ""), params.get("points", []),
+                                       params.get("pre_roll", 1.0), params.get("post_roll", 0.5))
+
+    def cmd_get_record_automation(self, params):
+        return self._record_status()
+
+    def cmd_play_from(self, params):
+        """start, then seek: start_playing begins at the start marker regardless of
+        a prior seek, but setting current_song_time while playing jumps playback."""
+        t = float(params.get("time", 0.0))
+        if not self._song.is_playing:
+            self._song.start_playing()
+        self._song.current_song_time = t
+        return {"is_playing": True, "requested_time": t}
+
+    def cmd_call(self, params):
+        return self._call(params.get("path", ""), params.get("method", ""), params.get("args", []))
+
+    def cmd_set_attr(self, params):
+        return self._set_attr(params.get("path", ""), params.get("attr", ""), params.get("value"))
 
     def cmd_get_song_file(self, params):
         return {"file_path": self._song.file_path, "name": self._song.name}
@@ -1430,6 +1452,27 @@ class Handlers(object):
             out["methods"] = methods
         return out
 
+    def _resolve_arg(self, a):
+        """args may be plain json values or {"path": "..."} references to LOM objects."""
+        if isinstance(a, dict) and "path" in a and len(a) == 1:
+            return self._resolve_lom_path(a["path"])
+        return a
+
+    def _call(self, path, method, args):
+        """call a method on any LOM object: e.g. call('', 'begin_undo_step'),
+        call('tracks[3].arrangement_clips[0]', 'create_automation_envelope',
+             [{"path": "tracks[3].devices[1].parameters[9]"}])."""
+        obj = self._resolve_lom_path(path)
+        fn = getattr(obj, method)
+        result = fn(*[self._resolve_arg(a) for a in (args or [])])
+        return {"path": path, "method": method, "result": self._safe_repr(result)}
+
+    def _set_attr(self, path, attr, value):
+        obj = self._resolve_lom_path(path)
+        before = self._safe_repr(getattr(obj, attr))
+        setattr(obj, attr, self._resolve_arg(value))
+        return {"path": path, "attr": attr, "before": before, "after": self._safe_repr(getattr(obj, attr))}
+
     def _routing_summary(self, obj):
         """read the standard LOM routing attrs if the object has them."""
         out = {}
@@ -1658,6 +1701,95 @@ class Handlers(object):
         return {"param_path": param_path, "param": param.name, "min": param.min, "max": param.max,
                 "automation_state": self.AUTOMATION_STATES.get(self._try(lambda: param.automation_state, 0)),
                 "track": track.name, "clips": clips}
+
+    # ── automation recording ─────────────────────────────────────────
+    # the LOM cannot write arrangement lanes directly, but Live records a lane
+    # when a parameter moves during playback with record_mode on. so: seek just
+    # before the first point, enable record, play, and apply the (linearly
+    # interpolated) values each main-thread tick until past the last point.
+    # wrapped in one undo step; all tracks are disarmed for the pass and restored.
+
+    _rec = None
+
+    def _record_automation(self, param_path, points, pre_roll=1.0, post_roll=0.5):
+        if Handlers._rec and Handlers._rec["state"] == "recording":
+            raise Exception("a recording pass is already running")
+        pts = sorted((float(t), float(v)) for t, v in points)
+        if not pts:
+            raise Exception("points required: [[beat, value], ...]")
+        param = self._resolve_lom_path(param_path)
+        song = self._song
+        script = self._script
+        t_first, t_last = pts[0][0], pts[-1][0]
+        arms = [(tr, tr.arm) for tr in song.tracks if self._try(lambda: tr.can_be_armed, False)]
+        rec = {"state": "recording", "param_path": param_path, "param": param.name,
+               "points": pts, "applied": 0, "t_start": max(0.0, t_first - float(pre_roll)),
+               "t_end": t_last + float(post_roll), "arms": arms,
+               "prev": {"record_mode": song.record_mode, "song_time": song.current_song_time,
+                        "session_automation_record": song.session_automation_record},
+               "log": []}
+        Handlers._rec = rec
+
+        def value_at(t):
+            if t <= pts[0][0]:
+                return pts[0][1]
+            for (ta, va), (tb, vb) in zip(pts, pts[1:]):
+                if ta <= t <= tb:
+                    return vb if tb == ta else va + (t - ta) / (tb - ta) * (vb - va)
+            return pts[-1][1]
+
+        def finish():
+            try:
+                song.stop_playing()
+            finally:
+                song.record_mode = rec["prev"]["record_mode"]
+                song.session_automation_record = rec["prev"]["session_automation_record"]
+                for tr, a in arms:
+                    self._try(lambda: setattr(tr, "arm", a))
+                song.current_song_time = rec["prev"]["song_time"]
+                song.end_undo_step()
+                rec["state"] = "done"
+
+        def tick():
+            if rec["state"] != "recording":
+                return
+            try:
+                t = song.current_song_time
+                if t >= rec["t_end"] or not song.is_playing:
+                    finish()
+                    return
+                if t >= pts[0][0]:
+                    v = max(param.min, min(param.max, value_at(t)))
+                    if param.value != v:
+                        param.value = v
+                        rec["applied"] += 1
+                        if len(rec["log"]) < 400:
+                            rec["log"].append([round(t, 3), v])
+            except Exception as e:
+                self.log_message("record_automation tick error: " + str(e))
+                rec["state"] = "error"
+                rec["error"] = str(e)
+                self._try(finish)
+                return
+            script.schedule_message(1, tick)
+
+        song.begin_undo_step()
+        for tr, _ in arms:
+            self._try(lambda: setattr(tr, "arm", False))
+        song.session_automation_record = True
+        song.record_mode = True
+        song.start_playing()
+        song.current_song_time = rec["t_start"]
+        script.schedule_message(1, tick)
+        return self._record_status()
+
+    def _record_status(self):
+        rec = Handlers._rec
+        if rec is None:
+            return {"state": "none"}
+        return {"state": rec["state"], "param": rec["param"], "param_path": rec["param_path"],
+                "t_start": rec["t_start"], "t_end": rec["t_end"], "applied": rec["applied"],
+                "error": rec.get("error"), "log": rec["log"][-20:]}
 
     # ── metering ─────────────────────────────────────────────────────
     # values are Live's raw 0.0-1.0 output meter readings (peak, smoothed by Live).
