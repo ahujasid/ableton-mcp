@@ -13,7 +13,7 @@ import re
 import time
 import traceback
 
-VERSION = 6
+VERSION = 9
 
 
 
@@ -234,14 +234,20 @@ class Handlers(object):
             params.get("routing_type", None),
             params.get("routing_channel", None))
 
-    def cmd_start_meter_capture(self, params):
-        return self._start_meter_capture(params.get("interval", 0.05))
+    def cmd_get_automated_params(self, params):
+        return self._get_automated_params()
 
-    def cmd_get_meter_capture(self, params):
-        return self._meter_capture_report()
+    def cmd_get_arrangement_envelope(self, params):
+        return self._get_arrangement_envelope(params.get("param_path", ""), params.get("resolution", 1.0))
 
-    def cmd_stop_meter_capture(self, params):
-        return self._stop_meter_capture()
+    def cmd_start_capture(self, params):
+        return self._start_capture(params.get("meters", True), params.get("automation", True))
+
+    def cmd_get_capture(self, params):
+        return self._capture_report(params.get("resolution", 1.0))
+
+    def cmd_stop_capture(self, params):
+        return self._stop_capture(params.get("resolution", 1.0))
 
     def cmd_get_session_info(self, params):
         return self._get_session_info()
@@ -1583,6 +1589,73 @@ class Handlers(object):
             obj.input_routing_channel = match[0]
         return {"path": path, "routing": self._routing_summary(obj)}
 
+    # ── automation ───────────────────────────────────────────────────
+    AUTOMATION_STATES = {0: "none", 1: "playing", 2: "overridden"}
+
+    def _walk_params(self):
+        """yield (track_path, track_name, owner_path, owner_name, param_index, param)
+        for every device parameter (recursing racks) and mixer parameter in the set."""
+        def walk_devices(devices, base, track_path, track_name):
+            for di, d in enumerate(devices):
+                dpath = "%s.devices[%d]" % (base, di)
+                for pi, p in enumerate(d.parameters):
+                    yield (track_path, track_name, dpath, d.name, pi, p)
+                if self._try(lambda: d.can_have_chains, False):
+                    for ci, ch in enumerate(d.chains):
+                        for item in walk_devices(ch.devices, "%s.chains[%d]" % (dpath, ci), track_path, track_name):
+                            yield item
+        for track_path, track_name, tr in self._meter_targets():
+            m = tr.mixer_device
+            mixer = [("volume", m.volume), ("panning", m.panning)]
+            mixer += [("sends[%d]" % i, snd) for i, snd in enumerate(m.sends)]
+            for name, p in mixer:
+                yield (track_path, track_name, track_path + ".mixer_device", "mixer", name, p)
+            for item in walk_devices(tr.devices, track_path, track_path, track_name):
+                yield item
+
+    def _get_automated_params(self):
+        """every parameter in the set whose automation_state is not 'none'."""
+        out = []
+        for track_path, track_name, owner_path, owner_name, pi, p in self._walk_params():
+            state = self._try(lambda: p.automation_state, 0)
+            if state:
+                out.append({"track": track_name, "track_path": track_path,
+                            "device": owner_name, "device_path": owner_path,
+                            "param": p.name, "param_index": pi,
+                            "param_path": "%s.parameters[%d]" % (owner_path, pi) if isinstance(pi, int) else "%s.%s" % (owner_path, pi),
+                            "automation_state": self.AUTOMATION_STATES.get(state, state),
+                            "value": p.value, "display": str(p.str_for_value(p.value))})
+        return {"count": len(out), "params": out}
+
+    def _track_of_path(self, path):
+        m = re.match(r"(tracks\[\d+\]|return_tracks\[\d+\]|master_track)", path or "")
+        if not m:
+            raise Exception("path must start with tracks[i], return_tracks[i] or master_track")
+        return m.group(1), self._resolve_lom_path(m.group(1))
+
+    def _get_arrangement_envelope(self, param_path, resolution=1.0):
+        """sample a parameter's arrangement automation, clip by clip, in beats."""
+        param = self._resolve_lom_path(param_path)
+        track_path, track = self._track_of_path(param_path)
+        step = max(0.0625, float(resolution))
+        clips = []
+        for clip in track.arrangement_clips:
+            env = self._try(lambda: clip.automation_envelope(param))
+            if env is None:
+                clips.append({"clip": clip.name, "start_time": clip.start_time, "end_time": clip.end_time, "has_envelope": False})
+                continue
+            samples = []
+            t = 0.0
+            while t < clip.length:
+                v = env.value_at_time(t)
+                samples.append([round(clip.start_time + t, 4), v])
+                t += step
+            clips.append({"clip": clip.name, "start_time": clip.start_time, "end_time": clip.end_time,
+                          "has_envelope": True, "samples": samples})
+        return {"param_path": param_path, "param": param.name, "min": param.min, "max": param.max,
+                "automation_state": self.AUTOMATION_STATES.get(self._try(lambda: param.automation_state, 0)),
+                "track": track.name, "clips": clips}
+
     # ── metering ─────────────────────────────────────────────────────
     # values are Live's raw 0.0-1.0 output meter readings (peak, smoothed by Live).
     # no dB mapping is documented, so compare them relatively. every meter read runs
@@ -1622,43 +1695,87 @@ class Handlers(object):
 
     _capture = None
 
-    def _start_meter_capture(self, interval=None):
-        """accumulate meters until stop, one read per Live timer tick on the main thread.
-        the caller drives playback separately."""
+    def _start_capture(self, meters=True, automation=True):
+        """record, once per Live timer tick on the main thread, the song position plus
+        (optionally) every track's output meter and the value of every automated
+        parameter. runs until stop_capture; the caller drives playback separately."""
         if Handlers._capture and Handlers._capture["running"]:
-            return self._meter_capture_report()
-        cap = {"running": True, "stats": self._new_meter_stats(), "t0": time.time(), "t1": None}
+            return self._capture_report()
+        params = []
+        if automation:
+            for row in self._get_automated_params()["params"]:
+                params.append((row, self._resolve_lom_path(row["param_path"])))
+        cap = {"running": True, "t0": time.time(), "t1": None, "ticks": 0,
+               "meters": self._new_meter_stats() if meters else None,
+               "params": params, "series": [[] for _ in params],
+               "times": []}
         script = self._script
+        song = self._song
 
         def tick():
             if not cap["running"]:
-                cap["t1"] = time.time()
                 return
             try:
-                self._meter_tick(cap["stats"])
+                cap["ticks"] += 1
+                if cap["meters"] is not None:
+                    self._meter_tick(cap["meters"])
+                if cap["params"]:
+                    t = song.current_song_time
+                    cap["times"].append(t)
+                    for i, (_, p) in enumerate(cap["params"]):
+                        cap["series"][i].append(p.value)
             except Exception as e:
-                self.log_message("meter capture tick error: " + str(e))
+                self.log_message("capture tick error: " + str(e))
             script.schedule_message(1, tick)
 
         Handlers._capture = cap
         script.schedule_message(1, tick)
-        return {"state": "running", "started": True}
+        return {"state": "running", "meters": meters, "automated_params": len(params)}
 
-    def _meter_capture_report(self):
+    def _capture_report(self, resolution=1.0):
+        """meters: peak/mean per track. automation: per param, values bucketed by song
+        position at `resolution` beats (mean of samples in the bucket), so a 4-bar
+        sweep reads as a short list rather than hundreds of ticks."""
         cap = Handlers._capture
         if cap is None:
             return {"state": "none"}
         end = cap["t1"] or time.time()
-        return self._meter_report(cap["stats"], end - cap["t0"],
-                                  "running" if cap["running"] else "stopped")
+        out = {"state": "running" if cap["running"] else "stopped",
+               "seconds": end - cap["t0"], "ticks": cap["ticks"]}
+        if cap["meters"] is not None:
+            out["meters"] = self._meter_report(cap["meters"], end - cap["t0"], out["state"])["tracks"]
+        if cap["params"]:
+            step = max(0.0625, float(resolution))
+            times = cap["times"]
+            rows = []
+            for (row, p), series in zip(cap["params"], cap["series"]):
+                buckets = {}
+                for t, v in zip(times, series):
+                    b = int(t // step)
+                    acc = buckets.setdefault(b, [0.0, 0])
+                    acc[0] += v
+                    acc[1] += 1
+                pts = [[round(b * step, 4), buckets[b][0] / buckets[b][1]] for b in sorted(buckets)]
+                vals = [v for _, v in pts]
+                rows.append({"track": row["track"], "device": row["device"], "param": row["param"],
+                             "param_path": row["param_path"], "min": p.min, "max": p.max,
+                             "observed_min": min(vals) if vals else None,
+                             "observed_max": max(vals) if vals else None,
+                             "display_min": str(p.str_for_value(min(vals))) if vals else None,
+                             "display_max": str(p.str_for_value(max(vals))) if vals else None,
+                             "points": pts})
+            out["automation"] = {"resolution_beats": step,
+                                 "song_time_range": [min(times), max(times)] if times else None,
+                                 "params": rows}
+        return out
 
-    def _stop_meter_capture(self):
+    def _stop_capture(self, resolution=1.0):
         cap = Handlers._capture
         if cap is None:
             return {"state": "none"}
         cap["running"] = False
         cap["t1"] = time.time()
-        return self._meter_capture_report()
+        return self._capture_report(resolution)
 
     def _get_device_type(self, device):
         """Get the type of a device"""

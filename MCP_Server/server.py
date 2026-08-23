@@ -859,38 +859,67 @@ def set_routing(ctx: Context, path: str, routing_type: str | None = None, routin
 
 
 @mcp.tool()
-def start_meter_capture(ctx: Context) -> str:
-    """Begin accumulating every track's (and the master's) output meter inside Live,
-    ~10 reads/s on Live's main thread. Drive playback however you like (play the whole
-    song, loop a section), then call stop_meter_capture for the report; get_meter_capture
-    peeks without stopping. Values are Live's raw 0.0-1.0 meter readings — no documented
-    dB mapping, compare relatively."""
+def get_automated_params(ctx: Context) -> str:
+    """Every parameter in the set that has automation (device params, recursing racks,
+    plus mixer volume/pan/sends on tracks, returns and master): track, device, param,
+    param_path, automation state and current value. The inventory to read before
+    judging continuity of motion across the arrangement."""
     try:
         ableton = get_ableton_connection()
-        return json.dumps(ableton.send_command("start_meter_capture"), indent=2)
+        return json.dumps(ableton.send_command("get_automated_params"), indent=2)
     except Exception as e:
-        return f"Error starting meter capture: {str(e)}"
+        return f"Error listing automated params: {str(e)}"
 
 
 @mcp.tool()
-def get_meter_capture(ctx: Context) -> str:
-    """Peek at the running (or last) meter capture: peak/mean per track so far."""
+def get_arrangement_envelope(ctx: Context, param_path: str, resolution: float = 1.0) -> str:
+    """Sample a parameter's *clip* envelopes across the track's arrangement clips, in beats.
+    Note: Live's API does not expose track-lane arrangement automation here (has_envelope
+    will be false for it) — use start_capture/stop_capture with automation=True and play
+    the song to record what the lanes actually do."""
     try:
         ableton = get_ableton_connection()
-        return json.dumps(ableton.send_command("get_meter_capture"), indent=2)
+        return json.dumps(ableton.send_command("get_arrangement_envelope", {"param_path": param_path, "resolution": resolution}), indent=2)
     except Exception as e:
-        return f"Error reading meter capture: {str(e)}"
+        return f"Error reading envelope for {param_path!r}: {str(e)}"
 
 
 @mcp.tool()
-def stop_meter_capture(ctx: Context) -> str:
-    """Stop the background meter capture and return its report (peak/mean/clip frames
-    per track, loudest first)."""
+def start_capture(ctx: Context, meters: bool = True, automation: bool = True) -> str:
+    """Begin recording inside Live, once per timer tick (~10/s) on Live's main thread:
+    every track's (and the master's) output meter, and the value of every automated
+    parameter against song position. Drive playback yourself (play the whole song, loop a
+    section); then stop_capture returns the report, get_capture peeks without stopping.
+    Meter values are Live's raw 0.0-1.0 readings — no documented dB mapping, compare
+    relatively."""
     try:
         ableton = get_ableton_connection()
-        return json.dumps(ableton.send_command("stop_meter_capture"), indent=2)
+        return json.dumps(ableton.send_command("start_capture", {"meters": meters, "automation": automation}), indent=2)
     except Exception as e:
-        return f"Error stopping meter capture: {str(e)}"
+        return f"Error starting capture: {str(e)}"
+
+
+@mcp.tool()
+def get_capture(ctx: Context, resolution: float = 1.0) -> str:
+    """Peek at the running (or last) capture. Automation series are bucketed by song
+    position at `resolution` beats (mean per bucket)."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("get_capture", {"resolution": resolution}), indent=2)
+    except Exception as e:
+        return f"Error reading capture: {str(e)}"
+
+
+@mcp.tool()
+def stop_capture(ctx: Context, resolution: float = 1.0) -> str:
+    """Stop the capture and return the report: meters (peak/mean/clip frames per track,
+    loudest first) and, per automated parameter, observed range plus a [beat, value]
+    series bucketed at `resolution` beats."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("stop_capture", {"resolution": resolution}), indent=2)
+    except Exception as e:
+        return f"Error stopping capture: {str(e)}"
 
 
 @mcp.tool()
