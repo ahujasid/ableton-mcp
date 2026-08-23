@@ -95,7 +95,7 @@ class AbletonConnection:
             raise Exception("No data received")
 
     def send_command(
-        self, command_type: str, params: dict[str, Any] | None = None
+        self, command_type: str, params: dict[str, Any] | None = None, timeout: float | None = None
     ) -> dict[str, Any]:
         """Send a command to Ableton and return the response"""
         if not self.sock and not self.connect():
@@ -136,7 +136,8 @@ class AbletonConnection:
                 time.sleep(0.1)  # 100ms delay
 
             # Set timeout based on command type
-            timeout = 15.0 if is_modifying_command else 10.0
+            if timeout is None:
+                timeout = 15.0 if is_modifying_command else 10.0
             self.sock.settimeout(timeout)
 
             # Receive the response
@@ -855,6 +856,23 @@ def set_routing(ctx: Context, path: str, routing_type: str | None = None, routin
         return json.dumps(ableton.send_command("set_routing", {"path": path, "routing_type": routing_type, "routing_channel": routing_channel}), indent=2)
     except Exception as e:
         return f"Error setting routing on {path!r}: {str(e)}"
+
+
+@mcp.tool()
+def sample_meters(ctx: Context, seconds: float = 8.0, play: bool = True, start_time: float | None = None) -> str:
+    """Poll every track's output meter (and the master's) for `seconds` and report
+    peak/mean per track, loudest first. With play=True it starts playback (optionally
+    from start_time in beats) and stops when done. Values are Live's raw 0.0-1.0 meter
+    readings — no documented dB mapping, compare relatively. seconds is capped at 60."""
+    try:
+        ableton = get_ableton_connection()
+        seconds = min(float(seconds), 60.0)
+        params: dict[str, Any] = {"seconds": seconds, "play": play}
+        if start_time is not None:
+            params["start_time"] = start_time
+        return json.dumps(ableton.send_command("sample_meters", params, timeout=seconds + 15.0), indent=2)
+    except Exception as e:
+        return f"Error sampling meters: {str(e)}"
 
 
 @mcp.tool()

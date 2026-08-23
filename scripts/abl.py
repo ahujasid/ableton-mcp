@@ -34,4 +34,5 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
     params = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
-    print(json.dumps(call(sys.argv[1], params), indent=2))
+    timeout = float(params.get("seconds", 0)) + 15.0
+    print(json.dumps(call(sys.argv[1], params, timeout=timeout), indent=2))

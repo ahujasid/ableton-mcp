@@ -9,9 +9,10 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 import os
 import re
+import time
 import traceback
 
-VERSION = 2
+VERSION = 3
 
 MAIN_THREAD_COMMANDS = set(['create_midi_track', 'set_track_name', 'create_clip', 'create_audio_clip', 'add_notes_to_clip', 'set_clip_name', 'set_arrangement_clip_name', 'set_tempo', 'fire_clip', 'stop_clip', 'start_playback', 'stop_playback', 'delete_clip', 'delete_track', 'delete_device', 'get_device_params', 'set_device_param', 'set_track_volume', 'get_clip_envelope', 'set_clip_envelope', 'get_clip_notes', 'get_device_chains', 'set_chain_volume', 'set_master_volume', 'set_send_level', 'load_instrument_or_effect', 'load_browser_item', 'switch_to_arrangement_view', 'set_current_song_time', 'duplicate_session_clip_to_arrangement', 'map_rack_magnitude', 'inspect_rack', 'introspect', 'get_set_overview', 'get_routing', 'get_params', 'set_param', 'set_routing'])
 
@@ -232,6 +233,13 @@ class Handlers(object):
             params.get("path", ""),
             params.get("routing_type", None),
             params.get("routing_channel", None))
+
+    def cmd_sample_meters(self, params):
+        return self._sample_meters(
+            params.get("seconds", 4.0),
+            params.get("interval", 0.05),
+            params.get("play", False),
+            params.get("start_time", None))
 
     def cmd_get_session_info(self, params):
         return self._get_session_info()
@@ -1572,6 +1580,51 @@ class Handlers(object):
                     routing_channel, [c.display_name for c in obj.available_input_routing_channels]))
             obj.input_routing_channel = match[0]
         return {"path": path, "routing": self._routing_summary(obj)}
+
+    def _meter_targets(self):
+        t = [("tracks[%d]" % i, tr.name, tr) for i, tr in enumerate(self._song.tracks)]
+        t += [("return_tracks[%d]" % i, tr.name, tr) for i, tr in enumerate(self._song.return_tracks)]
+        t += [("master_track", "Main", self._song.master_track)]
+        return t
+
+    def _sample_meters(self, seconds=4.0, interval=0.05, play=False, start_time=None):
+        """poll every track's output meters while the
+        set plays. values are Live's raw 0.0-1.0 meter readings (peak, smoothed by Live);
+        no dB mapping is documented, so compare them relatively. runs on the socket thread
+        so it can sleep without blocking Live."""
+        targets = self._meter_targets()
+        stats = {}
+        for path, name, _ in targets:
+            stats[path] = {"name": name, "peak_l": 0.0, "peak_r": 0.0, "sum": 0.0, "n": 0,
+                           "clip_frames": 0}
+        if play:
+            if start_time is not None:
+                self._song.current_song_time = float(start_time)
+            self._song.start_playing()
+        t_end = time.time() + float(seconds)
+        while time.time() < t_end:
+            for path, name, tr in targets:
+                st = stats[path]
+                l, r = tr.output_meter_left, tr.output_meter_right
+                st["peak_l"] = max(st["peak_l"], l)
+                st["peak_r"] = max(st["peak_r"], r)
+                st["sum"] += (l + r) / 2.0
+                st["n"] += 1
+                if l >= 1.0 or r >= 1.0:
+                    st["clip_frames"] += 1
+            time.sleep(float(interval))
+        if play:
+            self._song.stop_playing()
+        out = []
+        for path, name, _ in targets:
+            st = stats[path]
+            out.append({"path": path, "name": name,
+                        "peak": max(st["peak_l"], st["peak_r"]),
+                        "mean": (st["sum"] / st["n"]) if st["n"] else 0.0,
+                        "clip_frames": st["clip_frames"]})
+        out.sort(key=lambda x: -x["peak"])
+        return {"seconds": seconds, "samples": stats["master_track"]["n"],
+                "tracks": out}
 
     def _get_device_type(self, device):
         """Get the type of a device"""
