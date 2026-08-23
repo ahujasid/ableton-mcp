@@ -1,9 +1,10 @@
 """all AbletonMCP commands. reloadable at runtime via the `reload` command,
 so iterating does not require restarting Live.
 
-each command is a `cmd_<name>(self, params)` method. MAIN_THREAD_COMMANDS lists
-the ones that touch Live state and must run on Live's main thread; the shell in
-__init__.py schedules those and runs the rest directly on the socket thread.
+each command is a `cmd_<name>(self, params)` method. every command runs on
+Live's main thread (the shell in __init__.py schedules it via schedule_message):
+the Live Object Model is not thread-safe, and touching it from the socket
+thread has crashed Live.
 """
 from __future__ import absolute_import, print_function, unicode_literals
 
@@ -12,9 +13,8 @@ import re
 import time
 import traceback
 
-VERSION = 5
+VERSION = 6
 
-MAIN_THREAD_COMMANDS = set(['start_meter_capture', 'get_meter_capture', 'stop_meter_capture', 'create_midi_track', 'set_track_name', 'create_clip', 'create_audio_clip', 'add_notes_to_clip', 'set_clip_name', 'set_arrangement_clip_name', 'set_tempo', 'fire_clip', 'stop_clip', 'start_playback', 'stop_playback', 'delete_clip', 'delete_track', 'delete_device', 'get_device_params', 'set_device_param', 'set_track_volume', 'get_clip_envelope', 'set_clip_envelope', 'get_clip_notes', 'get_device_chains', 'set_chain_volume', 'set_master_volume', 'set_send_level', 'load_instrument_or_effect', 'load_browser_item', 'switch_to_arrangement_view', 'set_current_song_time', 'duplicate_session_clip_to_arrangement', 'map_rack_magnitude', 'inspect_rack', 'introspect', 'get_set_overview', 'get_routing', 'get_params', 'set_param', 'set_routing'])
 
 
 class Handlers(object):
@@ -29,7 +29,7 @@ class Handlers(object):
         fn = getattr(self, "cmd_" + command_type, None)
         if fn is None:
             raise KeyError("Unknown command: " + command_type)
-        return fn, command_type in MAIN_THREAD_COMMANDS
+        return fn, True
 
     # ── command table (params dict → result) ─────────────────────────
 
