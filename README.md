@@ -109,6 +109,19 @@ uvx ableton-mcp
 
 6. Set Input and Output to "None"
 
+## Development (iterating on the remote script)
+
+The remote script is two files: `__init__.py` (socket server + main-thread scheduling, loaded
+once per Live launch) and `handlers.py` (every command, hot-reloadable).
+
+```
+scripts/install.sh                      # copy both files into the user library, then hot-reload handlers
+scripts/abl.py get_set_overview         # talk to the socket directly, no MCP server needed
+scripts/abl.py introspect '{"path": "tracks[0].devices[0]"}'
+```
+
+Changing `handlers.py` takes effect on `reload`; changing `__init__.py` needs a Live restart.
+
 ## Usage
 
 ### Starting the Connection
