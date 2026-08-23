@@ -5,6 +5,7 @@ from _Framework.ControlSurface import ControlSurface
 import os
 import socket
 import json
+import re
 import threading
 import time
 import traceback
@@ -241,7 +242,9 @@ class AbletonMCP(ControlSurface):
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement",
-                                 "map_rack_magnitude", "inspect_rack"]:
+                                 "map_rack_magnitude", "inspect_rack",
+                                 "introspect", "get_set_overview", "get_routing",
+                                 "get_params", "set_param", "set_routing"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -390,6 +393,29 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             device_index = params.get("device_index", 0)
                             result = self._inspect_rack(track_index, device_index)
+                        elif command_type == "introspect":
+                            result = self._introspect(
+                                params.get("path", ""),
+                                params.get("include_methods", False))
+                        elif command_type == "get_set_overview":
+                            result = self._get_set_overview(
+                                params.get("include_params", False))
+                        elif command_type == "get_routing":
+                            result = self._get_routing(
+                                params.get("track_index", 0),
+                                params.get("device_index", None))
+                        elif command_type == "get_params":
+                            result = self._get_params(params.get("path", ""))
+                        elif command_type == "set_param":
+                            result = self._set_param(
+                                params.get("path", ""),
+                                params.get("param", ""),
+                                params.get("value", 0.0))
+                        elif command_type == "set_routing":
+                            result = self._set_routing(
+                                params.get("path", ""),
+                                params.get("routing_type", None),
+                                params.get("routing_channel", None))
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -1543,6 +1569,233 @@ class AbletonMCP(ControlSurface):
             "macros_mapped": list(getattr(rack, "macros_mapped", [])),
         }
     
+
+    # ── generic LOM introspection ─────────────────────────────────────
+    _PATH_TOKEN = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)|\[(-?\d+)\]")
+
+    def _resolve_lom_path(self, path):
+        """Resolve a path like 'tracks[0].devices[1].parameters[3]' relative to the song.
+        'master_track', 'return_tracks[0]', 'view', '' (song itself) all work."""
+        obj = self._song
+        for name, idx in self._PATH_TOKEN.findall(path or ""):
+            if name:
+                obj = getattr(obj, name)
+            else:
+                obj = obj[int(idx)]
+        return obj
+
+    def _safe_repr(self, v, depth=0):
+        if isinstance(v, (bool, int, float)) or v is None:
+            return v
+        if isinstance(v, str):
+            return v
+        try:
+            seq = list(v)
+            if depth > 0:
+                return "<%d items>" % len(seq)
+            return [self._safe_repr(x, depth + 1) for x in seq[:64]] + (["..."] if len(seq) > 64 else [])
+        except Exception:
+            pass
+        name = None
+        for key in ("display_name", "name"):
+            name = self._try(lambda: getattr(v, key))
+            if name is not None:
+                break
+        cls = type(v).__name__
+        if name is not None:
+            try:
+                return "<%s %r>" % (cls, str(name))
+            except Exception:
+                pass
+        return "<%s>" % cls
+
+    def _introspect(self, path, include_methods=False):
+        """dir() an arbitrary LOM object and read every non-callable attribute.
+        the tool for discovering what live actually exposes (sidechain routing, etc.)."""
+        obj = self._resolve_lom_path(path)
+        attrs, methods, errors = {}, [], {}
+        for a in dir(obj):
+            if a.startswith("_"):
+                continue
+            try:
+                v = getattr(obj, a)
+            except Exception as e:
+                errors[a] = str(e)
+                continue
+            if callable(v):
+                methods.append(a)
+            else:
+                try:
+                    attrs[a] = self._safe_repr(v)
+                except Exception as e:
+                    errors[a] = str(e)
+        out = {"path": path, "type": type(obj).__name__, "attrs": attrs, "errors": errors}
+        if include_methods:
+            out["methods"] = methods
+        return out
+
+    def _routing_summary(self, obj):
+        """read the standard LOM routing attrs if the object has them."""
+        out = {}
+        for key in ("input_routing_type", "input_routing_channel",
+                    "output_routing_type", "output_routing_channel"):
+            if hasattr(obj, key):
+                try:
+                    r = getattr(obj, key)
+                    out[key] = getattr(r, "display_name", None)
+                except Exception as e:
+                    out[key] = "error: " + str(e)
+        for key in ("available_input_routing_types", "available_input_routing_channels",
+                    "available_output_routing_types", "available_output_routing_channels"):
+            if hasattr(obj, key):
+                try:
+                    out[key] = [getattr(r, "display_name", str(r)) for r in getattr(obj, key)]
+                except Exception as e:
+                    out[key] = "error: " + str(e)
+        return out
+
+    def _get_routing(self, track_index, device_index=None):
+        """routing for a track, or for one of its devices (e.g. a compressor's sidechain input)."""
+        track = self._all_tracks()[track_index]
+        if device_index is None:
+            return {"track": track.name, "routing": self._routing_summary(track)}
+        device = track.devices[device_index]
+        return {"track": track.name, "device": device.name,
+                "class_name": device.class_name, "routing": self._routing_summary(device)}
+
+    def _all_tracks(self):
+        """tracks + return tracks + master, in one index space (tracks first)."""
+        return list(self._song.tracks) + list(self._song.return_tracks) + [self._song.master_track]
+
+    def _device_summary(self, device, include_params, path=""):
+        d = {
+            "path": path,
+            "name": device.name,
+            "class_name": device.class_name,
+            "is_active": self._try(lambda: device.is_active),
+            "type": self._get_device_type(device),
+        }
+        routing = self._routing_summary(device)
+        if routing:
+            d["routing"] = routing
+        if include_params:
+            d["params"] = [
+                {"index": i, "name": p.name, "value": p.value,
+                 "display": str(p.str_for_value(p.value)),
+                 "min": p.min, "max": p.max}
+                for i, p in enumerate(device.parameters)
+            ]
+        else:
+            d["param_count"] = len(device.parameters)
+        if self._try(lambda: device.can_have_chains, False):
+            d["chains"] = [
+                {"index": ci, "name": ch.name, "path": "%s.chains[%d]" % (path, ci),
+                 "mute": self._try(lambda: ch.mute), "solo": self._try(lambda: ch.solo),
+                 "devices": [self._device_summary(cd, include_params, "%s.chains[%d].devices[%d]" % (path, ci, di))
+                             for di, cd in enumerate(ch.devices)]}
+                for ci, ch in enumerate(device.chains)
+            ]
+        return d
+
+    def _try(self, fn, default=None):
+        try:
+            return fn()
+        except Exception:
+            return default
+
+    def _track_summary(self, track, index, kind, include_params, path):
+        mixer = track.mixer_device
+        t = {
+            "index": index,
+            "path": path,
+            "kind": kind,
+            "name": track.name,
+            "mute": self._try(lambda: track.mute),
+            "solo": self._try(lambda: track.solo),
+            "volume": mixer.volume.value,
+            "volume_display": str(mixer.volume.str_for_value(mixer.volume.value)),
+            "panning": mixer.panning.value,
+            "sends": [{"index": i, "value": s.value, "display": str(s.str_for_value(s.value))}
+                      for i, s in enumerate(mixer.sends)],
+            "routing": self._routing_summary(track),
+            "devices": [self._device_summary(d, include_params, "%s.devices[%d]" % (path, i))
+                        for i, d in enumerate(track.devices)],
+        }
+        return t
+
+    def _get_set_overview(self, include_params=False):
+        """the whole set in one read: tracks, returns, master — mixer, routing, devices."""
+        tracks = [self._track_summary(t, i, "track", include_params, "tracks[%d]" % i)
+                  for i, t in enumerate(self._song.tracks)]
+        returns = [self._track_summary(t, i, "return", include_params, "return_tracks[%d]" % i)
+                   for i, t in enumerate(self._song.return_tracks)]
+        master = self._track_summary(self._song.master_track, 0, "master", include_params, "master_track")
+        return {
+            "tempo": self._song.tempo,
+            "note": "every track/device carries a 'path' usable with get_params / set_param / "
+                    "set_routing / introspect.",
+            "tracks": tracks,
+            "return_tracks": returns,
+            "master_track": master,
+        }
+
+
+    # ── path-addressed params / routing (reach master, returns, rack chains) ──
+    def _param_info(self, i, p):
+        return {"index": i, "name": p.name, "value": p.value,
+                "display": str(p.str_for_value(p.value)),
+                "min": p.min, "max": p.max,
+                "is_quantized": p.is_quantized,
+                "is_enabled": self._try(lambda: p.is_enabled, True)}
+
+    def _get_params(self, path):
+        """parameters of any device addressed by LOM path,
+        e.g. 'master_track.devices[1].chains[0].devices[1]'."""
+        device = self._resolve_lom_path(path)
+        out = {"path": path, "device": device.name, "class_name": device.class_name,
+               "is_active": self._try(lambda: device.is_active),
+               "params": [self._param_info(i, p) for i, p in enumerate(device.parameters)]}
+        routing = self._routing_summary(device)
+        if routing:
+            out["routing"] = routing
+        return out
+
+    def _set_param(self, path, param, value):
+        device = self._resolve_lom_path(path)
+        target = None
+        if isinstance(param, int):
+            target = device.parameters[param]
+        else:
+            for p in device.parameters:
+                if p.name == param:
+                    target = p
+                    break
+        if target is None:
+            raise Exception("Parameter not found: " + str(param))
+        before = target.value
+        target.value = max(target.min, min(target.max, float(value)))
+        return {"path": path, "device": device.name, "param": target.name,
+                "before": before, "before_display": str(target.str_for_value(before)),
+                "value": target.value, "display": str(target.str_for_value(target.value))}
+
+    def _set_routing(self, path, routing_type=None, routing_channel=None):
+        """set input routing on a device (compressor sidechain) or track by display_name.
+        type first, then channel — changing the type changes the available channels."""
+        obj = self._resolve_lom_path(path)
+        if routing_type is not None:
+            match = [r for r in obj.available_input_routing_types if r.display_name == routing_type]
+            if not match:
+                raise Exception("routing type %r not in %r" % (
+                    routing_type, [r.display_name for r in obj.available_input_routing_types]))
+            obj.input_routing_type = match[0]
+        if routing_channel is not None:
+            match = [c for c in obj.available_input_routing_channels if c.display_name == routing_channel]
+            if not match:
+                raise Exception("routing channel %r not in %r" % (
+                    routing_channel, [c.display_name for c in obj.available_input_routing_channels]))
+            obj.input_routing_channel = match[0]
+        return {"path": path, "routing": self._routing_summary(obj)}
+
     def _get_device_type(self, device):
         """Get the type of a device"""
         try:

@@ -782,6 +782,82 @@ def set_master_volume(ctx: Context, value: float) -> str:
 
 
 @mcp.tool()
+def get_set_overview(ctx: Context, include_params: bool = False) -> str:
+    """Read the whole set in one call: every track, return track and the master —
+    mixer (volume/pan/sends), input/output routing, and the device chain on each.
+    Devices report any sidechain/routing info Live exposes. include_params=True also
+    lists every device parameter (large)."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("get_set_overview", {"include_params": include_params}), indent=2)
+    except Exception as e:
+        return f"Error getting set overview: {str(e)}"
+
+
+@mcp.tool()
+def get_routing(ctx: Context, track_index: int, device_index: int | None = None) -> str:
+    """Routing for a track (input/output type+channel and the available options) or,
+    with device_index, for a device — e.g. a compressor's sidechain source."""
+    try:
+        ableton = get_ableton_connection()
+        params: dict[str, Any] = {"track_index": track_index}
+        if device_index is not None:
+            params["device_index"] = device_index
+        return json.dumps(ableton.send_command("get_routing", params), indent=2)
+    except Exception as e:
+        return f"Error getting routing: {str(e)}"
+
+
+@mcp.tool()
+def introspect(ctx: Context, path: str = "", include_methods: bool = False) -> str:
+    """Low-level discovery: dir() any Live Object Model object and read its attributes.
+    path is relative to the song, e.g. 'tracks[0].devices[1]', 'master_track.devices[0]',
+    'return_tracks[0].mixer_device', 'view'. Use this when a higher-level tool doesn't
+    expose something — it shows what Live actually has before we build a tool for it."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("introspect", {"path": path, "include_methods": include_methods}), indent=2)
+    except Exception as e:
+        return f"Error introspecting {path!r}: {str(e)}"
+
+
+@mcp.tool()
+def get_params(ctx: Context, path: str) -> str:
+    """Parameters (name, value, display string, range) of any device by LOM path —
+    reaches master/return devices and devices nested in rack chains, e.g.
+    'tracks[2].devices[1]', 'master_track.devices[1].chains[0].devices[1]'.
+    Paths come from get_set_overview."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("get_params", {"path": path}), indent=2)
+    except Exception as e:
+        return f"Error getting params for {path!r}: {str(e)}"
+
+
+@mcp.tool()
+def set_param(ctx: Context, path: str, param: str | int, value: float) -> str:
+    """Set one parameter (by name or index) on the device at path. value is in the
+    parameter's native range (see get_params min/max); it is clamped. Returns before/after."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("set_param", {"path": path, "param": param, "value": value}), indent=2)
+    except Exception as e:
+        return f"Error setting {param!r} on {path!r}: {str(e)}"
+
+
+@mcp.tool()
+def set_routing(ctx: Context, path: str, routing_type: str | None = None, routing_channel: str | None = None) -> str:
+    """Set the input routing of a device (a compressor's sidechain source) or a track,
+    by display name as listed in get_routing/get_params 'available_*'. Set the type first;
+    the available channels depend on it."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("set_routing", {"path": path, "routing_type": routing_type, "routing_channel": routing_channel}), indent=2)
+    except Exception as e:
+        return f"Error setting routing on {path!r}: {str(e)}"
+
+
+@mcp.tool()
 def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
     """
     Get a hierarchical tree of browser categories from Ableton.
