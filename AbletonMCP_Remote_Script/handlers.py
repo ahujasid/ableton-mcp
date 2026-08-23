@@ -9,13 +9,12 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 import os
 import re
-import threading
 import time
 import traceback
 
-VERSION = 4
+VERSION = 5
 
-MAIN_THREAD_COMMANDS = set(['create_midi_track', 'set_track_name', 'create_clip', 'create_audio_clip', 'add_notes_to_clip', 'set_clip_name', 'set_arrangement_clip_name', 'set_tempo', 'fire_clip', 'stop_clip', 'start_playback', 'stop_playback', 'delete_clip', 'delete_track', 'delete_device', 'get_device_params', 'set_device_param', 'set_track_volume', 'get_clip_envelope', 'set_clip_envelope', 'get_clip_notes', 'get_device_chains', 'set_chain_volume', 'set_master_volume', 'set_send_level', 'load_instrument_or_effect', 'load_browser_item', 'switch_to_arrangement_view', 'set_current_song_time', 'duplicate_session_clip_to_arrangement', 'map_rack_magnitude', 'inspect_rack', 'introspect', 'get_set_overview', 'get_routing', 'get_params', 'set_param', 'set_routing'])
+MAIN_THREAD_COMMANDS = set(['start_meter_capture', 'get_meter_capture', 'stop_meter_capture', 'create_midi_track', 'set_track_name', 'create_clip', 'create_audio_clip', 'add_notes_to_clip', 'set_clip_name', 'set_arrangement_clip_name', 'set_tempo', 'fire_clip', 'stop_clip', 'start_playback', 'stop_playback', 'delete_clip', 'delete_track', 'delete_device', 'get_device_params', 'set_device_param', 'set_track_volume', 'get_clip_envelope', 'set_clip_envelope', 'get_clip_notes', 'get_device_chains', 'set_chain_volume', 'set_master_volume', 'set_send_level', 'load_instrument_or_effect', 'load_browser_item', 'switch_to_arrangement_view', 'set_current_song_time', 'duplicate_session_clip_to_arrangement', 'map_rack_magnitude', 'inspect_rack', 'introspect', 'get_set_overview', 'get_routing', 'get_params', 'set_param', 'set_routing'])
 
 
 class Handlers(object):
@@ -234,9 +233,6 @@ class Handlers(object):
             params.get("path", ""),
             params.get("routing_type", None),
             params.get("routing_channel", None))
-
-    def cmd_sample_meters(self, params):
-        return self._sample_meters(params.get("seconds", 8.0), params.get("interval", 0.05))
 
     def cmd_start_meter_capture(self, params):
         return self._start_meter_capture(params.get("interval", 0.05))
@@ -1589,8 +1585,9 @@ class Handlers(object):
 
     # ── metering ─────────────────────────────────────────────────────
     # values are Live's raw 0.0-1.0 output meter readings (peak, smoothed by Live).
-    # no dB mapping is documented, so compare them relatively. reads happen on a
-    # background thread; they never touch Live state, so no main-thread scheduling.
+    # no dB mapping is documented, so compare them relatively. every meter read runs
+    # on Live's main thread: the capture re-arms itself with schedule_message
+    # (one tick per Live timer tick, ~100ms) so nothing touches the LOM off-thread.
 
     def _meter_targets(self):
         t = [("tracks[%d]" % i, tr.name, tr) for i, tr in enumerate(self._song.tracks)]
@@ -1623,38 +1620,28 @@ class Handlers(object):
                 "samples": stats["master_track"]["n"] if "master_track" in stats else 0,
                 "tracks": rows}
 
-    def _sample_meters(self, seconds=8.0, interval=0.05):
-        """blocking read for short windows (the socket caller's timeout bounds it)."""
-        stats = self._new_meter_stats()
-        t0 = time.time()
-        while time.time() - t0 < float(seconds):
-            self._meter_tick(stats)
-            time.sleep(float(interval))
-        return self._meter_report(stats, time.time() - t0, "done")
-
     _capture = None
 
-    def _start_meter_capture(self, interval=0.05):
-        """accumulate meters on a background thread until stop. survives any socket timeout;
+    def _start_meter_capture(self, interval=None):
+        """accumulate meters until stop, one read per Live timer tick on the main thread.
         the caller drives playback separately."""
-        if self._capture and self._capture["running"]:
+        if Handlers._capture and Handlers._capture["running"]:
             return self._meter_capture_report()
         cap = {"running": True, "stats": self._new_meter_stats(), "t0": time.time(), "t1": None}
+        script = self._script
 
-        def run():
-            while cap["running"]:
-                try:
-                    self._meter_tick(cap["stats"])
-                except Exception as e:
-                    self.log_message("meter capture tick error: " + str(e))
-                time.sleep(float(interval))
-            cap["t1"] = time.time()
+        def tick():
+            if not cap["running"]:
+                cap["t1"] = time.time()
+                return
+            try:
+                self._meter_tick(cap["stats"])
+            except Exception as e:
+                self.log_message("meter capture tick error: " + str(e))
+            script.schedule_message(1, tick)
 
-        th = threading.Thread(target=run)
-        th.daemon = True
-        cap["thread"] = th
         Handlers._capture = cap
-        th.start()
+        script.schedule_message(1, tick)
         return {"state": "running", "started": True}
 
     def _meter_capture_report(self):
@@ -1670,7 +1657,7 @@ class Handlers(object):
         if cap is None:
             return {"state": "none"}
         cap["running"] = False
-        cap["thread"].join(2.0)
+        cap["t1"] = time.time()
         return self._meter_capture_report()
 
     def _get_device_type(self, device):

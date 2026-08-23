@@ -859,25 +859,12 @@ def set_routing(ctx: Context, path: str, routing_type: str | None = None, routin
 
 
 @mcp.tool()
-def sample_meters(ctx: Context, seconds: float = 8.0) -> str:
-    """Read every track's output meter (and the master's) for a short window and report
-    peak/mean per track, loudest first. Read-only: start playback yourself (start_playback /
-    set_current_song_time). Values are Live's raw 0.0-1.0 meter readings — no documented dB
-    mapping, compare relatively. seconds is capped at 30; for longer windows use
-    start_meter_capture / stop_meter_capture."""
-    try:
-        ableton = get_ableton_connection()
-        seconds = min(float(seconds), 30.0)
-        return json.dumps(ableton.send_command("sample_meters", {"seconds": seconds}, timeout=seconds + 10.0), indent=2)
-    except Exception as e:
-        return f"Error sampling meters: {str(e)}"
-
-
-@mcp.tool()
 def start_meter_capture(ctx: Context) -> str:
-    """Begin accumulating track/master output meters in the background inside Live.
-    Drive playback however you like (play the whole song, loop a section), then call
-    stop_meter_capture for the report. get_meter_capture peeks without stopping."""
+    """Begin accumulating every track's (and the master's) output meter inside Live,
+    ~10 reads/s on Live's main thread. Drive playback however you like (play the whole
+    song, loop a section), then call stop_meter_capture for the report; get_meter_capture
+    peeks without stopping. Values are Live's raw 0.0-1.0 meter readings — no documented
+    dB mapping, compare relatively."""
     try:
         ableton = get_ableton_connection()
         return json.dumps(ableton.send_command("start_meter_capture"), indent=2)
