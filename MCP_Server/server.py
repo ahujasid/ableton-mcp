@@ -1,5 +1,7 @@
 # ableton_mcp_server.py
 from mcp.server.fastmcp import FastMCP, Context
+from MCP_Server import als
+import os
 import socket
 import json
 import logging
@@ -930,6 +932,50 @@ def set_current_song_time(ctx: Context, time: float) -> str:
         return json.dumps(ableton.send_command("set_current_song_time", {"time": time}), indent=2)
     except Exception as e:
         return f"Error setting song time: {str(e)}"
+
+
+def _resolve_als_path(path: str | None) -> str:
+    if path:
+        return os.path.expanduser(path)
+    ableton = get_ableton_connection()
+    fp = ableton.send_command("get_song_file").get("file_path")
+    if not fp:
+        raise Exception("the open set has never been saved; pass a path")
+    return fp
+
+
+@mcp.tool()
+def get_automation_grid(ctx: Context, path: str | None = None, bar_beats: float = 4.0) -> str:
+    """Every arrangement automation lane in the set as one text grid: a row per lane
+    (track / device / param, observed min→max), one character per bar (· = at the lane's
+    min, 9 = at its max). Read from the saved .als (defaults to the file Live has open) —
+    exact breakpoints, no playback. The file reflects the last save: save in Live first
+    if you changed automation."""
+    try:
+        p = _resolve_als_path(path)
+        r = als.read_automation(p)
+        return "file: %s\n%d envelopes\n\n%s" % (p, len(r["envelopes"]), als.grid(r, bar_beats=bar_beats))
+    except Exception as e:
+        return f"Error reading automation: {str(e)}"
+
+
+@mcp.tool()
+def get_automation(ctx: Context, path: str | None = None, track: str | None = None) -> str:
+    """Arrangement automation lanes with their exact breakpoints ([time_beats, value], plus
+    bezier handles where Live drew curves), read from the saved .als (defaults to the open
+    set's file). Optional track filter (substring match on track name). Values are the
+    file's native units (e.g. mixer volume 0..1 where 0.85 ≈ 0 dB in Live's scale, gain in
+    dB, on/off as 0/1)."""
+    try:
+        p = _resolve_als_path(path)
+        r = als.envelopes_as_dicts(als.read_automation(p))
+        if track:
+            r["envelopes"] = [e for e in r["envelopes"] if track.lower() in e["track"].lower()]
+        for e in r["envelopes"]:
+            e["events"] = [[ev["time"], ev["value"]] + ([ev["curve"]] if ev["curve"] else []) for ev in e["events"]]
+        return json.dumps(r, indent=2)
+    except Exception as e:
+        return f"Error reading automation: {str(e)}"
 
 
 @mcp.tool()

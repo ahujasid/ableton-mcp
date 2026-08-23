@@ -13,7 +13,7 @@ import re
 import time
 import traceback
 
-VERSION = 9
+VERSION = 10
 
 
 
@@ -233,6 +233,9 @@ class Handlers(object):
             params.get("path", ""),
             params.get("routing_type", None),
             params.get("routing_channel", None))
+
+    def cmd_get_song_file(self, params):
+        return {"file_path": self._song.file_path, "name": self._song.name}
 
     def cmd_get_automated_params(self, params):
         return self._get_automated_params()
@@ -1717,7 +1720,7 @@ class Handlers(object):
                 return
             try:
                 cap["ticks"] += 1
-                if cap["meters"] is not None:
+                if cap["meters"] is not None and song.is_playing:
                     self._meter_tick(cap["meters"])
                 if cap["params"]:
                     t = song.current_song_time
