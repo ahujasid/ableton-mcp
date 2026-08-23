@@ -11,7 +11,7 @@ import os
 import re
 import traceback
 
-VERSION = 1
+VERSION = 2
 
 MAIN_THREAD_COMMANDS = set(['create_midi_track', 'set_track_name', 'create_clip', 'create_audio_clip', 'add_notes_to_clip', 'set_clip_name', 'set_arrangement_clip_name', 'set_tempo', 'fire_clip', 'stop_clip', 'start_playback', 'stop_playback', 'delete_clip', 'delete_track', 'delete_device', 'get_device_params', 'set_device_param', 'set_track_volume', 'get_clip_envelope', 'set_clip_envelope', 'get_clip_notes', 'get_device_chains', 'set_chain_volume', 'set_master_volume', 'set_send_level', 'load_instrument_or_effect', 'load_browser_item', 'switch_to_arrangement_view', 'set_current_song_time', 'duplicate_session_clip_to_arrangement', 'map_rack_magnitude', 'inspect_rack', 'introspect', 'get_set_overview', 'get_routing', 'get_params', 'set_param', 'set_routing'])
 
