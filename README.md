@@ -194,7 +194,15 @@ uvx --from ableton-mcp ableton-mcp-install-script --list-targets   # preview tar
 
 > If you installed the package with `pip` or `pipx`, the command is on your PATH directly — just run `ableton-mcp-install-script`.
 
-This copies the matching Remote Script into Ableton's **User Remote Scripts** folder. If a different version of the script is already there, the existing file is backed up to `__init__.py.bak` before being replaced.
+This copies the matching Remote Script into your Ableton **User Library**'s `Remote Scripts` folder — the location Live (10.1.13+) scans for third-party control surface scripts. The installer reads the User Library location from Live's `Library.cfg`, falling back to the default (`~/Music/Ableton/User Library` on macOS, `Documents\Ableton\User Library` on Windows). If a different version of the script is already there, the existing file is backed up to `__init__.py.bak` before being replaced.
+
+If your User Library lives somewhere non-standard and isn't detected, point the installer at it directly:
+
+```bash
+uvx --from ableton-mcp ableton-mcp-install-script --target "/path/to/User Library/Remote Scripts"
+```
+
+> The legacy `Preferences/User Remote Scripts` folder (used for instant-mapping configs, not Python control surfaces) is no longer targeted by default; pass `--legacy` if you need it for an old Live version.
 
 Then **restart Ableton** (or re-select the AbletonMCP control surface) so Live loads it. Re-run the command after upgrading the package — the server logs a warning when the loaded script version doesn't match what it expects.
 
@@ -209,10 +217,12 @@ Then **restart Ableton** (or re-select the AbletonMCP control surface) so Live l
 5. Set **Input** and **Output** to **None**
 
 <details>
-<summary><b>Manual fallback locations (User Remote Scripts)</b></summary>
+<summary><b>Manual fallback locations (User Library → Remote Scripts)</b></summary>
 
-- **macOS:** `/Users/[Username]/Library/Preferences/Ableton/Live XX/User Remote Scripts/AbletonMCP/`
-- **Windows:** `C:\Users\[Username]\AppData\Roaming\Ableton\Live x.x.x\Preferences\User Remote Scripts\AbletonMCP\`
+- **macOS:** `~/Music/Ableton/User Library/Remote Scripts/AbletonMCP/`
+- **Windows:** `C:\Users\[Username]\Documents\Ableton\User Library\Remote Scripts\AbletonMCP\`
+
+If you've moved your User Library, use its actual location (shown in Live under **Preferences → Library → Location of User Library**), and create the `Remote Scripts` folder inside it if it doesn't exist yet.
 </details>
 
 The MCP server and Remote Script share a version handshake (`get_remote_script_info`). If they diverge, newer tools degrade gracefully until Live is restarted.
