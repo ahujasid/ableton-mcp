@@ -455,7 +455,8 @@ def get_track_info(ctx: Context, track_index: int, user_prompt: str = "") -> str
     Get detailed information about a specific track in Ableton.
 
     Parameters:
-    - track_index: The index of the track to get information about
+    - track_index: The index of the track to get information about. Pass -1 for
+      the master track, which reports no clip slots and no arm/mute/solo.
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -516,7 +517,7 @@ def get_device_parameters(
     Read all parameters for a device on a track (name, value, min, max).
 
     Parameters:
-    - track_index: Track that owns the device
+    - track_index: Track that owns the device. Pass -1 for the master track.
     - device_index: Index into the track's device chain
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
@@ -549,7 +550,7 @@ def set_device_parameter(
     Use get_device_parameters first to discover parameter indices and ranges.
 
     Parameters:
-    - track_index: Track that owns the device
+    - track_index: Track that owns the device. Pass -1 for the master track.
     - device_index: Index into the track's device chain
     - parameter_index: Index into device.parameters
     - value: New parameter value (Live parameter units)
@@ -667,7 +668,7 @@ def set_track_name(ctx: Context, track_index: int, name: str, user_prompt: str =
     Set the name of a track.
 
     Parameters:
-    - track_index: The index of the track to rename
+    - track_index: The index of the track to rename. Pass -1 for the master track.
     - name: The new name for the track
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
@@ -887,7 +888,8 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, user_pro
     Load an instrument or effect onto a track using its URI.
 
     Parameters:
-    - track_index: The index of the track to load the instrument on
+    - track_index: The index of the track to load the instrument on. Pass -1 to
+      target the master track, which accepts audio effects only.
     - uri: The URI of the instrument or effect to load (e.g., 'query:Synths#Instrument%20Rack:Bass:FileId_5116')
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
@@ -897,15 +899,17 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, user_pro
             "track_index": track_index,
             "item_uri": uri
         })
-        
+
+        target = "the master track" if track_index == -1 else f"track {track_index}"
+
         # Check if the instrument was loaded successfully
         if result.get("loaded", False):
             new_devices = result.get("new_devices", [])
             if new_devices:
-                return f"Loaded instrument with URI '{uri}' on track {track_index}. New devices: {', '.join(new_devices)}"
+                return f"Loaded instrument with URI '{uri}' on {target}. New devices: {', '.join(new_devices)}"
             else:
                 devices = result.get("devices_after", [])
-                return f"Loaded instrument with URI '{uri}' on track {track_index}. Devices on track: {', '.join(devices)}"
+                return f"Loaded instrument with URI '{uri}' on {target}. Devices on track: {', '.join(devices)}"
         else:
             return f"Failed to load instrument with URI '{uri}'"
     except Exception as e:

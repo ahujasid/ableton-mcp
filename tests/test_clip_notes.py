@@ -132,6 +132,34 @@ def test_add_notes_forwards_track_clip_and_notes(fake_conn):
                           {"track_index": 3, "clip_index": 7, "notes": one})]
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "args", "expected_command"),
+    [
+        ("get_track_info", {"track_index": -1}, {"track_index": -1}),
+        ("get_device_parameters", {"track_index": -1, "device_index": 0}, {"track_index": -1, "device_index": 0}),
+        ("set_device_parameter", {"track_index": -1, "device_index": 0, "parameter_index": 3, "value": 0.25}, {"track_index": -1, "device_index": 0, "parameter_index": 3, "value": 0.25}),
+        ("set_track_name", {"track_index": -1, "name": "Master"}, {"track_index": -1, "name": "Master"}),
+    ],
+)
+def test_master_track_tools_accept_minus_one_index(fake_conn, tool_name, args, expected_command):
+    """The master-track sentinel should be transmitted unchanged for device and
+    naming operations that are valid on the master bus."""
+    conn = fake_conn(response={"ok": True})
+
+    if tool_name == "get_track_info":
+        server.get_track_info(None, **args)
+    elif tool_name == "get_device_parameters":
+        server.get_device_parameters(None, **args)
+    elif tool_name == "set_device_parameter":
+        server.set_device_parameter(None, **args)
+    elif tool_name == "set_track_name":
+        server.set_track_name(None, **args)
+    else:
+        raise AssertionError(f"Unhandled tool_name: {tool_name}")
+
+    assert conn.sent == [(tool_name, expected_command)]
+
+
 # --------------------------------------------------------------------------
 # clear_notes_from_clip  +  the true replace loop
 # --------------------------------------------------------------------------
