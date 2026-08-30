@@ -597,7 +597,7 @@ class AbletonMCP(ControlSurface):
                 "is_midi_track": track.has_midi_input,
                 "mute": track.mute,
                 "solo": track.solo,
-                "arm": track.arm,
+                "arm": self._safe_arm(track),
                 "volume": track.mixer_device.volume.value,
                 "panning": track.mixer_device.panning.value,
                 "clip_slots": clip_slots,
@@ -608,6 +608,26 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting track info: " + str(e))
             raise
     
+    def _safe_arm(self, track):
+        """Read track.arm, returning False for tracks that have no arm state.
+
+        Live raises RuntimeError("Master and Return Tracks have no 'Arm'
+        state!") for group tracks as well as return and main tracks. A
+        `getattr(track, "arm", False)` does not guard this: the attribute
+        exists, so getattr's default never applies -- reading it is what
+        throws, and the error is a RuntimeError rather than an AttributeError.
+
+        Check can_be_armed first so the common path does not rely on raising,
+        and keep a narrow catch for Live versions that do not expose that
+        property on every track type.
+        """
+        try:
+            if not getattr(track, "can_be_armed", False):
+                return False
+            return bool(track.arm)
+        except (AttributeError, RuntimeError):
+            return False
+
     def _create_midi_track(self, index):
         """Create a new MIDI track at the specified index"""
         try:
@@ -1673,7 +1693,7 @@ class AbletonMCP(ControlSurface):
                         elif kind == "solo_changed":
                             detail["solo"] = bool(t.solo)
                         elif kind == "arm_changed":
-                            detail["arm"] = bool(getattr(t, "arm", False))
+                            detail["arm"] = self._safe_arm(t)
                         elif kind == "devices_changed":
                             detail["device_count"] = len(t.devices)
                         elif kind == "volume_changed":
@@ -2233,7 +2253,7 @@ class AbletonMCP(ControlSurface):
                     "is_midi_track": bool(track.has_midi_input),
                     "mute": bool(track.mute),
                     "solo": bool(track.solo),
-                    "arm": bool(getattr(track, "arm", False)),
+                    "arm": self._safe_arm(track),
                     "volume": float(track.mixer_device.volume.value),
                     "panning": float(track.mixer_device.panning.value),
                     "sends": self._serialize_sends(track),
