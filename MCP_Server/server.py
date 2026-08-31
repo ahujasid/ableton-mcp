@@ -7,7 +7,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Any, List, Union
+from typing import AsyncIterator, Dict, Any, List, Optional, Union
 
 from .telemetry import record_startup
 from .telemetry_decorator import telemetry_tool, rich_telemetry_tool
@@ -1549,6 +1549,146 @@ def record_audition(
         return f"Error recording audition: {str(e)}"
 
 
+# ── Mixer tools ───────────────────────────────────────────────────────────────
+
+@mcp.tool()
+@telemetry_tool("get_mixer")
+@trajectory_tool("get_mixer")
+def get_mixer(ctx: Context, track_index: int = 0, track_type: str = "track",
+              user_prompt: str = "") -> str:
+    """
+    Get the mixer state (volume, panning and sends) for a track.
+
+    Each value is reported three ways: the raw 0..1 parameter value, the dB it
+    corresponds to, and the string Live itself displays.
+
+    Parameters:
+    - track_index: The index of the track (ignored when track_type is "master")
+    - track_type: "track" (default), "return", or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_mixer", {
+            "track_index": track_index,
+            "track_type": track_type
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting mixer: {str(e)}")
+        return f"Error getting mixer: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("set_track_volume")
+@trajectory_tool("set_track_volume")
+def set_track_volume(
+    ctx: Context,
+    track_index: int,
+    db: Optional[float] = None,
+    value: Optional[float] = None,
+    track_type: str = "track",
+    user_prompt: str = ""
+) -> str:
+    """
+    Set a track's volume fader.
+
+    Prefer `db` — Live's fader taper is non-linear, so the raw 0..1 value is not
+    proportional to level (0.85 is 0 dB, 1.0 is +6 dB). Passing `db` resolves the
+    exact fader position for that level using Live's own readout.
+
+    Parameters:
+    - track_index: The index of the track (ignored when track_type is "master")
+    - db: Target level in decibels, e.g. -4.0. Clamped to the fader range.
+    - value: Raw fader position 0.0-1.0, as an alternative to db
+    - track_type: "track" (default), "return", or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if db is None and value is None:
+            return "Error: provide either db or value"
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_volume", {
+            "track_index": track_index,
+            "db": db,
+            "value": value,
+            "track_type": track_type
+        })
+        return f"Set volume of '{result.get('name')}' to {result.get('display')}"
+    except Exception as e:
+        logger.error(f"Error setting track volume: {str(e)}")
+        return f"Error setting track volume: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("set_track_panning")
+@trajectory_tool("set_track_panning")
+def set_track_panning(
+    ctx: Context,
+    track_index: int,
+    value: float,
+    track_type: str = "track",
+    user_prompt: str = ""
+) -> str:
+    """
+    Set a track's pan position.
+
+    Parameters:
+    - track_index: The index of the track (ignored when track_type is "master")
+    - value: -1.0 is hard left, 0.0 is centre, 1.0 is hard right
+    - track_type: "track" (default), "return", or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_panning", {
+            "track_index": track_index,
+            "value": value,
+            "track_type": track_type
+        })
+        return f"Set panning of '{result.get('name')}' to {result.get('display')}"
+    except Exception as e:
+        logger.error(f"Error setting track panning: {str(e)}")
+        return f"Error setting track panning: {str(e)}"
+
+@mcp.tool()
+@rich_telemetry_tool("set_send")
+@trajectory_tool("set_send")
+def set_send(
+    ctx: Context,
+    track_index: int,
+    send_index: int,
+    db: Optional[float] = None,
+    value: Optional[float] = None,
+    track_type: str = "track",
+    user_prompt: str = ""
+) -> str:
+    """
+    Set one of a track's send levels.
+
+    As with volume, prefer `db` over the raw value. The master track has no sends.
+
+    Parameters:
+    - track_index: The index of the track
+    - send_index: Which send to set (0 is the first return track, A)
+    - db: Target send level in decibels, e.g. -12.0
+    - value: Raw send position 0.0-1.0, as an alternative to db
+    - track_type: "track" (default) or "return"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if db is None and value is None:
+            return "Error: provide either db or value"
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_send", {
+            "track_index": track_index,
+            "send_index": send_index,
+            "db": db,
+            "value": value,
+            "track_type": track_type
+        })
+        return f"Set send {result.get('send')} on '{result.get('name')}' to {result.get('display')}"
+    except Exception as e:
+        logger.error(f"Error setting send: {str(e)}")
+        return f"Error setting send: {str(e)}"
 
 # Main execution
 def main():

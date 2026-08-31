@@ -278,6 +278,9 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "get_mixer":
+                response["result"] = self._get_mixer(
+                    params.get("track_index", 0), params.get("track_type", "track"))
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
@@ -291,7 +294,9 @@ class AbletonMCP(ControlSurface):
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement",
                                  "map_rack_magnitude", "inspect_rack",
-                                 "create_locator"]:
+                                 "create_locator",
+                                 # Mixer – must run on the main thread
+                                 "set_track_volume", "set_track_panning", "set_send"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -391,6 +396,25 @@ class AbletonMCP(ControlSurface):
                             name = params.get("name", "")
                             time_val = params.get("time", 0.0)
                             result = self._create_locator(name, time_val)
+                        # ── Mixer commands ─────────────────────────────────────────
+                        elif command_type == "set_track_volume":
+                            result = self._set_track_volume(
+                                params.get("track_index", 0),
+                                params.get("db", None),
+                                params.get("value", None),
+                                params.get("track_type", "track"))
+                        elif command_type == "set_track_panning":
+                            result = self._set_track_panning(
+                                params.get("track_index", 0),
+                                params.get("value", 0.0),
+                                params.get("track_type", "track"))
+                        elif command_type == "set_send":
+                            result = self._set_send(
+                                params.get("track_index", 0),
+                                params.get("send_index", 0),
+                                params.get("db", None),
+                                params.get("value", None),
+                                params.get("track_type", "track"))
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -666,6 +690,164 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error creating audio track: " + str(e))
             raise
 
+    # ------------------------------------------------------------------
+    # Mixer
+    # ------------------------------------------------------------------
+
+    def _resolve_track(self, track_index, track_type="track"):
+        """Resolve a mixer target to a Live track object.
+
+        track_type is one of "track", "return" or "master". For "master" the
+        index is ignored.
+        """
+        track_type = (track_type or "track").lower()
+        if track_type == "master":
+            return self._song.master_track
+        if track_type == "return":
+            tracks = self._song.return_tracks
+        elif track_type == "track":
+            tracks = self._song.tracks
+        else:
+            raise Exception("Unknown track_type '%s' (expected track, return or master)" % track_type)
+        if track_index < 0 or track_index >= len(tracks):
+            raise IndexError("%s index %s out of range (have %d)" % (track_type, track_index, len(tracks)))
+        return tracks[track_index]
+
+    def _db_for_value(self, param, value):
+        """Return the dB a normalized parameter value displays as in Live.
+
+        Live's fader taper has no published closed form, so rather than
+        approximating it we ask Live what the value actually reads as and
+        parse that. This stays correct across Live versions.
+        """
+        text = param.str_for_value(value)
+        if not isinstance(text, str):
+            try:
+                text = text.encode("utf-8")
+            except Exception:
+                text = str(text)
+        # Normalize the unicode minus Live uses and locale decimal commas.
+        text = text.replace("\xe2\x88\x92", "-").replace("−", "-")
+        text = text.replace("dB", "").replace(",", ".").strip()
+        if "inf" in text.lower():
+            return float("-inf")
+        cleaned = "".join([c for c in text if c.isdigit() or c in "-+."])
+        try:
+            return float(cleaned)
+        except Exception:
+            raise Exception("Could not parse dB from Live display '%s'" % param.str_for_value(value))
+
+    def _value_for_db(self, param, target_db):
+        """Find the normalized value whose display matches target_db.
+
+        dB rises monotonically with the fader value, so bisect against Live's
+        own readout. ~40 steps exhausts float precision over the 0..1 range.
+
+        Accuracy is bounded by Live's display resolution of 0.01 dB, which is
+        two orders of magnitude below audibility. Targets outside the fader
+        range clamp to its ends rather than raising.
+        """
+        target_db = float(target_db)
+        low, high = param.min, param.max
+        if target_db <= self._db_for_value(param, low):
+            return low
+        if target_db >= self._db_for_value(param, high):
+            return high
+        for _ in range(40):
+            mid = (low + high) / 2.0
+            if self._db_for_value(param, mid) < target_db:
+                low = mid
+            else:
+                high = mid
+        return (low + high) / 2.0
+
+    def _param_report(self, param):
+        """Describe a mixer parameter as raw value, dB and Live's own display."""
+        report = {
+            "value": param.value,
+            "display": param.str_for_value(param.value),
+        }
+        try:
+            report["db"] = self._db_for_value(param, param.value)
+        except Exception:
+            # panning and other non-dB parameters simply have no dB reading
+            report["db"] = None
+        return report
+
+    def _apply_param(self, param, db=None, value=None):
+        """Set a mixer parameter from either a dB target or a raw 0..1 value."""
+        if value is not None:
+            param.value = max(param.min, min(param.max, float(value)))
+        elif db is not None:
+            param.value = self._value_for_db(param, db)
+        else:
+            raise Exception("Provide either 'db' or 'value'")
+        return self._param_report(param)
+
+    def _get_mixer(self, track_index, track_type="track"):
+        """Read volume, panning and sends for a mixer target."""
+        try:
+            track = self._resolve_track(track_index, track_type)
+            mixer = track.mixer_device
+            sends = []
+            # The master track has no sends.
+            for i, send in enumerate(getattr(mixer, "sends", []) or []):
+                entry = self._param_report(send)
+                entry["index"] = i
+                entry["name"] = send.name
+                sends.append(entry)
+            return {
+                "name": track.name,
+                "track_type": (track_type or "track").lower(),
+                "volume": self._param_report(mixer.volume),
+                "panning": self._param_report(mixer.panning),
+                "sends": sends,
+            }
+        except Exception as e:
+            self.log_message("Error getting mixer: " + str(e))
+            raise
+
+    def _set_track_volume(self, track_index, db=None, value=None, track_type="track"):
+        """Set a track's volume, either to a dB target or a raw 0..1 value."""
+        try:
+            track = self._resolve_track(track_index, track_type)
+            result = self._apply_param(track.mixer_device.volume, db, value)
+            result["name"] = track.name
+            return result
+        except Exception as e:
+            self.log_message("Error setting track volume: " + str(e))
+            raise
+
+    def _set_track_panning(self, track_index, value, track_type="track"):
+        """Set a track's pan position. -1.0 is hard left, 1.0 is hard right."""
+        try:
+            track = self._resolve_track(track_index, track_type)
+            param = track.mixer_device.panning
+            param.value = max(param.min, min(param.max, float(value)))
+            result = self._param_report(param)
+            result["name"] = track.name
+            return result
+        except Exception as e:
+            self.log_message("Error setting track panning: " + str(e))
+            raise
+
+    def _set_send(self, track_index, send_index, db=None, value=None, track_type="track"):
+        """Set one of a track's send levels."""
+        try:
+            track = self._resolve_track(track_index, track_type)
+            sends = getattr(track.mixer_device, "sends", []) or []
+            if send_index < 0 or send_index >= len(sends):
+                raise IndexError("Send index %s out of range (track '%s' has %d sends)"
+                                 % (send_index, track.name, len(sends)))
+            send = sends[send_index]
+            result = self._apply_param(send, db, value)
+            result["name"] = track.name
+            result["send"] = send.name
+            result["index"] = send_index
+            return result
+        except Exception as e:
+            self.log_message("Error setting send: " + str(e))
+            raise
 
     def _set_track_name(self, track_index, name):
         """Set the name of a track"""
