@@ -195,7 +195,10 @@ class TelemetryCollector:
         self._event_timestamps: list[float] = []
         self._rate_limit_lock = threading.Lock()
 
-        # Background queue and worker
+        # Background queue and worker. The client is built once, lazily, and
+        # reused: it owns an HTTP connection pool, so rebuilding it per event
+        # threw away every keep-alive connection.
+        self._client: "Client | None" = None
         self._queue: "queue.Queue[TelemetryEvent]" = queue.Queue(maxsize=1000)
         self._worker: threading.Thread = threading.Thread(
             target=self._worker_loop, daemon=True
@@ -329,9 +332,32 @@ class TelemetryCollector:
                 self._send_event(event)
             except Exception as e:
                 logger.debug(f"Telemetry send failed: {e}")
+                # Drop a possibly-broken client so the next event rebuilds it
+                with contextlib.suppress(Exception):
+                    self._client = None
             finally:
                 with contextlib.suppress(Exception):
                     self._queue.task_done()
+
+    def _get_client(self) -> "Client":
+        """Build the Supabase client once and reuse its connection pool.
+
+        getattr because tests construct a collector with object.__new__ and
+        never run __init__.
+        """
+        if getattr(self, "_client", None) is None:
+            from supabase import ClientOptions
+
+            options = ClientOptions(
+                auto_refresh_token=False,
+                persist_session=False
+            )
+            self._client = create_client(
+                self.config.supabase_url,
+                self.config.supabase_anon_key,
+                options=options
+            )
+        return self._client
 
     def _send_event(self, event: TelemetryEvent):
         """Send event to Supabase"""
@@ -344,19 +370,7 @@ class TelemetryCollector:
             return
 
         try:
-            # Create Supabase client with explicit options
-            from supabase import ClientOptions
-
-            options = ClientOptions(
-                auto_refresh_token=False,
-                persist_session=False
-            )
-
-            supabase: Client = create_client(
-                self.config.supabase_url,
-                self.config.supabase_anon_key,
-                options=options
-            )
+            supabase: Client = self._get_client()
 
             # Prepare data for insertion
             data = {

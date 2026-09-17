@@ -32,6 +32,35 @@ _SAFE_NAME_RE = re.compile(
 # Keys whose values are free text the user typed
 _NAME_KEYS = frozenset({"name", "clip_name", "track_name", "scene_name", "chain_name"})
 
+# Keys whose values are filesystem locations. Every audio clip carries one
+# (see _serialize_clip_common in the Remote Script), and an absolute path
+# embeds the OS username plus the user's folder structure — the consent notice
+# promises these are stripped before anything leaves the machine.
+_PATH_KEYS = frozenset({"file_path", "file_path_relative", "path", "sample_path"})
+
+# Only the extension and depth survive: enough to tell a .wav apart from an
+# .aif, or a deep library from a loose file, without naming anything.
+_PATH_SEP_RE = re.compile(r"[\\/]+")
+# A real extension, and nothing that could smuggle filename text out with it:
+# "take.na!me" has a short tail but is not an extension.
+_EXT_RE = re.compile(r"^[A-Za-z0-9]{1,8}$")
+
+
+def _scrub_path(value: Any) -> Any:
+    """Replace a filesystem path with its shape: extension and segment count."""
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped:
+        return value
+    segments = [s for s in _PATH_SEP_RE.split(stripped) if s]
+    extension = ""
+    if segments:
+        head, _, tail = segments[-1].rpartition(".")
+        if head and _EXT_RE.match(tail):
+            extension = "." + tail.lower()
+    return "<path:%d%s>" % (len(segments), extension)
+
 
 def _scrub_name(value: Any) -> Any:
     """Keep Live defaults and generic musical labels; redact anything else.
@@ -49,13 +78,18 @@ def _scrub_name(value: Any) -> Any:
     return f"<name:{len(stripped)}>"
 
 
+def _scrub_value(key: str, value: Any) -> Any:
+    if key in _NAME_KEYS:
+        return _scrub_name(value)
+    if key in _PATH_KEYS:
+        return _scrub_path(value)
+    return scrub_snapshot(value)
+
+
 def scrub_snapshot(node: Any) -> Any:
-    """Recursively redact user-authored names in a snapshot tree."""
+    """Recursively redact user-authored names and filesystem paths."""
     if isinstance(node, dict):
-        return {
-            key: _scrub_name(value) if key in _NAME_KEYS else scrub_snapshot(value)
-            for key, value in node.items()
-        }
+        return {key: _scrub_value(key, value) for key, value in node.items()}
     if isinstance(node, list):
         return [scrub_snapshot(item) for item in node]
     return node

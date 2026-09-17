@@ -289,6 +289,14 @@ class SessionRecorder:
     ) -> TrajectoryEvent:
         from .hierarchy import label_intent
 
+        # Scrub here, not in the callers: submit_intent reaches this directly
+        # and its text is as much free prose as a chat prompt is. observe_prompt
+        # already scrubbed, and scrubbing twice is a no-op.
+        cleaned = scrub_text(text, MAX_INTENT_CHARS)
+        if not cleaned:
+            raise ValueError("Intent is empty once emails and paths are removed")
+        text = cleaned
+
         labels = label_intent(text, level)
         event = make_intent(
             self.session_id,

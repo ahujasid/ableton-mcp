@@ -17,11 +17,20 @@ except ImportError:
 
 # Constants for socket communication
 DEFAULT_PORT = 9877
-HOST = "0.0.0.0"
+# Loopback, not 0.0.0.0. This socket takes unauthenticated commands that import
+# arbitrary absolute paths, load browser items and drive the transport, so
+# anything that can reach the port controls the DAW. Binding every interface
+# exposed that to the whole local network — and to any network the machine is
+# routable from. Front it with an explicit relay if you need remote access.
+HOST = "127.0.0.1"
+
+# A command that never completes must not grow the buffer without bound.
+# Generous enough for a large add_notes_to_clip payload.
+MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.7.0"
+SCRIPT_VERSION = "1.7.1"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -185,70 +194,66 @@ class AbletonMCP(ControlSurface):
         """Handle communication with a connected client"""
         self.log_message("Client handler started")
         client.settimeout(None)  # No timeout for client socket
-        buffer = ''  # Changed from b'' to '' for Python 2
-        
+        # Accumulate raw bytes, never per-chunk text. A multi-byte UTF-8
+        # character (an accented clip name, an emoji) can straddle two recv()
+        # boundaries; decoding each chunk on its own raises there, and the old
+        # code answered that with an error frame pushed into a stream the
+        # client was still reading a real response from — desynchronising the
+        # connection for good.
+        buffer = b''
+
         try:
             while self.running:
                 try:
                     # Receive data
                     data = client.recv(8192)
-                    
+
                     if not data:
                         # Client disconnected
                         self.log_message("Client disconnected")
                         break
-                    
-                    # Accumulate data in buffer with explicit encoding/decoding
+
+                    buffer += data
+
+                    if len(buffer) > MAX_REQUEST_BYTES:
+                        buffer = b''
+                        raise ValueError(
+                            "Request exceeded %d bytes without a complete JSON command"
+                            % MAX_REQUEST_BYTES)
+
                     try:
-                        # Python 3: data is bytes, decode to string
-                        buffer += data.decode('utf-8')
-                    except AttributeError:
-                        # Python 2: data is already string
-                        buffer += data
-                    
-                    try:
-                        # Try to parse command from buffer
-                        command = json.loads(buffer)  # Removed decode('utf-8')
-                        buffer = ''  # Clear buffer after successful parse
-                        
-                        self.log_message("Received command: " + str(command.get("type", "unknown")))
-                        
-                        # Process the command and get response
-                        response = self._process_command(command)
-                        
-                        # Send the response with explicit encoding
-                        try:
-                            # Python 3: encode string to bytes
-                            client.sendall(json.dumps(response).encode('utf-8'))
-                        except AttributeError:
-                            # Python 2: string is already bytes
-                            client.sendall(json.dumps(response))
-                    except ValueError:
-                        # Incomplete data, wait for more
+                        # Only a fully received command decodes and parses.
+                        # Either error means "not all here yet", so wait.
+                        command = json.loads(buffer.decode('utf-8'))
+                    except (ValueError, UnicodeDecodeError):
                         continue
-                        
+
+                    buffer = b''  # Clear buffer after successful parse
+
+                    self.log_message("Received command: " + str(command.get("type", "unknown")))
+
+                    # Process the command and get response
+                    response = self._process_command(command)
+
+                    # Send the response with explicit encoding
+                    client.sendall(json.dumps(response).encode('utf-8'))
+
                 except Exception as e:
                     self.log_message("Error handling client data: " + str(e))
                     self.log_message(traceback.format_exc())
-                    
-                    # Send error response if possible
+
+                    # Every error that reaches here leaves the request/response
+                    # stream in an unknown state, so report it and close rather
+                    # than carry on out of step with the client.
                     error_response = {
                         "status": "error",
                         "message": str(e)
                     }
                     try:
-                        # Python 3: encode string to bytes
                         client.sendall(json.dumps(error_response).encode('utf-8'))
-                    except AttributeError:
-                        # Python 2: string is already bytes
-                        client.sendall(json.dumps(error_response))
-                    except:
-                        # If we can't send the error, the connection is probably dead
-                        break
-                    
-                    # For serious errors, break the loop
-                    if not isinstance(e, ValueError):
-                        break
+                    except Exception:
+                        pass
+                    break
         except Exception as e:
             self.log_message("Error in client handler: " + str(e))
         finally:
@@ -2338,23 +2343,49 @@ class AbletonMCP(ControlSurface):
                 "available_categories": browser_attrs
             }
             
-            # Helper function to process a browser item and its children
+            # The full browser is far too large to serialise, so descend one
+            # level and mark anything deeper with has_more. The MCP server
+            # renders that as "[...]" and get_browser_items_at_path walks on
+            # from there.
+            max_depth = 1
+            max_children = 64
+            folder_count = [0]
+
             def process_item(item, depth=0):
                 if not item:
                     return None
-                
-                result = {
+
+                children = getattr(item, 'children', None) or []
+                is_folder = bool(children)
+                if is_folder:
+                    folder_count[0] += 1
+
+                node = {
                     "name": item.name if hasattr(item, 'name') else "Unknown",
-                    "is_folder": hasattr(item, 'children') and bool(item.children),
+                    "is_folder": is_folder,
                     "is_device": hasattr(item, 'is_device') and item.is_device,
                     "is_loadable": hasattr(item, 'is_loadable') and item.is_loadable,
                     "uri": item.uri if hasattr(item, 'uri') else None,
                     "children": []
                 }
-                
-                
-                return result
-            
+
+                if is_folder and depth >= max_depth:
+                    node["has_more"] = True
+                    return node
+
+                for child in children[:max_children]:
+                    try:
+                        processed = process_item(child, depth + 1)
+                    except Exception as e:
+                        self.log_message("Error processing browser child: {0}".format(str(e)))
+                        continue
+                    if processed:
+                        node["children"].append(processed)
+                if len(children) > max_children:
+                    node["has_more"] = True
+
+                return node
+
             # Process based on category type and available attributes
             if (category_type == "all" or category_type == "instruments") and hasattr(app.browser, 'instruments'):
                 try:
@@ -2415,6 +2446,10 @@ class AbletonMCP(ControlSurface):
                     except Exception as e:
                         self.log_message("Error processing {0}: {1}".format(attr, str(e)))
             
+            # The MCP server reports this back to the caller; without it the
+            # header always claimed zero folders.
+            result["total_folders"] = folder_count[0]
+
             self.log_message("Browser tree generated for {0} with {1} root categories".format(
                 category_type, len(result['categories'])))
             return result

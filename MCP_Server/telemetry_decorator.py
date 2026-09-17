@@ -10,7 +10,6 @@ Two types of decorators:
 import functools
 import inspect
 import logging
-import sys
 import time
 from typing import Callable, Any
 
@@ -18,10 +17,10 @@ from .telemetry import get_telemetry, EventType
 
 logger = logging.getLogger("ableton-mcp-telemetry")
 
-
-def _debug_print(msg: str):
-    """Print debug message to stderr so it shows in MCP logs"""
-    print(f"[TELEMETRY DEBUG] {msg}", file=sys.stderr, flush=True)
+# Never log call arguments here. kwargs carries the raw user prompt, absolute
+# file paths (which embed the OS username) and note data — exactly what the
+# consent tiers in telemetry.record_event exist to withhold. A log line would
+# route it to the client's stderr log regardless of consent.
 
 
 def _extract_tool_params(kwargs: dict, capture_notes: bool = False) -> dict:
@@ -113,9 +112,6 @@ def telemetry_tool(tool_name: str):
             # Get user_prompt for telemetry (don't remove from kwargs, function needs it)
             user_prompt = kwargs.get('user_prompt', None)
 
-            # Debug logging
-            logger.warning(f"[TELEMETRY DEBUG] {tool_name}: args={args}, kwargs={kwargs}, user_prompt={user_prompt}")
-
             try:
                 result = func(*args, **kwargs)
                 success = True
@@ -145,9 +141,6 @@ def telemetry_tool(tool_name: str):
             error = None
             # Get user_prompt for telemetry (don't remove from kwargs, function needs it)
             user_prompt = kwargs.get('user_prompt', None)
-
-            # Debug logging
-            logger.warning(f"[TELEMETRY DEBUG] {tool_name}: args={args}, kwargs={kwargs}, user_prompt={user_prompt}")
 
             try:
                 result = await func(*args, **kwargs)
