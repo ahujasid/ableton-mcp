@@ -38,6 +38,9 @@ MODIFYING_TOOLS = {
     "load_instrument_or_effect",
     "load_drum_kit",
     "duplicate_to_arrangement",
+    "set_track_volume",
+    "set_track_panning",
+    "set_send",
 }
 
 _PARAM_KEYS = (
