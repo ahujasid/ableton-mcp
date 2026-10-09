@@ -47,7 +47,7 @@ class AbletonConnection:
             return True
         except Exception as e:
             logger.error(f"Failed to connect to Ableton at {self.host}:{self.port}: {str(e)}")
-            self.sock = None
+            self.disconnect()
             return False
     
     def disconnect(self):
@@ -62,51 +62,29 @@ class AbletonConnection:
                     self.sock = None
 
     def receive_full_response(self, sock, buffer_size=8192):
-        """Receive the complete response, potentially in multiple chunks"""
-        chunks = []
-        sock.settimeout(15.0)  # Increased timeout for operations that might take longer
-        
-        try:
-            while True:
-                try:
-                    chunk = sock.recv(buffer_size)
-                    if not chunk:
-                        if not chunks:
-                            raise Exception("Connection closed before receiving any data")
-                        break
-                    
-                    chunks.append(chunk)
-                    
-                    # Check if we've received a complete JSON object
-                    try:
-                        data = b''.join(chunks)
-                        json.loads(data.decode('utf-8'))
-                        logger.info(f"Received complete response ({len(data)} bytes)")
-                        return data
-                    except json.JSONDecodeError:
-                        # Incomplete JSON, continue receiving
-                        continue
-                except socket.timeout:
-                    logger.warning("Socket timeout during chunked receive")
-                    break
-                except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
-                    logger.error(f"Socket connection error during receive: {str(e)}")
-                    raise
-        except Exception as e:
-            logger.error(f"Error during receive: {str(e)}")
-            raise
-            
-        # If we get here, we either timed out or broke out of the loop
-        if chunks:
-            data = b''.join(chunks)
-            logger.info(f"Returning data after receive completion ({len(data)} bytes)")
+        """Receive one JSON response using the command's socket timeout."""
+        data = bytearray()
+        while True:
+            chunk = sock.recv(buffer_size)
+            if not chunk:
+                raise ConnectionError("Connection closed before receiving a complete response")
+            data.extend(chunk)
+
             try:
-                json.loads(data.decode('utf-8'))
-                return data
+                decoded = data.decode("utf-8")
+            except UnicodeDecodeError as e:
+                # A TCP chunk may end between the bytes of a UTF-8 character.
+                # Invalid bytes elsewhere are an error, not an incomplete frame.
+                if e.reason == "unexpected end of data" and e.end == len(data):
+                    continue
+                raise
+
+            try:
+                json.loads(decoded)
             except json.JSONDecodeError:
-                raise Exception("Incomplete JSON response received")
-        else:
-            raise Exception("No data received")
+                continue
+            logger.info("Received complete response (%d bytes)", len(data))
+            return bytes(data)
 
     def send_command(self, command_type: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """Send a command to Ableton and return the response.
@@ -177,21 +155,21 @@ class AbletonConnection:
             return response.get("result", {})
         except socket.timeout:
             logger.error("Socket timeout while waiting for response from Ableton")
-            self.sock = None
+            self.disconnect()
             raise Exception("Timeout waiting for Ableton response")
         except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
             logger.error(f"Socket connection error: {str(e)}")
-            self.sock = None
+            self.disconnect()
             raise Exception(f"Connection to Ableton lost: {str(e)}")
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON response from Ableton: {str(e)}")
             if 'response_data' in locals() and response_data:
                 logger.error(f"Raw response (first 200 bytes): {response_data[:200]}")
-            self.sock = None
+            self.disconnect()
             raise Exception(f"Invalid response from Ableton: {str(e)}")
         except Exception as e:
             logger.error(f"Error communicating with Ableton: {str(e)}")
-            self.sock = None
+            self.disconnect()
             raise Exception(f"Communication error with Ableton: {str(e)}")
 
 @asynccontextmanager
