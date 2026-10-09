@@ -227,6 +227,10 @@ If you've moved your User Library, use its actual location (shown in Live under 
 
 The MCP server and Remote Script share a version handshake (`get_remote_script_info`). If they diverge, newer tools degrade gracefully until Live is restarted.
 
+Remote Script 1.7.2 routes both reads and writes through a bounded queue processed by Live's `update_display` callback on the main thread. It accepts at most 64 pending commands and processes up to eight per callback. Requests normally time out after 10 seconds; audio-file imports have 60 seconds. Commands cancelled or expired while pending are skipped. If an operation already started when its request times out, the error reports an unknown outcome: inspect Live's state before repeating a write. Disconnecting the control surface cancels pending requests and closes client sockets.
+
+`get_track_info`, `get_session_info`'s master track, and regular, return, and master tracks in `get_session_snapshot` include `output_meter_left`, `output_meter_right`, and `output_meter_level`. These are read-only values from the [Live Track API](https://docs.cycling74.com/apiref/lom/track/), in the range 0.0 to 1.0. Left/right values are momentary smoothed peaks for tracks with audio output; `output_meter_level` is the held peak for audio or MIDI output. Missing, unsupported, or invalid values are `null`, so unavailable meters are distinguishable from silence. These values are sampled on request; they do not measure rendered audio samples or provide continuous metering. The existing TCP request/response format and snapshot schema remain compatible.
+
 ---
 
 ## Usage
