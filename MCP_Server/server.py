@@ -1,5 +1,6 @@
 # ableton_mcp_server.py
 from mcp.server.fastmcp import FastMCP, Context
+import asyncio
 import socket
 import json
 import logging
@@ -1559,25 +1560,27 @@ def record_audition(
 
 @mcp.tool()
 @telemetry_tool("record_audio")
-def record_audio(ctx: Context, seconds: float = 4.0, device: str = audio.DEFAULT_DEVICE, user_prompt: str = "") -> str:
+async def record_audio(ctx: Context, seconds: float = 4.0, device: str = audio.DEFAULT_DEVICE, user_prompt: str = "") -> str:
     """
     Record what Live is playing to a WAV file, so it can be analyzed with analyze_audio.
 
     This only records; it does not start playback. Start playback first (start_playback
     or fire_clip), and solo a track first if you want to hear just that track.
-    Recording happens in real time, so keep it short (2-8 seconds is usually enough).
+    Capture begins about 0.5 s after the call, so start playback a little before the
+    part you want. Recording happens in real time, so keep it short (2-8 seconds is
+    usually enough). It runs in a worker thread, so other tools stay responsive.
 
     Requires macOS, ffmpeg and a loopback device (BlackHole 2ch) that receives Live's
     output through a Multi-Output Device. See the "Hearing your session" section of
     the README.
 
     Parameters:
-    - seconds: How long to record (max 60)
+    - seconds: How long to record (max 30)
     - device: Name of the loopback input to record from (default "BlackHole 2ch")
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
-        path = audio.record(seconds, device)
+        path = await asyncio.to_thread(audio.record, seconds, device)
         return f"Recorded {seconds:g}s from '{device}' to {path}"
     except Exception as e:
         logger.error(f"Error recording audio: {str(e)}")
@@ -1596,7 +1599,8 @@ def analyze_audio(ctx: Context, path: str, user_prompt: str = "") -> str:
     or harsh mix.
 
     Parameters:
-    - path: Path to a 16-bit WAV file, e.g. the one returned by record_audio
+    - path: The WAV path returned by record_audio (only files in the temp directory
+      are read, up to 120 seconds long)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:

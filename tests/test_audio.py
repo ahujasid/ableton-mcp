@@ -7,6 +7,7 @@ Run from the repo root:
     uv run --extra audio pytest -v tests/test_audio.py
 """
 
+import json
 import math
 import struct
 import subprocess
@@ -67,8 +68,20 @@ def test_analyze_detects_phase_and_balance(tmp_path):
     assert quieter_right["balance_db"] == pytest.approx(-6.0, abs=0.2)
 
 
+def test_analyze_hard_panned_crest_factor(tmp_path):
+    # A sine has a 3 dB crest factor wherever it's panned; the silent right
+    # channel must not drag the RMS down.
+    left = sine(1000, amp=0.5)
+    result = audio.analyze(write_wav(tmp_path / "hl.wav", left, [0.0] * len(left)))
+    assert result["crest_factor_db"] == pytest.approx(3.0, abs=0.1)
+    assert result["balance_db"] is None
+    assert result["stereo_correlation"] is None
+
+
 def test_analyze_silence_gives_hint(tmp_path):
     result = audio.analyze(write_wav(tmp_path / "s.wav", [0.0] * 4410))
+    json.dumps(result, allow_nan=False)  # no -Infinity in the output
+    assert result["peak_dbfs"] is None
     assert result["silent"] is True
     assert "BlackHole" in result["hint"]
     assert "band_energy_pct" not in result
@@ -77,6 +90,23 @@ def test_analyze_silence_gives_hint(tmp_path):
 def test_analyze_counts_clipping(tmp_path):
     result = audio.analyze(write_wav(tmp_path / "c.wav", [1.0] * 10 + [0.1] * 1000))
     assert result["clipped_samples"] == 20  # 10 frames x 2 channels
+
+
+def test_analyze_rejects_files_outside_temp_dir(tmp_path, monkeypatch):
+    path = write_wav(tmp_path / "a.wav", sine(440))
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    monkeypatch.setattr(audio.tempfile, "gettempdir", lambda: str(other))
+    with pytest.raises(ValueError, match="temp directory"):
+        audio.analyze(path)
+    with pytest.raises(ValueError, match="temp directory"):
+        audio.analyze(str(other / ".." / "a.wav"))  # no escaping via ..
+
+
+def test_analyze_rejects_long_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(audio, "MAX_ANALYZE_SECONDS", 0.1)
+    with pytest.raises(ValueError, match="longer than"):
+        audio.analyze(write_wav(tmp_path / "long.wav", sine(440, seconds=0.5)))
 
 
 # --------------------------------------------------------------------------
@@ -115,7 +145,9 @@ def test_list_input_devices_skips_video(fake_ffmpeg):
 def test_record_uses_exact_device_name(fake_ffmpeg, tmp_path):
     out = audio.record(2, out_path=str(tmp_path / "x.wav"))
     cmd = fake_ffmpeg[-1]
-    assert cmd[cmd.index("-i") + 1] == ":BlackHole 2ch"  # not "BlackHole 64ch"
+    # The index, not the name: ffmpeg prefix-matches names, so ":BlackHole"
+    # would open "BlackHole 64ch".
+    assert cmd[cmd.index("-i") + 1] == ":1"
     assert cmd[cmd.index("-t") + 1] == "2.000"
     assert out == str(tmp_path / "x.wav")
 
@@ -125,10 +157,29 @@ def test_record_unknown_device(fake_ffmpeg):
         audio.record(2, device="Soundflower")
 
 
-@pytest.mark.parametrize("seconds", [0, -1, 61])
+@pytest.mark.parametrize("seconds", [0, -1, 31])
 def test_record_rejects_bad_duration(fake_ffmpeg, seconds):
     with pytest.raises(ValueError):
         audio.record(seconds)
+
+
+def test_record_audio_tool_runs_off_the_event_loop(fake_ffmpeg, monkeypatch):
+    import asyncio
+    import inspect
+    import MCP_Server.server as server
+
+    used_thread = []
+    real_to_thread = asyncio.to_thread
+
+    async def spy(func, *args, **kwargs):
+        used_thread.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(server.asyncio, "to_thread", spy)
+    result = server.record_audio(None, seconds=1)
+    assert inspect.iscoroutine(result)
+    assert asyncio.run(result).startswith("Recorded 1s from 'BlackHole 2ch'")
+    assert used_thread == [audio.record]
 
 
 def test_record_without_ffmpeg(monkeypatch):
