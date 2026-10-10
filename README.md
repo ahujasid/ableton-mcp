@@ -95,6 +95,7 @@ That's it — ask Claude to build something.
   - [Using with Claude](#using-with-claude)
   - [Capabilities](#capabilities)
   - [Example Commands](#example-commands)
+  - [Hearing your session](#hearing-your-session)
 - [Troubleshooting](#troubleshooting)
 - [Technical Details](#technical-details)
 - [Limitations & Security Considerations](#limitations--security-considerations)
@@ -115,6 +116,7 @@ That's it — ask Claude to build something.
 | **Clip creation** | Create and edit MIDI clips with notes |
 | **Arrangement view composition** | Build full songs autonomously in Arrangement View, including sections like intro, buildup, drop, breakdown, and outro |
 | **Session control** | Start and stop playback, fire clips, and control transport across Session View and Arrangement View |
+| **Hearing** *(optional, macOS)* | Record what Live is playing and get levels, clipping, stereo image and tonal balance back |
 | **Anonymous telemetry** | Usage tracking to help improve the tool (can be disabled) |
 
 ## Components
@@ -251,6 +253,7 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Record and analyze what Live is playing (optional, see [Hearing your session](#hearing-your-session))
 
 ### Example Commands
 
@@ -269,6 +272,28 @@ Here are some examples of what you can ask Claude to do:
 | *"Add a jazz chord progression to the clip in track 1"* | |
 | *"Set the tempo to 120 BPM"* | |
 | *"Play the clip in track 2"* | |
+
+### Hearing your session
+
+Optional, macOS only. Live's API can't render audio, so `record_audio` records Live's output from a loopback device and `analyze_audio` turns the recording into numbers: peak and RMS level, clipping, stereo balance and correlation, and how the energy splits across low, mid and high frequencies.
+
+1. Install ffmpeg and BlackHole:
+   ```
+   brew install ffmpeg blackhole-2ch
+   ```
+2. Open **Audio MIDI Setup**, click **+** → **Create Multi-Output Device**, and tick your speakers or headphones **and** BlackHole 2ch. Make your speakers the primary device and enable drift correction for BlackHole.
+3. In Live, go to **Settings → Audio** and choose the Multi-Output Device as the output. You still hear everything; BlackHole gets a copy.
+4. Install the server with the `audio` extra, which adds numpy:
+   ```json
+   "args": ["--from", "ableton-mcp[audio]", "ableton-mcp"]
+   ```
+5. The first recording triggers a macOS **Microphone** permission prompt for the app running the server. Allow it.
+
+`record_audio` only records, so start playback first (and solo a track to hear it on its own). Example prompts:
+
+- *"Play scene 1, record 4 seconds and tell me if the mix is clipping"*
+- *"Solo the bass, record it, and check whether it's too boomy"*
+- *"Record the chorus before and after you change the EQ and compare"*
 
 ---
 
