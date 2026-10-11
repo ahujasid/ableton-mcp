@@ -234,3 +234,75 @@ def test_browser_tree_caps_a_huge_folder_and_flags_it(script_module):
 
     assert len(category["children"]) == 64
     assert category["has_more"] is True
+
+
+# ------------------------------------------------------------------ logging
+
+def _logging_instance(script_module):
+    inst = make_instance(script_module)
+    inst.logged = []
+    inst.log_message = inst.logged.append
+    return inst
+
+
+@pytest.mark.parametrize("error", [IndexError("Track index out of range"),
+                                   ValueError("Invalid value")])
+def test_expected_command_error_is_logged_without_traceback(script_module,
+                                                            error):
+    """Routine validation errors already reach the client as a message; a
+    traceback per error buried the real failures in Live's Log.txt."""
+    inst = _logging_instance(script_module)
+    try:
+        raise error
+    except Exception as e:
+        inst._log_command_error("Error processing command", e)
+    assert inst.logged == ["Error processing command: " + str(error)]
+
+
+def test_unexpected_command_error_keeps_its_traceback(script_module):
+    inst = _logging_instance(script_module)
+    try:
+        raise RuntimeError("boom")
+    except Exception as e:
+        inst._log_command_error("Error processing command", e)
+    assert inst.logged[0] == "Error processing command: boom"
+    assert len(inst.logged) == 2
+    assert inst.logged[1].startswith("Traceback (most recent call last)")
+    assert "RuntimeError: boom" in inst.logged[1]
+
+
+def test_out_of_range_track_index_logs_one_line(script_module):
+    """End to end through _process_command: the client gets the error and
+    the log gets one line per handler, no traceback."""
+    inst = _logging_instance(script_module)
+    inst._song = types.SimpleNamespace(tracks=[])
+    response = inst._process_command(
+        {"type": "get_track_info", "params": {"track_index": 3}})
+    assert response["status"] == "error"
+    assert response["message"] == "Track index out of range"
+    assert not any("Traceback" in line for line in inst.logged)
+
+
+class _FakeParameter(object):
+    name = "Cutoff"
+    min = 0.0
+    max = 1.0
+
+    def __init__(self):
+        self.value = 0.5
+
+
+def test_set_device_parameter_rejects_value_outside_range(script_module):
+    param = _FakeParameter()
+    track = types.SimpleNamespace(
+        devices=[types.SimpleNamespace(parameters=[param])])
+    inst = _logging_instance(script_module)
+    inst._song = types.SimpleNamespace(tracks=[track])
+
+    with pytest.raises(ValueError, match="outside the range of parameter 'Cutoff'"):
+        inst._set_device_parameter(0, 0, 0, 2.0)
+    assert param.value == 0.5
+
+    result = inst._set_device_parameter(0, 0, 0, 1.0)
+    assert param.value == 1.0
+    assert result["old_value"] == 0.5

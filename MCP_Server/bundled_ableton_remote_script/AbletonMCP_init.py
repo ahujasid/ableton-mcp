@@ -32,6 +32,12 @@ HOST = os.environ.get("ABLETON_MCP_HOST", "127.0.0.1")
 # Generous enough for a large add_notes_to_clip payload.
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
+# Errors the command handlers raise on purpose for a bad request (an index out
+# of range, a value outside a parameter's range, an unknown browser URI). The
+# client already gets the message, so they are logged on one line; anything
+# else is unexpected and is logged with its traceback.
+EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
+
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
 SCRIPT_VERSION = "1.7.1"
@@ -267,6 +273,13 @@ class AbletonMCP(ControlSurface):
                 pass
             self.log_message("Client handler stopped")
     
+    def _log_command_error(self, context, error):
+        """Log a command error on one line, adding the traceback only when the
+        error is not one of EXPECTED_COMMAND_ERRORS."""
+        self.log_message("{0}: {1}".format(context, error))
+        if not isinstance(error, EXPECTED_COMMAND_ERRORS):
+            self.log_message(traceback.format_exc())
+
     def _process_command(self, command):
         """Process a command from the client and return a response"""
         command_type = command.get("type", "")
@@ -404,8 +417,7 @@ class AbletonMCP(ControlSurface):
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
-                        self.log_message("Error in main thread task: " + str(e))
-                        self.log_message(traceback.format_exc())
+                        self._log_command_error("Error in main thread task", e)
                         response_queue.put({"status": "error", "message": str(e)})
                 
                 # Schedule the task to run on the main thread
@@ -482,8 +494,7 @@ class AbletonMCP(ControlSurface):
                         )
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
-                        self.log_message("Error in main thread task: " + str(e))
-                        self.log_message(traceback.format_exc())
+                        self._log_command_error("Error in main thread task", e)
                         response_queue.put({"status": "error", "message": str(e)})
 
                 try:
@@ -505,8 +516,7 @@ class AbletonMCP(ControlSurface):
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
         except Exception as e:
-            self.log_message("Error processing command: " + str(e))
-            self.log_message(traceback.format_exc())
+            self._log_command_error("Error processing command", e)
             response["status"] = "error"
             response["message"] = str(e)
         
@@ -1272,8 +1282,7 @@ class AbletonMCP(ControlSurface):
             
             return result
         except Exception as e:
-            self.log_message("Error getting browser item: " + str(e))
-            self.log_message(traceback.format_exc())
+            self._log_command_error("Error getting browser item", e)
             raise   
     
     
@@ -1321,8 +1330,7 @@ class AbletonMCP(ControlSurface):
             }
             return result
         except Exception as e:
-            self.log_message("Error loading browser item: {0}".format(str(e)))
-            self.log_message(traceback.format_exc())
+            self._log_command_error("Error loading browser item", e)
             raise
     
     # Substring markers that point a URI at a likely root. Unmatched URIs fall
@@ -2301,8 +2309,13 @@ class AbletonMCP(ControlSurface):
             if parameter_index < 0 or parameter_index >= len(device.parameters):
                 raise IndexError("Parameter index out of range")
             param = device.parameters[parameter_index]
+            value = float(value)
+            if not float(param.min) <= value <= float(param.max):
+                raise ValueError(
+                    "Value {0} is outside the range of parameter '{1}' ({2} to {3})".format(
+                        value, param.name, float(param.min), float(param.max)))
             old = float(param.value)
-            param.value = float(value)
+            param.value = value
             return {
                 "track_index": track_index,
                 "device_index": device_index,
@@ -2459,8 +2472,7 @@ class AbletonMCP(ControlSurface):
             return result
             
         except Exception as e:
-            self.log_message("Error getting browser tree: {0}".format(str(e)))
-            self.log_message(traceback.format_exc())
+            self._log_command_error("Error getting browser tree", e)
             raise
     
     def get_browser_items_at_path(self, path):
@@ -2584,6 +2596,5 @@ class AbletonMCP(ControlSurface):
             return result
             
         except Exception as e:
-            self.log_message("Error getting browser items at path: {0}".format(str(e)))
-            self.log_message(traceback.format_exc())
+            self._log_command_error("Error getting browser items at path", e)
             raise
