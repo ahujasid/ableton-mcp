@@ -251,6 +251,7 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Export the arrangement to a WAV by recording the main output in real time (Live's API has no offline render, so the export takes as long as the song plays)
 
 ### Example Commands
 

@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.7.1"
+SCRIPT_VERSION = "1.8.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -57,6 +57,9 @@ SCRIPT_CAPABILITIES = [
     "create_locator",
     "delete_clip",
     "clear_notes_from_clip",
+    "start_resample_capture",
+    "get_resample_capture_status",
+    "cancel_resample_capture",
 ]
 
 def create_instance(c_instance):
@@ -115,6 +118,11 @@ class AbletonMCP(ControlSurface):
             self._teardown_passive_listeners()
         except Exception as e:
             self.log_message("Passive listener teardown error: " + str(e))
+
+        try:
+            self._finish_resample_capture("disconnected")
+        except Exception as e:
+            self.log_message("Resample capture teardown error: " + str(e))
         
         # Stop the server
         if self.server:
@@ -300,7 +308,11 @@ class AbletonMCP(ControlSurface):
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement",
                                  "map_rack_magnitude", "inspect_rack",
-                                 "create_locator"]:
+                                 "create_locator",
+                                 # Resample capture drives transport and arm state
+                                 "start_resample_capture",
+                                 "get_resample_capture_status",
+                                 "cancel_resample_capture"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -400,6 +412,14 @@ class AbletonMCP(ControlSurface):
                             name = params.get("name", "")
                             time_val = params.get("time", 0.0)
                             result = self._create_locator(name, time_val)
+                        elif command_type == "start_resample_capture":
+                            result = self._start_resample_capture(
+                                params.get("start_time", 0.0),
+                                params.get("end_time"))
+                        elif command_type == "get_resample_capture_status":
+                            result = self._get_resample_capture_status()
+                        elif command_type == "cancel_resample_capture":
+                            result = self._cancel_resample_capture()
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -1189,6 +1209,213 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error creating locator: " + str(e))
             raise
+
+    # ── Resample capture (audio export) ───────────────────────────────────────
+    #
+    # Live's API has no render/export call: File > Export Audio/Video exists
+    # only as a UI dialog. The scriptable equivalent is what a user would do by
+    # hand -- record the main output in real time onto an audio track whose
+    # input is "Resampling". That takes as long as the range plays, so it is a
+    # start command plus a status poll rather than one call that would outlive
+    # every socket timeout.
+
+    RESAMPLE_TRACK_NAME = "MCP Resample"
+
+    def _resample_state(self):
+        return getattr(self, "_resample", None)
+
+    def _arrangement_end(self):
+        """End of the last arrangement clip, falling back to song_length."""
+        end = 0.0
+        for track in self._song.tracks:
+            try:
+                clips = track.arrangement_clips
+            except Exception:
+                continue  # group tracks have no arrangement clips of their own
+            for clip in clips:
+                end = max(end, float(clip.end_time))
+        if end <= 0.0:
+            end = float(self._song.song_length)
+        return end
+
+    def _route_input_to_resampling(self, track):
+        routing_types = getattr(track, "available_input_routing_types", None)
+        if routing_types is not None:
+            for routing in routing_types:
+                if str(routing.display_name).lower().startswith("resampl"):
+                    track.input_routing_type = routing
+                    return
+            raise Exception("Live offered no 'Resampling' input on the capture track")
+        # Live 10 and earlier route by display string
+        track.current_input_routing = "Resampling"
+
+    def _start_resample_capture(self, start_time, end_time):
+        song = self._song
+        state = self._resample_state()
+        if state and state.get("status") in ("recording", "stopping"):
+            raise Exception("A resample capture is already running")
+        if song.is_playing:
+            raise Exception("Stop playback before starting a resample capture")
+
+        start = max(0.0, float(start_time or 0.0))
+        end = self._arrangement_end() if end_time is None else float(end_time)
+        if end <= start:
+            raise ValueError(
+                "Nothing to capture: end (%.3f) is not after start (%.3f)" % (end, start))
+
+        # Arrangement recording records every armed track, so take the others
+        # out of record for the duration and put them back afterwards.
+        previously_armed = [t for t in song.tracks if self._safe_arm(t)]
+        for track in previously_armed:
+            track.arm = False
+
+        song.create_audio_track(-1)
+        track = song.tracks[len(song.tracks) - 1]
+        track.name = self.RESAMPLE_TRACK_NAME
+        self._route_input_to_resampling(track)
+        # Monitoring Off: an armed Resampling track on Auto would feed the
+        # main output back into itself.
+        track.current_monitoring_state = 2
+        track.arm = True
+
+        restore = {
+            "loop": bool(song.loop),
+            "metronome": bool(song.metronome),
+        }
+        # Looping would wrap before reaching the end; a click routed to the
+        # main output would be printed into the capture.
+        song.loop = False
+        song.metronome = False
+        try:
+            # Session clips playing over the arrangement would be captured
+            # instead of what is on the timeline.
+            song.back_to_arranger = False
+        except Exception:
+            pass
+
+        self._resample = {
+            "status": "recording",
+            "start_time": start,
+            "end_time": end,
+            "track": track,
+            "previously_armed": previously_armed,
+            "restore": restore,
+            "reason": None,
+            "error": None,
+        }
+
+        song.current_song_time = start
+        song.record_mode = True
+        song.start_playing()
+        song.add_current_song_time_listener(self._on_resample_song_time)
+
+        tempo = float(song.tempo) or 120.0
+        return {
+            "status": "recording",
+            "start_time": start,
+            "end_time": end,
+            "track_index": len(song.tracks) - 1,
+            "track_name": track.name,
+            "estimated_seconds": (end - start) * 60.0 / tempo,
+        }
+
+    def _on_resample_song_time(self):
+        state = self._resample_state()
+        if not state or state.get("status") != "recording":
+            return
+        if self._song.current_song_time >= state["end_time"]:
+            state["status"] = "stopping"
+            # Listeners must not change Live's state from inside the
+            # notification; defer to the next tick.
+            self.schedule_message(0, lambda: self._finish_resample_capture("completed"))
+
+    def _finish_resample_capture(self, reason):
+        state = self._resample_state()
+        if not state or state.get("status") not in ("recording", "stopping"):
+            return
+        song = self._song
+        try:
+            if song.current_song_time_has_listener(self._on_resample_song_time):
+                song.remove_current_song_time_listener(self._on_resample_song_time)
+        except Exception:
+            pass
+        try:
+            song.record_mode = False
+            song.stop_playing()
+            try:
+                state["track"].arm = False
+            except Exception:
+                pass  # user deleted the capture track mid-run
+            for track in state["previously_armed"]:
+                try:
+                    track.arm = True
+                except Exception:
+                    pass
+            song.loop = state["restore"]["loop"]
+            song.metronome = state["restore"]["metronome"]
+            state["status"] = "done"
+            state["reason"] = reason
+        except Exception as e:
+            state["status"] = "error"
+            state["error"] = str(e)
+            self.log_message("Error finishing resample capture: " + str(e))
+
+    def _capture_track_index(self, track):
+        for index, candidate in enumerate(self._song.tracks):
+            if candidate == track:
+                return index
+        return None
+
+    def _get_resample_capture_status(self):
+        state = self._resample_state()
+        if not state:
+            return {"status": "idle"}
+        song = self._song
+
+        # The user stopping the transport by hand ends the capture early.
+        if state["status"] == "recording" and not song.is_playing:
+            self._finish_resample_capture("stopped_early")
+
+        span = state["end_time"] - state["start_time"]
+        now = float(song.current_song_time)
+        result = {
+            "status": state["status"],
+            "reason": state["reason"],
+            "error": state["error"],
+            "start_time": state["start_time"],
+            "end_time": state["end_time"],
+        }
+        if state["status"] == "recording":
+            result["current_song_time"] = now
+            result["progress"] = max(0.0, min(1.0, (now - state["start_time"]) / span))
+            return result
+
+        track = state["track"]
+        index = self._capture_track_index(track)
+        result["track_index"] = index
+        if index is None:
+            result["error"] = result["error"] or "The capture track was deleted"
+            return result
+        result["track_name"] = track.name
+        clips = list(track.arrangement_clips)
+        if clips:
+            clip = clips[-1]
+            result["clip_start"] = clip.start_time
+            result["clip_end"] = clip.end_time
+            result["file_path"] = getattr(clip, "file_path", None)
+        return result
+
+    def _cancel_resample_capture(self):
+        state = self._resample_state()
+        if not state:
+            return {"cancelled": False, "reason": "No capture has been started"}
+        if state["status"] in ("recording", "stopping"):
+            self._finish_resample_capture("cancelled")
+        index = self._capture_track_index(state["track"])
+        if index is not None:
+            self._song.delete_track(index)
+        self._resample = None
+        return {"cancelled": True, "deleted_track_index": index}
 
     # ── Browser implementations ───────────────────────────────────────────────
 
