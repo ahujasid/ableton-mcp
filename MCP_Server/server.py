@@ -139,7 +139,9 @@ class AbletonConnection:
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
-            "create_locator"
+            "create_locator",
+            "start_resample_capture", "get_resample_capture_status",
+            "cancel_resample_capture"
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
@@ -1343,6 +1345,147 @@ def create_locator(
     except Exception as e:
         logger.error(f"Error creating locator: {str(e)}")
         return f"Error creating locator: {str(e)}"
+
+
+# ── Audio export (real-time resample capture) ─────────────────────────────────
+
+@mcp.tool()
+@rich_telemetry_tool("start_audio_export")
+@trajectory_tool("start_audio_export", modifying=True)
+def start_audio_export(
+    ctx: Context,
+    start_time: float = 0.0,
+    end_time: float = None,
+    user_prompt: str = ""
+) -> str:
+    """
+    Start exporting the arrangement's main output to audio.
+
+    Live's API has no render/export call, so this records the main output in
+    REAL TIME: it adds an audio track named "MCP Resample" with its input set
+    to Resampling, temporarily disarms other tracks, turns off loop and the
+    metronome, and arrangement-records the range. The capture takes as long as
+    the range takes to play. Poll get_audio_export_status until it reports
+    "done", passing destination_path there to copy the WAV out.
+
+    Playback must be stopped first. Anything audible on the main output while
+    it records (live input, auditioning) ends up in the file.
+
+    Parameters:
+    - start_time: Beat to start from (default 0.0)
+    - end_time: Beat to stop at. Defaults to the end of the last arrangement
+      clip; add a bar or two if reverb/delay tails matter.
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("start_resample_capture")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        params = {"start_time": start_time}
+        if end_time is not None:
+            params["end_time"] = end_time
+        result = ableton.send_command("start_resample_capture", params)
+        seconds = result.get("estimated_seconds", 0.0)
+        return (
+            f"Recording beats {result.get('start_time')}–{result.get('end_time')} "
+            f"onto track {result.get('track_index')} ('{result.get('track_name')}'). "
+            f"This takes about {seconds:.0f}s at the current tempo; call "
+            f"get_audio_export_status to check progress and collect the file."
+        )
+    except Exception as e:
+        logger.error(f"Error starting audio export: {str(e)}")
+        return f"Error starting audio export: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_audio_export_status")
+@trajectory_tool("get_audio_export_status", modifying=False)
+def get_audio_export_status(ctx: Context, destination_path: str = "", user_prompt: str = "") -> str:
+    """
+    Check an audio export started with start_audio_export.
+
+    While recording, reports progress. Once done, reports the recorded WAV's
+    location (inside the Live Set's Samples/Recorded folder, or Live's temp
+    folder for an unsaved Set). If destination_path is given, the WAV is
+    copied there; a directory keeps the original file name.
+
+    Copying only works when this server runs on the same machine as Live.
+
+    Parameters:
+    - destination_path: Optional file or directory to copy the finished WAV to
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_resample_capture_status")
+        status = result.get("status")
+
+        if status == "idle":
+            return "No audio export has been started."
+        if status in ("recording", "stopping"):
+            progress = result.get("progress")
+            pct = f"{progress * 100:.0f}%" if progress is not None else "finishing"
+            return (
+                f"Export {status}: {pct} "
+                f"(beat {result.get('current_song_time', '?')} of {result.get('end_time')})"
+            )
+        if status == "error" or result.get("error"):
+            return f"Export failed: {result.get('error')}"
+
+        source = result.get("file_path")
+        summary = (
+            f"Export {result.get('reason')}: track {result.get('track_index')} "
+            f"('{result.get('track_name')}'), clip beats "
+            f"{result.get('clip_start')}–{result.get('clip_end')}."
+        )
+        if not source:
+            return summary + " The recorded clip was not found yet; check again in a moment."
+        summary += f"\nRecorded file: {source}"
+
+        if destination_path:
+            import shutil
+
+            if not os.path.isfile(source):
+                return summary + "\nCould not copy: the file is not reachable from this machine."
+            dest = os.path.expanduser(destination_path)
+            if os.path.isdir(dest) or destination_path.endswith(("/", "\\")):
+                os.makedirs(dest, exist_ok=True)
+                dest = os.path.join(dest, os.path.basename(source))
+            else:
+                parent = os.path.dirname(dest)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+            shutil.copyfile(source, dest)
+            summary += f"\nCopied to: {dest}"
+        return summary
+    except Exception as e:
+        logger.error(f"Error getting audio export status: {str(e)}")
+        return f"Error getting audio export status: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("cancel_audio_export")
+@trajectory_tool("cancel_audio_export", modifying=True)
+def cancel_audio_export(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Stop a running audio export, or discard a finished one, and delete its
+    "MCP Resample" track. Disarmed tracks, loop and metronome are restored.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("cancel_resample_capture")
+        if not result.get("cancelled"):
+            return result.get("reason", "Nothing to cancel")
+        return "Audio export cancelled and its capture track deleted."
+    except Exception as e:
+        logger.error(f"Error cancelling audio export: {str(e)}")
+        return f"Error cancelling audio export: {str(e)}"
 
 
 # ── Dataset / preference tools (Supabase trajectory recording) ─────────────────
