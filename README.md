@@ -95,6 +95,7 @@ That's it — ask Claude to build something.
   - [Using with Claude](#using-with-claude)
   - [Capabilities](#capabilities)
   - [Example Commands](#example-commands)
+  - [Research Production Techniques (Optional)](#research-production-techniques-optional)
 - [Troubleshooting](#troubleshooting)
 - [Technical Details](#technical-details)
 - [Limitations & Security Considerations](#limitations--security-considerations)
@@ -269,6 +270,30 @@ Here are some examples of what you can ask Claude to do:
 | *"Add a jazz chord progression to the clip in track 1"* | |
 | *"Set the tempo to 120 BPM"* | |
 | *"Play the clip in track 2"* | |
+
+### Research Production Techniques (Optional)
+
+In Claude Code, you can pair AbletonMCP with [Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp) to look up production techniques and read reference pages before planning changes in Live. Its free, anonymous endpoint needs no account or API key; search uses Fast mode and usage limits apply.
+
+After the [Claude Code setup](#claude-code-integration), run this in the same project directory:
+
+```bash
+claude mcp add --transport http parallel-search https://search.parallel.ai/mcp
+```
+
+This adds a separate server in Claude Code's default local scope (this project, for you). Start a new Claude Code session in that directory and use `/mcp` to check that both servers are connected. Keep only one AbletonMCP instance connected to Live.
+
+Try a research-first prompt:
+
+> Use Parallel's web_search to find official Ableton manual pages about parallel drum compression, then web_fetch to read the relevant pages. Cite the source URLs. Use AbletonMCP to inspect my session and browse the available audio effects. Propose a technique using only devices available in my Live edition, and explain any steps I need to do manually. Wait for my confirmation before changing the session.
+
+Parallel handles public web research; AbletonMCP provides the Live session and device tools. Keep private session details out of web queries and check that the sources match your Live version.
+
+To remove the optional server, run this from the same project directory:
+
+```bash
+claude mcp remove parallel-search
+```
 
 ---
 
