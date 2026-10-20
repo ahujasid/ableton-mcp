@@ -84,14 +84,15 @@ def _register_report(label: str, path: str, report: Dict[str, Any], source: str)
         _AUDIO_REPORTS["last"] = entry
 
 
-def _resolve_report(ref: str) -> Dict[str, Any]:
-    """A report by label ("last", "drop-v2", "ref-four") or a file path."""
+def _resolve_report(ref: str):
+    """(report, readable name) for a label ("last", "drop-v2", "ref-four") or a file path."""
     ref = (ref or "last").strip()
     if ref in _AUDIO_REPORTS:
-        return _AUDIO_REPORTS[ref]["report"]
+        entry = _AUDIO_REPORTS[ref]
+        return entry["report"], entry.get("label") or ref
     if os.path.exists(ref):
         from . import ears
-        return ears.analyze(ref)
+        return ears.analyze(ref), Path(ref).stem
     known = ", ".join(sorted(_AUDIO_REPORTS)) or "none yet"
     raise ValueError(f"No audio report or file called '{ref}'. Known labels: {known}")
 
@@ -101,6 +102,7 @@ def _compact_report(report: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(report)
     tonal = dict(out.get("tonal") or {})
     tonal.pop("chroma", None)
+    tonal.pop("chroma_notes", None)
     if tonal:
         out["tonal"] = tonal
     return out
@@ -671,7 +673,7 @@ def register(mcp, rich_telemetry_tool) -> None:  # noqa: C901 - flat list of too
         - label: Name for comparisons (e.g. "ref-four")
         - start_seconds / end_seconds: Optional window (e.g. the reference's drop)
         - bpm: The track's tempo, to enable swing and chords-per-bar
-        - downbeat_seconds: Time of a downbeat inside the window, for grid alignment
+        - downbeat_seconds: Time of a downbeat, counted from start_seconds (0 if the window starts on one)
         """
         try:
             from . import ears
@@ -702,7 +704,9 @@ def register(mcp, rich_telemetry_tool) -> None:  # noqa: C901 - flat list of too
             from . import ears
             if not b:
                 return "Give b: a reference label or file path to compare against."
-            result = ears.compare(_resolve_report(a), _resolve_report(b), labels=(a, b))
+            report_a, name_a = _resolve_report(a)
+            report_b, name_b = _resolve_report(b)
+            result = ears.compare(report_a, report_b, labels=(name_a, name_b))
             return _dump(result)
         except Exception as e:
             return _err("comparing audio", e)

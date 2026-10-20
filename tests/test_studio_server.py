@@ -142,7 +142,7 @@ def test_compare_audio_uses_labels(conn, monkeypatch):
     monkeypatch.setattr(ears, "compare", lambda a, b, labels: {"a": a["id"], "b": b["id"],
                                                                "labels": list(labels)})
     out = json.loads(call(tool("compare_audio"), None, a="last", b="ref"))
-    assert out == {"a": "mix", "b": "ref", "labels": ["last", "ref"]}
+    assert out == {"a": "mix", "b": "ref", "labels": ["mix", "ref"]}
     err = call(tool("compare_audio"), None, a="nope", b="ref")
     assert "Known labels" in err
 
@@ -179,3 +179,54 @@ def test_forecast_masking_names_parts(conn, monkeypatch):
     parts = captured["parts"]
     assert [p["name"] for p in parts] == ["Drums [A]", "Bass [A]"]
     assert [p["pitched"] for p in parts] == [False, True]
+
+
+def test_end_to_end_render_and_compare_with_real_ears(conn, tmp_path, monkeypatch):
+    """Real analysis on a synthetic 'render': kick on beats, swung hats."""
+    import soundfile as sf
+    sr, bpm = 48000, 125.0
+    beat = 60.0 / bpm
+    seconds = 16 * beat + 2 * beat  # 4 bars + 2 beats preroll
+    t = np.arange(int(seconds * sr)) / sr
+    y = np.zeros_like(t)
+    rng = np.random.default_rng(1)
+    for k in range(int(seconds / beat)):
+        start = int(k * beat * sr)
+        n = int(0.15 * sr)
+        env = np.exp(-np.arange(n) / (0.03 * sr))
+        y[start:start + n] += 0.8 * np.sin(2 * np.pi * 55 * np.arange(n) / sr) * env
+    for k in range(int(seconds / (beat / 4))):
+        off = 0.04 * beat if k % 2 else 0.0  # 58 % swing
+        start = int((k * beat / 4 + off) * sr)
+        n = int(0.02 * sr)
+        if start + n < len(y):
+            y[start:start + n] += 0.2 * rng.normal(size=n) * np.exp(-np.arange(n) / (0.004 * sr))
+    stereo = np.stack([y, y], axis=1) * 0.5
+    src = tmp_path / "rec.wav"
+    sf.write(str(src), stereo, sr)
+    monkeypatch.setattr(studio, "RENDER_DIR", tmp_path / "renders")
+    conn.handlers.update({
+        "get_session_info": {"signature_numerator": 4, "signature_denominator": 4},
+        "start_render": {"id": "r2", "state": "recording", "expected_seconds": 9},
+        "get_render_status": {"id": "r2", "state": "done", "file_path": str(src),
+                              "window_offset_s": 2 * beat, "window_seconds": 16 * beat,
+                              "tempo": bpm, "start_beat": 0.0, "end_beat": 16.0},
+    })
+    report = json.loads(call(tool("render_section"), None, start_bar=1, bars=4, label="groove"))
+    assert report["loudness"]["integrated_lufs"] < 0
+    assert abs(report["rhythm"]["high_band"]["swing_percent"] - 58) <= 2
+    studio._register_report("ref", str(src), report, "file")
+    out = json.loads(call(tool("compare_audio"), None, a="groove", b="ref"))
+    assert out["summary"] == []
+
+
+def test_transform_with_real_midi_tools(conn):
+    notes = [{"pitch": 42, "start_time": i * 0.25, "duration": 0.1, "velocity": 100,
+              "mute": False} for i in range(16)]
+    conn.handlers["get_clip_notes"] = {"clip_name": "Hats", "length": 4.0, "notes": notes}
+    call(tool("transform_clip_notes"), None, 0, 0,
+         {"swing": {"percent": 58, "grid": 0.25},
+          "velocity": {"accent_map": [100, 62, 84, 58], "mode": "set"}})
+    written = conn.sent[-1][1]["notes"]
+    assert [round(n["start_time"], 3) for n in written[:4]] == [0.0, 0.29, 0.5, 0.79]
+    assert [n["velocity"] for n in written[:4]] == [100, 62, 84, 58]

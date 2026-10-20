@@ -5,7 +5,6 @@ is used only as an optional cross-check (skipped if it is not installed).
 """
 
 import json
-import math
 import time
 
 import numpy as np
@@ -15,7 +14,6 @@ from scipy import signal
 
 from MCP_Server.ears import analyze, compare, load_audio
 from MCP_Server.ears import loudness as ld
-from MCP_Server.ears import spectrum as sp
 from MCP_Server.ears import tonal as tn
 
 SR = 48000
@@ -283,6 +281,15 @@ def test_swing_with_beat_offset():
     y = np.concatenate([np.zeros(lead), hat_clicks(62.0, bars=8)])
     hb = analyze(y, sr=SR, bpm=120, beat_offset_s=0.3)["rhythm"]["high_band"]
     assert hb["swing_percent"] == pytest.approx(62.0, abs=2.0)
+
+
+def test_swing_is_immune_to_render_latency():
+    # Whole render 12 ms late (latency, or a downbeat guessed slightly early).
+    y = np.concatenate([np.zeros(int(0.012 * SR)), hat_clicks(58.0, bars=8)])
+    hb = analyze(y, sr=SR, bpm=120)["rhythm"]["high_band"]
+    assert hb["on16_mean_ms"] == pytest.approx(12.0, abs=1.5)  # latency is visible...
+    assert hb["swing_percent"] == pytest.approx(58.0, abs=2.0)  # ...but swing ignores it
+    assert hb["swing_percent_raw_grid"] == pytest.approx(58.0 + 12.0 / 250.0 * 100.0, abs=2.0)
 
 
 def test_kick_grid_offset():

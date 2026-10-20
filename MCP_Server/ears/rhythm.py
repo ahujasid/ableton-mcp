@@ -25,13 +25,19 @@ and 0.75) are **off-16ths**. Onsets more than 0.45 of a 16th from any grid
 line are ignored as ambiguous (triplets, 32nds). The tolerance still catches
 off-16ths swung up to about 72 %.
 
-* ``*_mean_ms`` / ``*_std_ms``: signed offset from the straight grid
-  (positive = late).
-* ``swing_percent = 50 + mean_off16_delay / (2 * sixteenth) * 100``. The delay
-  is measured against the *straight* grid, so 50 is straight and 58 is a
-  typical MPC/Ableton swing. A constant render latency also shifts this
-  figure. ``on16_mean_ms`` shows that latency, and ``beat_offset_s`` can
-  compensate for it.
+* ``*_mean_ms`` / ``*_std_ms``: signed offset from the supplied grid
+  (positive = late). ``on16_mean_ms`` therefore exposes render latency or a
+  misplaced downbeat. ``kick_grid_offset_ms`` is the same figure for
+  low-band onsets on quarter-note beats.
+* ``swing_percent = 50 + delay / (2 * sixteenth) * 100``, where ``delay`` is
+  the mean lateness of off-16ths, *including late ones*, relative to the
+  straight-grid position. That straight grid is anchored on the band's own
+  on-16ths (their mean offset) when there are at least
+  ``MIN_ANCHOR_ONSETS`` of them. Swing is then the musical long/short ratio
+  inside each 8th pair: 50 is straight, 58 a typical MPC/Ableton swing. It
+  is immune to render latency and to a downbeat guessed a few ms off.
+  ``swing_percent_raw_grid`` is the same formula against the unanchored
+  supplied grid.
 * ``timing_spread_ms``: pooled standard deviation of on- and off-16th
   offsets around their own means. It measures looseness independently of
   swing.
@@ -55,6 +61,7 @@ LOW_BAND_HZ = 150.0
 HIGH_BAND_HZ = 5000.0
 GRID_TOLERANCE_16THS = 0.45
 MIN_ONSET_GAP_S = 0.045
+MIN_ANCHOR_ONSETS = 3  # on-16ths needed before swing is measured relative to them
 
 _LOG_GAIN = 1000.0
 _NOVELTY_FLOOR = 0.02  # mean per-bin log increase; below this a band counts as silent
@@ -226,7 +233,13 @@ def grid_stats(times_s: np.ndarray, bpm: float, beat_offset_s: float) -> Dict:
         ss = (np.sum((on - on.mean()) ** 2) if on.size else 0.0) + \
              (np.sum((off - off.mean()) ** 2) if off.size else 0.0)
         spread = math.sqrt(ss / (on.size + off.size))
-    swing = 50.0 + float(np.mean(off)) / (2.0 * s16 * 1000.0) * 100.0 if off.size else None
+    eighth_ms = 2.0 * s16 * 1000.0
+    swing = swing_raw = None
+    if off.size:
+        swing_raw = 50.0 + float(np.mean(off)) / eighth_ms * 100.0
+        # Anchor the straight grid on this band's own on-16ths when there are enough of them.
+        anchor = float(np.mean(on)) if on.size >= MIN_ANCHOR_ONSETS else 0.0
+        swing = 50.0 + (float(np.mean(off)) - anchor) / eighth_ms * 100.0
     return {
         "onsets": int(np.size(times_s)),
         "on16_count": int(on.size),
@@ -236,6 +249,7 @@ def grid_stats(times_s: np.ndarray, bpm: float, beat_offset_s: float) -> Dict:
         "off16_mean_ms": num(mean(off), 2),
         "off16_std_ms": num(std(off), 2),
         "swing_percent": num(swing, 1),
+        "swing_percent_raw_grid": num(swing_raw, 1),
         "timing_spread_ms": num(spread, 2),
         "_beat_mean_ms": mean(beat),
     }

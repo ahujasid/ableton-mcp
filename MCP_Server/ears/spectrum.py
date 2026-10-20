@@ -9,8 +9,8 @@ Conventions
   are inherently loudness-matched.
 * ``tilt_db_per_oct`` is the slope of the **power spectral density** (energy
   per Hz) against octaves, fitted to the 63 Hz-8 kHz octave bands. White noise
-  is 0 dB/oct, pink noise -3 dB/oct, and a typical finished mix is somewhere
-  around -3.5 to -5 dB/oct. Negative means darker. This equals the slope of
+  is 0 dB/oct, pink noise -3 dB/oct, and commercial mixes often land around
+  -4 to -6 dB/oct. Negative means darker. This equals the slope of
   the ``octave_bands`` energy values minus 3.01 dB/oct, because each octave
   is twice as wide as the one below it.
 * ``centroid_hz`` is power-weighted, over 20 Hz-20 kHz.
@@ -23,11 +23,11 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from scipy import fft as sp_fft
 from scipy import signal
 
 from ._dsp import EPS, next_pow2, num, power_db
-from numpy.lib.stride_tricks import sliding_window_view
 
 BANDS: List[Tuple[str, float, float]] = [
     ("sub", 20.0, 60.0),
