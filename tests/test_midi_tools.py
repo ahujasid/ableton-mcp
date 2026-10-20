@@ -262,8 +262,8 @@ def test_review_articulation_shares():
 def test_review_flags_notes_outside_and_past_the_clip():
     r = mt.review_notes([N(36, 0), N(36, 4.5), N(40, 3.5, 1.0)], 4)
     flags = " | ".join(r["flags"])
-    assert "start outside the clip" in flags
-    assert "run past the clip end" in flags
+    assert "1 note starts outside the clip" in flags
+    assert "1 note runs past the clip end" in flags
     assert r["counts"]["outside_clip"] == 1
 
 

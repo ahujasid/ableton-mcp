@@ -498,7 +498,7 @@ def review_notes(notes: Sequence[Dict[str, Any]], clip_length: float,
                               "bpm": _r(bpm) if bpm else None, "counts": counts}
 
     if outside:
-        flags.append(f"{len(outside)} note{'s' if len(outside) != 1 else ''} start outside the "
+        flags.append(f"{len(outside)} note{'s start' if len(outside) != 1 else ' starts'} outside the "
                      f"clip (0–{L:g} beats) and won't play — move them inside or lengthen the clip")
     if muted:
         flags.append(f"{len(muted)} muted note{'s' if len(muted) != 1 else ''} ignored by this review")
@@ -716,10 +716,11 @@ def review_notes(notes: Sequence[Dict[str, Any]], clip_length: float,
                          f"(move upper notes to another part)")
         if overlapping:
             flags.append(f"bass notes longer than the gap to the next note (legato) — intended? "
-                         f"{len(overlapping)} overlap the next note, which triggers glide on a "
+                         f"{len(overlapping)} overlap{'s' if len(overlapping) == 1 else ''} the "
+                         f"next note, which triggers glide on a "
                          f"mono synth; shorten them if not")
     if past_end:
-        flags.append(f"{len(past_end)} note{'s' if len(past_end) != 1 else ''} run past the clip "
+        flags.append(f"{len(past_end)} note{'s run' if len(past_end) != 1 else ' runs'} past the clip "
                      f"end ({L:g} beats) and get cut at the loop point")
 
     result.update({
