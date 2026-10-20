@@ -144,13 +144,24 @@ class AbletonConnection:
             "set_track_mixer", "copy_clip", "fill_arrangement",
             "delete_arrangement_clips", "back_to_arrangement",
             "set_arrangement_loop",
+            # studio-upgrades 1.9
+            "add_device", "delete_device", "set_device_parameters", "set_sidechain",
+            "write_clip_automation", "clear_clip_automation", "set_groove",
+            "assign_groove", "set_groove_amount", "load_groove", "set_clip_properties",
+            "set_song_scale", "create_return_track", "delete_track", "duplicate_track",
+            "start_render", "cancel_render",
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
         # than the default modifying-command budget (e.g. importing/decoding a
         # large audio file). Give them a wider socket timeout so we don't time
         # out before the Remote Script's own queue does.
-        long_running_commands = {"create_audio_clip": 65.0}
+        long_running_commands = {
+            "create_audio_clip": 65.0,
+            # Live-side these get a 20 s main-thread budget
+            "write_clip_automation": 25.0, "add_device": 25.0, "load_groove": 25.0,
+            "start_render": 25.0, "duplicate_track": 25.0,
+        }
         
         try:
             logger.info(f"Sending command: {command_type} with params: {params}")
@@ -198,6 +209,35 @@ class AbletonConnection:
             self.sock = None
             raise Exception(f"Communication error with Ableton: {str(e)}")
 
+_SCRIPT_INSTALL_NOTE = ""
+
+
+def _auto_install_remote_script() -> None:
+    """Keep Live's copy of the Remote Script in step with this package.
+
+    Runs on every start (it is a no-op when the files already match). When it
+    changes the file, Live has to be restarted to load the new script; tools
+    say so until it is.
+    """
+    global _SCRIPT_INSTALL_NOTE
+    try:
+        from .remote_script_install import EXPECTED_REMOTE_SCRIPT_VERSION, install_remote_script
+
+        results = install_remote_script()
+        changed = [r for r in results if r.get("status") in ("installed", "updated")]
+        failed = [r for r in results if r.get("status") == "error"]
+        if changed:
+            _SCRIPT_INSTALL_NOTE = (
+                f"Remote Script {EXPECTED_REMOTE_SCRIPT_VERSION} was just installed to "
+                f"{changed[0]['path']}. Restart Ableton Live to load it."
+            )
+            logger.info(_SCRIPT_INSTALL_NOTE)
+        elif failed and not any(r.get("status") == "unchanged" for r in results):
+            logger.warning("Remote Script auto-install failed: %s", failed[0].get("detail"))
+    except Exception as e:
+        logger.warning(f"Remote Script auto-install skipped: {e}")
+
+
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
     """Manage server startup and shutdown lifecycle"""
@@ -209,6 +249,8 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
             record_startup()
         except Exception as e:
             logger.debug(f"Failed to record startup telemetry: {e}")
+
+        _auto_install_remote_script()
 
         script_info = None
         try:
@@ -453,6 +495,8 @@ def get_remote_script_info(ctx: Context, user_prompt: str = "") -> str:
         info = handshake(ableton.send_command)
         cached = dict(get_cached_script_info() or info)
         cached["expected_version"] = EXPECTED_REMOTE_SCRIPT_VERSION
+        if _SCRIPT_INSTALL_NOTE and not cached.get("up_to_date"):
+            cached["install_note"] = _SCRIPT_INSTALL_NOTE
         return json.dumps(cached, indent=2)
     except Exception as e:
         logger.error(f"Error getting remote script info: {str(e)}")
@@ -521,21 +565,24 @@ def get_device_parameters(
     ctx: Context,
     track_index: int,
     device_index: int,
+    track_type: str = "track",
     user_prompt: str = "",
 ) -> str:
     """
-    Read all parameters for a device on a track (name, value, min, max).
+    Read all parameters for a device (name, value, min, max, display string).
 
     Parameters:
-    - track_index: Track that owns the device
+    - track_index: Track that owns the device (or return index)
     - device_index: Index into the track's device chain
+    - track_type: "track" (default), "return" or "master"
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command(
             "get_device_parameters",
-            {"track_index": track_index, "device_index": device_index},
+            {"track_index": track_index, "device_index": device_index,
+             "track_type": track_type},
         )
         return json.dumps(result, indent=2)
     except Exception as e:
@@ -551,35 +598,42 @@ def set_device_parameter(
     track_index: int,
     device_index: int,
     parameter_index: int,
-    value: float,
+    value: Optional[float] = None,
+    display: Optional[str] = None,
+    track_type: str = "track",
     user_prompt: str = "",
 ) -> str:
     """
-    Set a device parameter to a specific value.
-
-    Use get_device_parameters first to discover parameter indices and ranges.
+    Set one device parameter. set_device_parameters (plural) sets several by
+    name in display units and is usually better.
 
     Parameters:
-    - track_index: Track that owns the device
+    - track_index: Track that owns the device (or return index)
     - device_index: Index into the track's device chain
     - parameter_index: Index into device.parameters
-    - value: New parameter value (Live parameter units)
+    - value: New raw value (the parameter's own min-max range)
+    - display: Or a display value like "1.2 kHz", "-6 dB", "35 %", "Lowpass"
+    - track_type: "track" (default), "return" or "master"
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        if value is None and display is None:
+            return "Give value or display."
         ableton = get_ableton_connection()
-        result = ableton.send_command(
-            "set_device_parameter",
-            {
-                "track_index": track_index,
-                "device_index": device_index,
-                "parameter_index": parameter_index,
-                "value": value,
-            },
-        )
+        params = {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameter_index": parameter_index,
+            "value": 0.0 if value is None else value,
+            "track_type": track_type,
+        }
+        if display is not None:
+            params["display"] = display
+        result = ableton.send_command("set_device_parameter", params)
         return (
             f"Set {result.get('name', 'parameter')} "
             f"{result.get('old_value')} → {result.get('value')}"
+            + (f" ({result['display']})" if result.get("display") else "")
         )
     except Exception as e:
         logger.error(f"Error setting device parameter: {str(e)}")
@@ -920,20 +974,24 @@ def set_tempo(ctx: Context, tempo: float, user_prompt: str = "") -> str:
 @mcp.tool()
 @rich_telemetry_tool("load_instrument_or_effect")
 @trajectory_tool("load_instrument_or_effect")
-def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, user_prompt: str = "") -> str:
+def load_instrument_or_effect(ctx: Context, track_index: int, uri: str,
+                              track_type: str = "track", user_prompt: str = "") -> str:
     """
-    Load an instrument or effect onto a track using its URI.
+    Load an instrument, effect or preset onto a track using its browser URI.
+    For native devices by name, add_device is simpler.
 
     Parameters:
-    - track_index: The index of the track to load the instrument on
+    - track_index: The index of the track (or return index when track_type="return")
     - uri: The URI of the instrument or effect to load (e.g., 'query:Synths#Instrument%20Rack:Bass:FileId_5116')
+    - track_type: "track" (default), "return" or "master"
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("load_browser_item", {
             "track_index": track_index,
-            "item_uri": uri
+            "item_uri": uri,
+            "track_type": track_type,
         })
         
         # Check if the instrument was loaded successfully
@@ -1393,6 +1451,8 @@ def _fork_command(capability, command, params):
         handshake(ableton.send_command)
         missing = require_capability(capability)
     if missing:
+        if _SCRIPT_INSTALL_NOTE:
+            missing += " " + _SCRIPT_INSTALL_NOTE
         return None, missing
     return ableton.send_command(command, params), None
 
@@ -1876,6 +1936,28 @@ def record_audition(
 
 
 # Main execution
+from .studio_tools import register as _register_studio_tools  # noqa: E402
+
+_register_studio_tools(mcp, rich_telemetry_tool)
+
+_DATASET_TOOLS = ("set_dataset_consent", "submit_intent", "rate_last_action",
+                  "prefer_candidate", "reject_last_action", "record_audition")
+
+
+def _prune_dataset_tools() -> None:
+    """studio-upgrades fork: dataset recording is off, so keep its tools out of
+    the model's tool list unless ABLETON_MCP_DATASET_TOOLS=1."""
+    if os.environ.get("ABLETON_MCP_DATASET_TOOLS", "").lower() in ("1", "true", "yes", "on"):
+        return
+    tools = getattr(getattr(mcp, "_tool_manager", None), "_tools", None)
+    if isinstance(tools, dict):
+        for name in _DATASET_TOOLS:
+            tools.pop(name, None)
+
+
+_prune_dataset_tools()
+
+
 def main():
     """Run the MCP server"""
     mcp.run()

@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.8.0+studio"
+SCRIPT_VERSION = "1.9.0+studio"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -65,6 +65,30 @@ SCRIPT_CAPABILITIES = [
     "delete_arrangement_clips",
     "back_to_arrangement",
     "set_arrangement_loop",
+    # studio-upgrades 1.9
+    "add_device",
+    "delete_device",
+    "set_device_parameters",
+    "set_sidechain",
+    "write_clip_automation",
+    "clear_clip_automation",
+    "get_clip_automation",
+    "get_groove_pool",
+    "set_groove",
+    "assign_groove",
+    "set_groove_amount",
+    "load_groove",
+    "set_clip_properties",
+    "get_song_scale",
+    "set_song_scale",
+    "create_return_track",
+    "delete_track",
+    "duplicate_track",
+    "get_mixer_overview",
+    "start_render",
+    "get_render_status",
+    "cancel_render",
+    "track_type_addressing",
 ]
 
 def create_instance(c_instance):
@@ -380,11 +404,13 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "load_instrument_or_effect":
                             track_index = params.get("track_index", 0)
                             uri = params.get("uri", "")
-                            result = self._load_instrument_or_effect(track_index, uri)
+                            result = self._load_browser_item(
+                                track_index, uri, params.get("track_type", "track"))
                         elif command_type == "load_browser_item":
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
-                            result = self._load_browser_item(track_index, item_uri)
+                            result = self._load_browser_item(
+                                track_index, item_uri, params.get("track_type", "track"))
                         # ── Arrangement view commands ──────────────────────────────
                         elif command_type == "switch_to_arrangement_view":
                             result = self._switch_to_arrangement_view()
@@ -533,7 +559,8 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_device_parameters":
                 track_index = params.get("track_index", 0)
                 device_index = params.get("device_index", 0)
-                response["result"] = self._get_device_parameters(track_index, device_index)
+                response["result"] = self._get_device_parameters(
+                    track_index, device_index, params.get("track_type", "track"))
             elif command_type == "get_session_snapshot":
                 include_notes = params.get("include_notes", True)
                 include_params = params.get("include_params", True)
@@ -553,6 +580,8 @@ class AbletonMCP(ControlSurface):
                             params.get("device_index", 0),
                             params.get("parameter_index", 0),
                             params.get("value", 0.0),
+                            params.get("track_type", "track"),
+                            params.get("display"),
                         )
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
@@ -575,6 +604,12 @@ class AbletonMCP(ControlSurface):
                 except queue.Empty:
                     response["status"] = "error"
                     response["message"] = "Timeout waiting for operation to complete"
+            elif command_type in self._STUDIO_MAIN_COMMANDS:
+                handler = getattr(self, self._STUDIO_MAIN_COMMANDS[command_type])
+                self._run_on_main_thread(handler, params, response, timeout=20.0)
+            elif command_type in self._STUDIO_READ_COMMANDS:
+                handler = getattr(self, self._STUDIO_READ_COMMANDS[command_type])
+                response["result"] = handler(params)
             else:
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
@@ -633,8 +668,19 @@ class AbletonMCP(ControlSurface):
                 "master_track": {
                     "name": "Master",
                     "volume": self._song.master_track.mixer_device.volume.value,
-                    "panning": self._song.master_track.mixer_device.panning.value
+                    "panning": self._song.master_track.mixer_device.panning.value,
+                    "devices": [d.name for d in self._song.master_track.devices],
                 },
+                "return_tracks": [
+                    {"index": i, "name": t.name, "devices": [d.name for d in t.devices]}
+                    for i, t in enumerate(self._song.return_tracks)
+                ],
+                "tracks": [
+                    {"index": i, "name": t.name,
+                     "type": "midi" if getattr(t, "has_midi_input", False) else "audio",
+                     "devices": [d.name for d in t.devices]}
+                    for i, t in enumerate(self._song.tracks)
+                ],
                 # Read via _safe_song_property so an attribute missing on a
                 # given Live version falls back to its default.
                 "is_playing":        self._safe_song_property("is_playing",        bool,  False),
@@ -1578,6 +1624,922 @@ class AbletonMCP(ControlSurface):
         return {"loop": bool(song.loop), "loop_start": song.loop_start,
                 "loop_length": song.loop_length}
 
+    # ── studio-upgrades 1.9: dispatch tables ─────────────────────────────────
+    #
+    # New commands register here instead of growing the if/elif chain above.
+    # MAIN: run on Live's main thread (anything that writes to the set).
+    # READ: run directly on the socket thread (pure reads / job status).
+
+    _STUDIO_MAIN_COMMANDS = {
+        "add_device": "_cmd_add_device",
+        "delete_device": "_cmd_delete_device",
+        "set_device_parameters": "_cmd_set_device_parameters",
+        "set_sidechain": "_cmd_set_sidechain",
+        "write_clip_automation": "_cmd_write_clip_automation",
+        "clear_clip_automation": "_cmd_clear_clip_automation",
+        "set_groove": "_cmd_set_groove",
+        "assign_groove": "_cmd_assign_groove",
+        "set_groove_amount": "_cmd_set_groove_amount",
+        "load_groove": "_cmd_load_groove",
+        "set_clip_properties": "_cmd_set_clip_properties",
+        "set_song_scale": "_cmd_set_song_scale",
+        "create_return_track": "_cmd_create_return_track",
+        "delete_track": "_cmd_delete_track",
+        "duplicate_track": "_cmd_duplicate_track",
+        "start_render": "_cmd_start_render",
+        "cancel_render": "_cmd_cancel_render",
+    }
+    _STUDIO_READ_COMMANDS = {
+        "get_clip_automation": "_cmd_get_clip_automation",
+        "get_groove_pool": "_cmd_get_groove_pool",
+        "get_song_scale": "_cmd_get_song_scale",
+        "get_render_status": "_cmd_get_render_status",
+        "get_mixer_overview": "_cmd_get_mixer_overview",
+    }
+
+    RENDER_TRACK_NAME = "MCP Render"
+
+    def _run_on_main_thread(self, fn, params, response, timeout=10.0):
+        response_queue = queue.Queue()
+
+        def task():
+            try:
+                response_queue.put({"status": "success", "result": fn(params)})
+            except Exception as e:
+                self.log_message("Error in main thread task: " + str(e))
+                self.log_message(traceback.format_exc())
+                response_queue.put({"status": "error", "message": str(e)})
+
+        try:
+            self.schedule_message(0, task)
+        except AssertionError:
+            task()
+        self._await_main_thread(response, response_queue, timeout)
+
+    # ── shared helpers ────────────────────────────────────────────────────────
+
+    def _track_from(self, params, key="track_index", type_key="track_type"):
+        return self._mixer_target(int(params.get(key, 0) or 0), params.get(type_key, "track"))
+
+    def _device_from(self, track, device_index):
+        devices = list(track.devices)
+        if device_index is None or int(device_index) < 0 or int(device_index) >= len(devices):
+            raise IndexError("Device index out of range (track has %d devices)" % len(devices))
+        return devices[int(device_index)]
+
+    @staticmethod
+    def _device_summary(track):
+        return [{"index": i, "name": d.name, "class_name": getattr(d, "class_name", "")}
+                for i, d in enumerate(track.devices)]
+
+    def _find_parameter(self, device, index=None, name=None):
+        params = list(device.parameters)
+        if name is not None:
+            wanted = str(name).strip().lower()
+            for p in params:
+                if p.name.strip().lower() == wanted:
+                    return p
+            for p in params:
+                if wanted in p.name.strip().lower():
+                    return p
+            raise Exception("Parameter '%s' not found on %s. Available: %s" % (
+                name, device.name, ", ".join(p.name for p in params[:40])))
+        if index is None or int(index) < 0 or int(index) >= len(params):
+            raise IndexError("Parameter index out of range")
+        return params[int(index)]
+
+    _UNIT_FACTORS = (
+        ("khz", 1000.0, "hz"), ("hz", 1.0, "hz"),
+        ("ms", 0.001, "s"), ("s", 1.0, "s"),
+        ("db", 1.0, "db"), ("%", 1.0, "%"),
+    )
+
+    @classmethod
+    def _parse_quantity(cls, text):
+        """Parse '1.20 kHz' -> (1200.0, 'hz'), '-6.0 dB' -> (-6.0, 'db'),
+        '350 ms' -> (0.35, 's'), '-inf dB' -> (-inf, 'db'). None if no number."""
+        import re
+        s = str(text).strip().lower().replace(",", ".")
+        if "inf" in s:
+            unit = "db" if "db" in s else ""
+            return (float("-inf") if "-" in s else float("inf")), unit
+        m = re.search(r"[-+]?\d*\.?\d+(?:e[-+]?\d+)?", s)
+        if not m:
+            return None
+        value = float(m.group(0))
+        rest = s[m.end():].strip()
+        for suffix, factor, unit in cls._UNIT_FACTORS:
+            if rest.startswith(suffix):
+                return value * factor, unit
+        if rest.startswith("k"):
+            return value * 1000.0, ""
+        return value, ""
+
+    def _value_for_display(self, param, display):
+        """Raw parameter value whose display text matches ``display``.
+
+        Quantised parameters match their value_items by name; continuous ones
+        are solved by bisection on str_for_value (monotonic for Live's
+        native parameters)."""
+        text = str(display).strip()
+        lowered = text.lower()
+        if getattr(param, "is_quantized", False):
+            items = [str(v) for v in getattr(param, "value_items", [])]
+            for i, item in enumerate(items):
+                if item.strip().lower() == lowered:
+                    return float(param.min) + i
+            if lowered in ("on", "true", "yes"):
+                return float(param.max)
+            if lowered in ("off", "false", "no"):
+                return float(param.min)
+            if items:
+                raise Exception("'%s' is not one of %s for %s" % (display, items, param.name))
+        target = self._parse_quantity(text)
+        if target is None:
+            raise Exception("Could not read a number from '%s'" % display)
+        tval, tunit = target
+        lo, hi = float(param.min), float(param.max)
+
+        def measure(v):
+            q = self._parse_quantity(param.str_for_value(v))
+            if q is None:
+                raise Exception("%s has non-numeric display values; pass a raw value" % param.name)
+            return q[0]
+
+        f_lo, f_hi = measure(lo), measure(hi)
+        increasing = f_hi >= f_lo
+        if (increasing and tval <= f_lo) or (not increasing and tval >= f_lo):
+            return lo
+        if (increasing and tval >= f_hi) or (not increasing and tval <= f_hi):
+            return hi
+        sign = 1.0 if increasing else -1.0
+        goal = sign * tval
+
+        def edge(strict):
+            # first raw value whose display reaches the goal (>=), or passes it (>)
+            a, b = float(param.min), float(param.max)
+            for _ in range(48):
+                mid = (a + b) / 2.0
+                m = sign * measure(mid)
+                if (m > goal) if strict else (m >= goal):
+                    b = mid
+                else:
+                    a = mid
+            return b
+
+        lower = edge(False)
+        upper = edge(True)
+        # Displays are rounded, so a range of raw values shows the target;
+        # aim for the middle of that plateau rather than its rounding edge.
+        if upper > lower and abs(measure((lower + upper) / 2.0) - tval) <= abs(measure(lower) - tval):
+            return (lower + upper) / 2.0
+        return lower
+
+    def _apply_param_value(self, param, value=None, display=None, normalized=None):
+        if display is not None:
+            raw = self._value_for_display(param, display)
+        elif normalized is not None:
+            raw = float(param.min) + float(normalized) * (float(param.max) - float(param.min))
+        elif value is not None:
+            raw = float(value)
+        else:
+            raise Exception("Give value, display or normalized for %s" % param.name)
+        raw = max(float(param.min), min(float(param.max), raw))
+        if getattr(param, "is_quantized", False):
+            raw = float(int(round(raw)))
+        param.value = raw
+        return {"name": param.name, "value": float(param.value),
+                "display": self._param_display(param)}
+
+    # ── devices ───────────────────────────────────────────────────────────────
+
+    def _browser_find_by_name(self, name, root_names=("audio_effects", "instruments",
+                                                      "midi_effects", "drums",
+                                                      "max_for_live"), max_depth=3):
+        app = self.application()
+        browser = app.browser
+        wanted = str(name).strip().lower()
+
+        def strip_ext(n):
+            n = n.strip().lower()
+            for ext in (".adv", ".adg", ".amxd", ".agr", ".alc", ".aupreset"):
+                if n.endswith(ext):
+                    return n[: -len(ext)]
+            return n
+
+        def walk(item, depth):
+            if depth > max_depth:
+                return None
+            for child in getattr(item, "children", []):
+                try:
+                    if strip_ext(child.name) == wanted and getattr(child, "is_loadable", True):
+                        return child
+                except Exception:
+                    continue
+            for child in getattr(item, "children", []):
+                if getattr(child, "is_folder", False) or getattr(child, "children", None):
+                    found = walk(child, depth + 1)
+                    if found is not None:
+                        return found
+            return None
+
+        for root_name in root_names:
+            root = getattr(browser, root_name, None)
+            if root is None:
+                continue
+            found = walk(root, 0)
+            if found is not None:
+                return found
+        return None
+
+    def _cmd_add_device(self, params):
+        """Add a native device by name ("EQ Eight", "Compressor", "Reverb")
+        to a track, return track or the master."""
+        track = self._track_from(params)
+        name = str(params.get("name", "")).strip()
+        if not name:
+            raise Exception("Device name required")
+        position = params.get("position")
+        before = len(track.devices)
+        method = None
+        notes = []
+        inserter = getattr(track, "insert_device", None)
+        if inserter is not None:
+            try:
+                index = before if position is None else int(position)
+                inserter(name, index)
+                method = "insert_device"
+            except Exception as e:
+                notes.append("insert_device failed (%s); used the browser" % e)
+        if method is None:
+            item = self._browser_find_by_name(name)
+            if item is None:
+                raise Exception("No device or preset named '%s' in the browser" % name)
+            self._song.view.selected_track = track
+            self.application().browser.load_item(item)
+            method = "browser"
+        return {"track_name": track.name, "method": method, "notes": notes,
+                "added": len(track.devices) - before,
+                "devices": self._device_summary(track)}
+
+    def _cmd_delete_device(self, params):
+        track = self._track_from(params)
+        index = int(params.get("device_index", -1))
+        device = self._device_from(track, index)
+        name = device.name
+        track.delete_device(index)
+        return {"track_name": track.name, "deleted": name,
+                "devices": self._device_summary(track)}
+
+    def _cmd_set_device_parameters(self, params):
+        """Set several parameters on one device, by name or index, using raw
+        values, normalised 0-1 values, or display text ("1.2 kHz", "-6 dB")."""
+        track = self._track_from(params)
+        device = self._device_from(track, params.get("device_index"))
+        changes = params.get("changes") or []
+        if isinstance(changes, dict):
+            changes = [dict({"name": k}, **(v if isinstance(v, dict) else {"value": v}))
+                       for k, v in changes.items()]
+        results = []
+        for change in changes:
+            param = self._find_parameter(device, index=change.get("index"),
+                                         name=change.get("name"))
+            results.append(self._apply_param_value(
+                param, value=change.get("value"), display=change.get("display"),
+                normalized=change.get("normalized")))
+        return {"track_name": track.name, "device_name": device.name, "set": results}
+
+    def _cmd_set_sidechain(self, params):
+        """Route a device's sidechain input (Compressor and other devices that
+        expose input routing) from another track and switch it on."""
+        track = self._track_from(params)
+        device = self._device_from(track, params.get("device_index"))
+        types = list(getattr(device, "available_input_routing_types", []) or [])
+        if not types:
+            raise Exception("%s doesn't expose sidechain routing to scripts. "
+                            "Use Live's Compressor, or route it by hand." % device.name)
+        source = params.get("source_track_name")
+        if source is None and params.get("source_track_index") is not None:
+            source = self._song.tracks[int(params["source_track_index"])].name
+        if not source:
+            raise Exception("source_track_index or source_track_name required")
+        wanted = str(source).strip().lower()
+        match = None
+        for t in types:
+            label = str(t.display_name).strip().lower()
+            if label == wanted or label.endswith("-" + wanted) or label.split("-", 1)[-1] == wanted:
+                match = t
+                break
+        if match is None:
+            for t in types:
+                if wanted in str(t.display_name).lower():
+                    match = t
+                    break
+        if match is None:
+            raise Exception("No sidechain source called '%s'. Options: %s" % (
+                source, [str(t.display_name) for t in types]))
+        device.input_routing_type = match
+        tap = str(params.get("tap", "post fx")).lower()
+        channels = list(getattr(device, "available_input_routing_channels", []) or [])
+        chosen_channel = None
+        for c in channels:
+            if tap.replace("_", " ") in str(c.display_name).lower():
+                device.input_routing_channel = c
+                chosen_channel = str(c.display_name)
+                break
+        enabled = None
+        if params.get("enable", True):
+            for p in device.parameters:
+                n = p.name.lower()
+                if n in ("s/c on", "sidechain", "sidechain on", "s/c"):
+                    p.value = p.max
+                    enabled = p.name
+                    break
+        return {"track_name": track.name, "device_name": device.name,
+                "source": str(match.display_name), "channel": chosen_channel,
+                "enabled_parameter": enabled}
+
+    # ── clip automation ───────────────────────────────────────────────────────
+
+    def _session_clip(self, params):
+        track = self._track_from(params)
+        if params.get("arrangement"):
+            clips = list(track.arrangement_clips)
+            ci = int(params.get("clip_index", 0))
+            if ci < 0 or ci >= len(clips):
+                raise IndexError("Arrangement clip index out of range")
+            return track, clips[ci]
+        slots = list(getattr(track, "clip_slots", []))
+        ci = int(params.get("clip_index", 0))
+        if ci < 0 or ci >= len(slots):
+            raise IndexError("Clip slot index out of range")
+        if not slots[ci].has_clip:
+            raise Exception("No clip in slot %d" % ci)
+        return track, slots[ci].clip
+
+    def _automation_target(self, track, target):
+        target = target or {}
+        mixer = target.get("mixer")
+        if mixer:
+            md = track.mixer_device
+            mixer = str(mixer).lower()
+            if mixer == "volume":
+                return md.volume
+            if mixer in ("pan", "panning"):
+                return md.panning
+            if mixer == "send":
+                sends = list(md.sends)
+                si = int(target.get("send_index", 0))
+                if si < 0 or si >= len(sends):
+                    raise IndexError("Send index out of range")
+                return sends[si]
+            if mixer in ("activator", "track_activator", "on"):
+                return md.track_activator
+            raise Exception("Unknown mixer target '%s'" % mixer)
+        device = self._device_from(track, target.get("device_index"))
+        return self._find_parameter(device, index=target.get("parameter_index"),
+                                    name=target.get("parameter_name"))
+
+    @staticmethod
+    def _curve(shape, f):
+        if shape == "ease_in":
+            return f * f
+        if shape == "ease_out":
+            return 1.0 - (1.0 - f) * (1.0 - f)
+        if shape in ("s_curve", "smooth"):
+            return f * f * (3.0 - 2.0 * f)
+        if shape == "exp":
+            import math
+            return (math.exp(3.0 * f) - 1.0) / (math.exp(3.0) - 1.0)
+        return f
+
+    def _cmd_write_clip_automation(self, params):
+        """Draw a clip envelope from breakpoints. Ramps are written as short
+        steps (``resolution`` beats) because insert_step is the only writer
+        the Live API offers; holds and quantised parameters use one step per
+        segment."""
+        track, clip = self._session_clip(params)
+        param = self._automation_target(track, params.get("target"))
+        points = params.get("points") or []
+        if not points:
+            raise Exception("At least one point is required")
+        curve = str(params.get("curve", "linear")).lower()
+        resolution = max(1.0 / 128.0, float(params.get("resolution", 0.0625)))
+        clip_end = float(getattr(clip, "loop_end", 0.0) or 0.0) if getattr(clip, "looping", True) else 0.0
+        clip_end = max(clip_end, float(getattr(clip, "length", 0.0) or 0.0))
+        resolved = []
+        for p in points:
+            t = max(0.0, float(p.get("time", 0.0)))
+            if "display" in p:
+                v = self._value_for_display(param, p["display"])
+            elif "normalized" in p:
+                v = float(param.min) + float(p["normalized"]) * (float(param.max) - float(param.min))
+            else:
+                v = float(p.get("value", param.value))
+            resolved.append((t, max(float(param.min), min(float(param.max), v))))
+        resolved.sort(key=lambda x: x[0])
+
+        envelope = clip.automation_envelope(param)
+        if envelope is not None and params.get("clear_existing", True):
+            clip.clear_envelope(param)
+            envelope = None
+        if envelope is None:
+            envelope = clip.create_automation_envelope(param)
+        if envelope is None:
+            raise Exception("Live refused to create an envelope here (arrangement clips "
+                            "can't take envelope writes; use a Session clip)")
+
+        quantized = bool(getattr(param, "is_quantized", False))
+        steps = []
+        if resolved[0][0] > 0:
+            steps.append((0.0, resolved[0][0], resolved[0][1]))
+        for (t0, v0), (t1, v1) in zip(resolved, resolved[1:]):
+            span = t1 - t0
+            if span <= 1e-9:
+                continue
+            if curve == "step" or quantized or v0 == v1:
+                steps.append((t0, span, v0))
+                continue
+            t = t0
+            while t < t1 - 1e-9:
+                length = min(resolution, t1 - t)
+                f = self._curve(curve, (t - t0) / span)
+                steps.append((t, length, v0 + (v1 - v0) * f))
+                t += length
+        last_t, last_v = resolved[-1]
+        tail = max(clip_end - last_t, resolution)
+        steps.append((last_t, tail, last_v))
+        if len(steps) > 4096:
+            raise Exception("Too many automation steps (%d); raise resolution" % len(steps))
+        for t, length, v in steps:
+            if quantized:
+                v = float(int(round(v)))
+            envelope.insert_step(t, length, v)
+        return {"track_name": track.name, "clip_name": clip.name,
+                "parameter": param.name, "points": len(resolved), "steps": len(steps),
+                "start": resolved[0][0], "end": last_t,
+                "first_display": param.str_for_value(resolved[0][1]),
+                "last_display": param.str_for_value(last_v)}
+
+    def _cmd_clear_clip_automation(self, params):
+        track, clip = self._session_clip(params)
+        target = params.get("target")
+        if target:
+            param = self._automation_target(track, target)
+            clip.clear_envelope(param)
+            return {"cleared": param.name, "clip_name": clip.name}
+        clip.clear_all_envelopes()
+        return {"cleared": "all", "clip_name": clip.name}
+
+    def _cmd_get_clip_automation(self, params):
+        track, clip = self._session_clip(params)
+        param = self._automation_target(track, params.get("target"))
+        envelope = clip.automation_envelope(param)
+        if envelope is None:
+            return {"parameter": param.name, "has_envelope": False}
+        length = float(getattr(clip, "length", 4.0) or 4.0)
+        resolution = max(length / 256.0, float(params.get("resolution", 0.25)))
+        samples = []
+        t = 0.0
+        while t < length - 1e-9:
+            v = float(envelope.value_at_time(t))
+            samples.append({"time": round(t, 4), "value": round(v, 5),
+                            "display": param.str_for_value(v)})
+            t += resolution
+        return {"parameter": param.name, "has_envelope": True,
+                "clip_name": clip.name, "samples": samples}
+
+    # ── groove pool ───────────────────────────────────────────────────────────
+
+    _GROOVE_BASES = ["1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32"]
+
+    def _grooves(self):
+        pool = getattr(self._song, "groove_pool", None)
+        if pool is None:
+            raise Exception("This Live version doesn't expose the groove pool (needs Live 11+)")
+        return list(pool.grooves)
+
+    def _groove_info(self, index, g):
+        base = int(getattr(g, "base", 0) or 0)
+        return {"index": index, "name": g.name,
+                "base": self._GROOVE_BASES[base] if 0 <= base < len(self._GROOVE_BASES) else base,
+                "timing": round(float(g.timing_amount), 3),
+                "random": round(float(g.random_amount), 3),
+                "velocity": round(float(g.velocity_amount), 3),
+                "quantize": round(float(g.quantization_amount), 3)}
+
+    def _cmd_get_groove_pool(self, params):
+        grooves = self._grooves()
+        return {"global_amount": float(getattr(self._song, "groove_amount", 1.0)),
+                "grooves": [self._groove_info(i, g) for i, g in enumerate(grooves)]}
+
+    def _cmd_set_groove(self, params):
+        grooves = self._grooves()
+        i = int(params.get("groove_index", 0))
+        if i < 0 or i >= len(grooves):
+            raise IndexError("Groove index out of range")
+        g = grooves[i]
+        for key, attr in (("timing", "timing_amount"), ("random", "random_amount"),
+                          ("velocity", "velocity_amount"), ("quantize", "quantization_amount")):
+            if params.get(key) is not None:
+                setattr(g, attr, float(params[key]))
+        if params.get("base") is not None:
+            base = params["base"]
+            g.base = self._GROOVE_BASES.index(base) if base in self._GROOVE_BASES else int(base)
+        return self._groove_info(i, g)
+
+    def _cmd_assign_groove(self, params):
+        track, clip = self._session_clip(params)
+        gi = params.get("groove_index")
+        if gi is None:
+            clip.groove = None
+            return {"clip_name": clip.name, "groove": None}
+        grooves = self._grooves()
+        gi = int(gi)
+        if gi < 0 or gi >= len(grooves):
+            raise IndexError("Groove index out of range")
+        clip.groove = grooves[gi]
+        return {"clip_name": clip.name, "groove": grooves[gi].name}
+
+    def _cmd_set_groove_amount(self, params):
+        amount = max(0.0, min(1.3, float(params.get("amount", 1.0))))
+        self._song.groove_amount = amount
+        return {"global_amount": float(self._song.groove_amount)}
+
+    def _cmd_load_groove(self, params):
+        """Find a groove (.agr) in the browser by name, e.g. "MPC 16 Swing-58",
+        add it to the pool and optionally apply it to a clip."""
+        name = str(params.get("name", "")).strip()
+        item = self._browser_find_by_name(
+            name, root_names=("grooves", "packs", "user_library", "current_project"),
+            max_depth=5)
+        if item is None:
+            raise Exception("Groove '%s' not found in the browser" % name)
+        before = [g.name for g in self._grooves()]
+        clip = None
+        if params.get("clip_index") is not None:
+            track, clip = self._session_clip(params)
+            slot = list(track.clip_slots)[int(params["clip_index"])]
+            self._song.view.selected_track = track
+            try:
+                self._song.view.highlighted_clip_slot = slot
+                self._song.view.detail_clip = clip
+            except Exception:
+                pass
+        self.application().browser.load_item(item)
+        grooves = self._grooves()
+        added = [i for i, g in enumerate(grooves) if g.name not in before]
+        target_index = added[-1] if added else next(
+            (i for i, g in enumerate(grooves) if g.name.lower().startswith(name.lower())), None)
+        applied = None
+        if clip is not None and target_index is not None:
+            if getattr(clip, "groove", None) is None or clip.groove.name != grooves[target_index].name:
+                clip.groove = grooves[target_index]
+            applied = clip.groove.name if clip.groove is not None else None
+        return {"loaded": item.name, "groove_index": target_index, "applied_to_clip": applied,
+                "pool": [g.name for g in grooves]}
+
+    # ── clip properties, scale, tracks ────────────────────────────────────────
+
+    _WARP_MODES = {"beats": 0, "tones": 1, "texture": 2, "re-pitch": 3, "repitch": 3,
+                   "complex": 4, "rex": 5, "complex pro": 6, "complex_pro": 6}
+
+    def _cmd_set_clip_properties(self, params):
+        track, clip = self._session_clip(params)
+        changed = {}
+        props = params.get("properties") or {}
+        is_audio = bool(getattr(clip, "is_audio_clip", False))
+        for key in ("pitch_coarse", "pitch_fine", "gain", "warping", "warp_mode",
+                    "looping", "loop_start", "loop_end", "start_marker", "end_marker",
+                    "muted", "name", "velocity_amount"):
+            if key not in props or props[key] is None:
+                continue
+            value = props[key]
+            if key in ("pitch_coarse", "pitch_fine", "gain", "warping", "warp_mode") and not is_audio:
+                raise Exception("%s only applies to audio clips; use transform_clip_notes "
+                                "to transpose MIDI" % key)
+            if key == "warp_mode" and isinstance(value, str):
+                value = self._WARP_MODES[value.strip().lower()]
+            if key in ("pitch_coarse", "pitch_fine", "warp_mode"):
+                value = int(value)
+            elif key in ("warping", "looping", "muted"):
+                value = bool(value)
+            elif key != "name":
+                value = float(value)
+            setattr(clip, key, value)
+            changed[key] = getattr(clip, key)
+        return {"clip_name": clip.name, "changed": changed,
+                "gain_display": getattr(clip, "gain_display_string", None) if is_audio else None}
+
+    def _cmd_get_song_scale(self, params):
+        song = self._song
+        names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        root = getattr(song, "root_note", None)
+        return {"root_note": root,
+                "root_name": names[int(root) % 12] if root is not None else None,
+                "scale_name": getattr(song, "scale_name", None),
+                "scale_mode": getattr(song, "scale_mode", None),
+                "scale_intervals": list(getattr(song, "scale_intervals", []) or [])}
+
+    def _cmd_set_song_scale(self, params):
+        song = self._song
+        if not hasattr(song, "scale_name"):
+            raise Exception("Song scale needs Live 12")
+        names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        root = params.get("root_note")
+        if root is not None:
+            if isinstance(root, str):
+                root = names.index(root.strip().upper().replace("DB", "C#").replace("EB", "D#")
+                                   .replace("GB", "F#").replace("AB", "G#").replace("BB", "A#"))
+            song.root_note = int(root) % 12
+        if params.get("scale_name"):
+            song.scale_name = str(params["scale_name"])
+        if params.get("scale_mode") is not None:
+            song.scale_mode = bool(params["scale_mode"])
+        return self._cmd_get_song_scale(params)
+
+    def _cmd_create_return_track(self, params):
+        self._song.create_return_track()
+        returns = list(self._song.return_tracks)
+        track = returns[-1]
+        if params.get("name"):
+            track.name = str(params["name"])
+        return {"return_index": len(returns) - 1, "name": track.name}
+
+    def _cmd_delete_track(self, params):
+        track_type = params.get("track_type", "track")
+        index = int(params.get("track_index", -1))
+        track = self._mixer_target(index, track_type)
+        name = track.name
+        if track_type == "return":
+            self._song.delete_return_track(index)
+        elif track_type == "track":
+            self._song.delete_track(index)
+        else:
+            raise Exception("The master track can't be deleted")
+        return {"deleted": name, "track_type": track_type}
+
+    def _cmd_duplicate_track(self, params):
+        index = int(params.get("track_index", -1))
+        track = self._mixer_target(index, "track")
+        self._song.duplicate_track(index)
+        copy = self._song.tracks[index + 1]
+        if params.get("name"):
+            copy.name = str(params["name"])
+        return {"source": track.name, "new_index": index + 1, "name": copy.name}
+
+    def _cmd_get_mixer_overview(self, params):
+        """Every track, return and the master: devices plus fader, pan,
+        sends, mute, solo, in dB where Live shows dB."""
+        def row(track, kind, index):
+            md = track.mixer_device
+            entry = {"kind": kind, "index": index, "name": track.name,
+                     "volume": self._param_display(md.volume),
+                     "pan": self._param_display(md.panning),
+                     "devices": [d.name for d in track.devices]}
+            if kind != "master":
+                entry["mute"] = bool(track.mute)
+                entry["solo"] = bool(track.solo)
+                entry["sends"] = [self._param_display(s) for s in md.sends]
+            return entry
+        rows = [row(t, "track", i) for i, t in enumerate(self._song.tracks)]
+        rows += [row(t, "return", i) for i, t in enumerate(self._song.return_tracks)]
+        rows.append(row(self._song.master_track, "master", 0))
+        return {"tracks": rows}
+
+    # ── rendering by resampling ───────────────────────────────────────────────
+    #
+    # Live has no offline export in its API. A render is a real-time
+    # arrangement recording of the Resampling input onto a muted helper audio
+    # track, driven by a tick loop so the socket thread never blocks. The
+    # state the user had (loop, metronome, punch, arms, solos, playhead) is
+    # restored afterwards.
+
+    _render_job = None
+
+    def _render_track(self):
+        for track in self._song.tracks:
+            if track.name == self.RENDER_TRACK_NAME and getattr(track, "has_audio_input", False):
+                return track
+        self._song.create_audio_track(-1)
+        track = self._song.tracks[-1]
+        track.name = self.RENDER_TRACK_NAME
+        return track
+
+    def _cmd_start_render(self, params):
+        job = self._render_job
+        if job and job.get("state") in ("recording", "finalizing"):
+            raise Exception("A render is already running (job %s)" % job["id"])
+        song = self._song
+        start = float(params.get("start_beat", 0.0))
+        end = float(params.get("end_beat", start + 16.0))
+        if end <= start:
+            raise ValueError("end_beat must be after start_beat")
+        preroll = max(0.0, float(params.get("preroll_beats", 4.0)))
+        record_from = max(0.0, start - preroll)
+        if song.is_playing:
+            song.stop_playing()
+
+        render = self._render_track()
+        tracks = list(song.tracks)
+        tempo = float(song.tempo)
+        job = {
+            "id": "r%d" % int(time.time() * 1000),
+            "state": "recording",
+            "start_beat": start, "end_beat": end, "record_from": record_from,
+            "tempo": tempo,
+            "expected_seconds": round((end - record_from) * 60.0 / tempo, 2),
+            "ticks": 0, "final_ticks": 0,
+            "file_path": None, "error": None,
+            "solo_tracks": list(params.get("solo_tracks") or []),
+            "_render": render,
+        }
+        job["max_ticks"] = int(job["expected_seconds"] * 10) + 150
+        saved = {
+            "loop": song.loop,
+            "metronome": getattr(song, "metronome", False),
+            "punch_in": getattr(song, "punch_in", False),
+            "punch_out": getattr(song, "punch_out", False),
+            "record_mode": song.record_mode,
+            "song_time": song.current_song_time,
+            "arms": [(t, t.arm) for t in tracks if getattr(t, "can_be_armed", False)],
+            "solos": [(t, t.solo) for t in tracks],
+        }
+        job["_saved"] = saved
+        try:
+            self._render_configure(job, params, render, tracks, saved)
+        except Exception:
+            self._render_restore(job)
+            raise
+        self._render_job = job
+        self.schedule_message(1, self._render_tick)
+        return self._public_job(job)
+
+    def _render_configure(self, job, params, render, tracks, saved):
+        song = self._song
+        record_from, end = job["record_from"], job["end_beat"]
+        for t, armed in saved["arms"]:
+            if armed and not self._same(t, render):
+                t.arm = False
+        routed = None
+        for rt in getattr(render, "available_input_routing_types", []):
+            if "resampl" in str(rt.display_name).lower():
+                render.input_routing_type = rt
+                routed = str(rt.display_name)
+                break
+        if routed is None:
+            raise Exception("Couldn't route the render track to Resampling")
+        try:
+            render.current_monitoring_state = 2  # Off: no feedback loop
+        except Exception:
+            pass
+        render.mute = True
+        for clip in list(getattr(render, "arrangement_clips", [])):
+            if clip.end_time > record_from and clip.start_time < end + 1.0:
+                try:
+                    render.delete_clip(clip)
+                except Exception:
+                    pass
+
+        solo = params.get("solo_tracks") or []
+        if solo:
+            for t in tracks:
+                if not self._same(t, render):
+                    t.solo = False
+            for i in solo:
+                tracks[int(i)].solo = True
+
+        song.loop = False
+        if hasattr(song, "metronome"):
+            song.metronome = False
+        for attr in ("punch_in", "punch_out"):
+            if hasattr(song, attr):
+                setattr(song, attr, False)
+        if params.get("follow_arrangement", True):
+            song.back_to_arranger = False
+        render.arm = True
+        song.current_song_time = record_from
+        song.record_mode = True
+        song.start_playing()
+
+    @staticmethod
+    def _same(a, b):
+        """Live hands out fresh Python proxies, so compare LOM objects by
+        their underlying pointer rather than identity."""
+        if a is b:
+            return True
+        pa, pb = getattr(a, "_live_ptr", None), getattr(b, "_live_ptr", None)
+        if pa is not None and pb is not None:
+            return pa == pb
+        try:
+            return a == b
+        except Exception:
+            return False
+
+    @staticmethod
+    def _public_job(job):
+        return {k: v for k, v in job.items() if not k.startswith("_")}
+
+    def _render_restore(self, job):
+        song = self._song
+        saved = job.get("_saved") or {}
+        render = job.get("_render")
+        try:
+            song.record_mode = False
+            if song.is_playing:
+                song.stop_playing()
+        except Exception:
+            pass
+        if render is not None:
+            try:
+                render.arm = False
+            except Exception:
+                pass
+        for t, armed in saved.get("arms", []):
+            try:
+                if not self._same(t, render):
+                    t.arm = armed
+            except Exception:
+                pass
+        for t, soloed in saved.get("solos", []):
+            try:
+                t.solo = soloed
+            except Exception:
+                pass
+        for attr in ("loop", "metronome", "punch_in", "punch_out"):
+            if attr in saved and hasattr(song, attr):
+                try:
+                    setattr(song, attr, saved[attr])
+                except Exception:
+                    pass
+        try:
+            song.current_song_time = saved.get("song_time", 0.0)
+        except Exception:
+            pass
+
+    def _render_tick(self):
+        job = self._render_job
+        if not job or job.get("state") not in ("recording", "finalizing"):
+            return
+        song = self._song
+        try:
+            job["ticks"] += 1
+            if job["state"] == "recording":
+                counting = bool(getattr(song, "is_counting_in", False))
+                if song.current_song_time >= job["end_beat"]:
+                    song.record_mode = False
+                    song.stop_playing()
+                    job["state"] = "finalizing"
+                elif not song.is_playing and not counting and job["ticks"] > 10:
+                    raise Exception("Playback stopped before the render finished")
+                elif job["ticks"] > job["max_ticks"]:
+                    raise Exception("Render timed out")
+                self.schedule_message(1, self._render_tick)
+                return
+            job["final_ticks"] += 1
+            render = job["_render"]
+            candidates = [c for c in getattr(render, "arrangement_clips", [])
+                          if c.start_time >= job["record_from"] - 0.05]
+            clip = max(candidates, key=lambda c: c.start_time) if candidates else None
+            path = getattr(clip, "file_path", None) if clip is not None else None
+            if path and job["final_ticks"] >= 3:
+                job["file_path"] = str(path)
+                job["clip_start_beat"] = float(clip.start_time)
+                beat_s = 60.0 / job["tempo"]
+                job["window_offset_s"] = round((job["start_beat"] - clip.start_time) * beat_s, 4)
+                job["window_seconds"] = round((job["end_beat"] - job["start_beat"]) * beat_s, 4)
+                job["state"] = "done"
+                self._render_restore(job)
+                return
+            if job["final_ticks"] > 50:
+                raise Exception("Recording finished but no audio clip appeared on '%s'"
+                                % self.RENDER_TRACK_NAME)
+            self.schedule_message(1, self._render_tick)
+        except Exception as e:
+            job["state"] = "error"
+            job["error"] = str(e)
+            self.log_message("Render error: " + str(e))
+            self._render_restore(job)
+
+    def _cmd_get_render_status(self, params):
+        job = self._render_job
+        if not job:
+            return {"state": "idle"}
+        if params.get("job_id") and params["job_id"] != job["id"]:
+            return {"state": "unknown", "message": "Only the latest render is tracked",
+                    "latest": job["id"]}
+        return self._public_job(job)
+
+    def _cmd_cancel_render(self, params):
+        job = self._render_job
+        if not job or job.get("state") not in ("recording", "finalizing"):
+            return {"state": "idle"}
+        job["state"] = "error"
+        job["error"] = "cancelled"
+        self._render_restore(job)
+        return self._public_job(job)
+
+
     # ── Browser implementations ───────────────────────────────────────────────
 
     def _get_browser_item(self, uri, path):
@@ -1678,13 +2640,10 @@ class AbletonMCP(ControlSurface):
         """
         return self._load_browser_item(track_index, uri)
 
-    def _load_browser_item(self, track_index, item_uri):
-        """Load a browser item onto a track by its URI"""
+    def _load_browser_item(self, track_index, item_uri, track_type="track"):
+        """Load a browser item onto a track, return track or the master by URI"""
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            
-            track = self._song.tracks[track_index]
+            track = self._mixer_target(track_index, track_type)
             
             # Access the application's browser instance instead of creating a new one
             app = self.application()
@@ -2586,11 +3545,9 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting clip notes: " + str(e))
             raise
 
-    def _get_device_parameters(self, track_index, device_index):
+    def _get_device_parameters(self, track_index, device_index, track_type="track"):
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
+            track = self._mixer_target(track_index, track_type)
             if device_index < 0 or device_index >= len(track.devices):
                 raise IndexError("Device index out of range")
             device = track.devices[device_index]
@@ -2678,11 +3635,10 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting session snapshot: " + str(e))
             raise
 
-    def _set_device_parameter(self, track_index, device_index, parameter_index, value):
+    def _set_device_parameter(self, track_index, device_index, parameter_index, value,
+                              track_type="track", display=None):
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
+            track = self._mixer_target(track_index, track_type)
             if device_index < 0 or device_index >= len(track.devices):
                 raise IndexError("Device index out of range")
             device = track.devices[device_index]
@@ -2690,7 +3646,10 @@ class AbletonMCP(ControlSurface):
                 raise IndexError("Parameter index out of range")
             param = device.parameters[parameter_index]
             old = float(param.value)
-            param.value = float(value)
+            if display is not None:
+                param.value = self._value_for_display(param, display)
+            else:
+                param.value = max(float(param.min), min(float(param.max), float(value)))
             return {
                 "track_index": track_index,
                 "device_index": device_index,
@@ -2700,6 +3659,7 @@ class AbletonMCP(ControlSurface):
                 "value": float(param.value),
                 "min": float(param.min),
                 "max": float(param.max),
+                "display": self._param_display(param),
             }
         except Exception as e:
             self.log_message("Error setting device parameter: " + str(e))
