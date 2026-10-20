@@ -85,6 +85,8 @@ Two rules matter more than the table:
 This is a rule of thumb, and sources differ by a few semitones. Short version: no 2nds below E2, no 3rds or 4ths below A♯1, only 5ths and octaves below about D♯1, octaves only below A♯0. `review_clip` checks the table automatically.
 
 **Progressions and moves:**
+- Loop vamps: i9–iv9 (Am9–Dm9); i9–♭VII–♭VImaj7–v7 (Am9–G–Fmaj7–Em7); Dorian i7–IV7 (Am7–D7).
+- Turnarounds: I–vi–ii–V (Cmaj7–Am7–Dm7–G7); descending Fmaj7–Em7–Dm7–Cmaj7.
 - ii–V–I (Dm9–G13–Cmaj9); minor ii–V–i (Bm7♭5–E7♭9–Am9).
 - Tritone substitution (D♭7 for G7).
 - Backdoor (Fm7–B♭7–C).
@@ -101,9 +103,22 @@ This is a rule of thumb, and sources differ by a few semitones. Short version: n
 - Rhythm first: a hook is mostly a rhythm plus one memorable interval.
 - Chord tones on strong beats; tensions held as colour; passing notes on weak 16ths.
 - Develop 1–2-bar motifs: sequence, invert, displace, augment.
+- Phrase forms: AAAB or AABA; call and response between instruments.
 - Give each section its own register or contour.
 
 ## 3. Rhythm and groove
+
+**Four-on-the-floor grid** (beats in one bar): kick 0, 1, 2, 3; clap or snare 1, 3; open hat 0.5, 1.5, 2.5, 3.5; closed hats or shaker on 16ths with an accent map; ghost notes quiet.
+
+**Kick and bass** is the most important relationship in dance music: they either avoid each other (off-beat bass) or share hits (bass ducked by the kick). Decide it on purpose.
+
+**Bass archetypes:**
+- Octave bass: 8ths alternating the low root and the octave above. Driving.
+- Off-beat: hits on 0.5, 1.5, 2.5, 3.5, between kicks. Clean low end.
+- Syncopated funk: e.g. 0, 0.75, 1.5, 2, 2.75, 3.5 with dead notes (grammar below).
+- Tresillo: 0, 0.75, 1.5 per half bar, or 0, 1.5, 3 across a bar in 8ths.
+- Rolling 16ths with accents. Driving.
+- Walking quarter notes through chord tones and chromatic approaches. Jazz.
 
 **Microtiming.** Studies of expert players (e.g. Kilchenmann & Senn's drum-and-bass recordings) suggest their timing deviations are consistent and style-specific rather than noise. In listening tests, perfectly quantised parts groove about as well as competent performances, while exaggerated timing grooves worst. In Senn et al. 2016 they were rated equal; in Datseris et al. 2019, listeners (mostly jazz musicians) rated quantised versions slightly more swinging than the originals.
 - Choose a profile per role and keep it consistent: kick on the grid, backbeat a little late for laid-back, hats pushed for urgency, bass locked or slightly behind.
@@ -129,17 +144,26 @@ This is a rule of thumb, and sources differ by a few semitones. Short version: n
 The same logic applies to percussion layers.
 
 **Patterns worth knowing:**
-- Tresillo (3-3-2: 0, 0.75, 1.5).
 - Son clave 3-2 (16ths 0, 3, 6, 10, 12).
 - Dotted-8th cross-rhythm (every 0.75 beat; realigns every 3 beats).
 - Polymeter clips whose lengths don't divide the bar.
 
 ## 4. Sound, register and frequency
 
-- **Bands:** sub 30–60 Hz, bass 60–250, mud 250–500, body 500–2k, presence 2–5k, air 8k+. Use them to name problems, not as recipes.
+| Band | What lives there | Watch for |
+|---|---|---|
+| 30–60 Hz | Sub, kick fundamental | Mono; one owner at a time |
+| 60–250 Hz | Bass body, kick punch | Kick–bass masking |
+| 250–500 Hz | Warmth, or mud | Chord pile-ups, pads |
+| 500 Hz–2 kHz | Body of keys, guitars, vocals | Boxiness |
+| 2–5 kHz | Attack, presence | Harshness, lead vs vocal |
+| 8 kHz+ | Air, hats | Hiss, sibilance |
+
+Use the bands to name problems, not as recipes.
+
 - **Register lanes:** one owner per lane at a time. In Live naming: bass E0–C2, chords C2–C4, lead C3–C5.
 - **Kick:** tune it to the key.
-- **Bass that translates:** a clean sub plus a saturated mid layer.
+- **Bass that translates:** a clean sine or triangle sub plus a saturated mid layer, so it reads on phone speakers.
 - **The crossover region (≈80–120 Hz)**, where club subs and tops hand over, is where kick and bass are won or lost. Check it soloed and in context (a stem render of kick + bass).
 - **Every part should stand on its own when soloed.** Kerri Chandler has said he hears music "in pieces", breaking each channel down in his head (DJ Mag). A part that only works buried is filler.
 - **Movement:** a static sound is the most common amateur tell. Use filter envelopes and automation, LFOs, sends that open in breakdowns, and velocity mapped to brightness.
@@ -171,6 +195,7 @@ The same logic applies to percussion layers.
 
 | Element | Level vs kick |
 |---|---|
+| Kick | 0 dB (start its fader around −6 dB) |
 | Bass | −1 to −3 dB |
 | Clap/snare | −3 to −5 |
 | Lead | −4 to −8 |
@@ -181,10 +206,10 @@ The same logic applies to percussion layers.
 
 - **EQ:** high-pass what isn't kick or bass; cut mud on chord parts; cut before you boost.
 - **Sidechain:** duck bass and pads with the kick. The depth is part of the style.
-- **Bus glue:** about 2:1, slow attack, 1–3 dB of gain reduction.
+- **Bus glue:** Glue Compressor on drums or the mix at about 2:1, 10–30 ms attack, auto release, 1–3 dB of gain reduction.
 - **Returns:** a short room for drums, a longer space for pads; high-pass them around 200–300 Hz; use pre-delay to keep the source clear.
 - **Width:** low end mono, mids moderate, hats, percussion and FX wide. Narrow-to-wide contrast between sections is a tool.
-- **Saturation:** helps bass and kick read on small speakers.
+- **Saturation:** helps bass and kick read on small speakers. In Live: Saturator, Roar, Drum Buss.
 
 **Headroom and masters:**
 - Leave the master peaking around −6 to −3 dBFS if a mastering stage follows. That's a handoff convention, not a technical limit.
@@ -199,7 +224,20 @@ The same logic applies to percussion layers.
 
 The numbers point; the ears decide.
 
-## 7. Done checklist
+## 7. Genre quick reference
+
+Typical, not prescriptive. A matching `genre-*` skill overrides this table; write one when a genre becomes a real project.
+
+| Genre | BPM | Groove | Harmony | Signature sounds |
+|---|---|---|---|---|
+| Disco / nu-disco | 110–125 | Mostly straight, open hats on off-beats | maj7/min7 vamps, Dorian, ii–V | Octave or syncopated bass, strings, Rhodes, clav (see `genre-disco-house`) |
+| Deep / jazz house | 118–124 | Swing 54–58 %, shakers, ghost notes | min9/min11 stabs, ii–V | Rhodes, organ, warm sub |
+| Organic / Afro house | 110–122 | Percussion polyrhythm, rolling | Phrygian, Hijaz, Dorian; pedals | Flutes, plucked lutes, evolving pads (see `colour-maqam-fusion`) |
+| UK garage / 2-step | 130–136 | Broken 2-step kick, swing 60 %+ | min7/min9, chopped vocal hooks | Organ or sub bass, pitched vocal chops |
+| Techno | 125–140 | Driving percussion motifs | Minimal, one-note riffs | Rumble kick, timbral automation |
+| Lo-fi / neo-soul | 70–90 | Laid-back snare, heavy swing | maj7♯11, min9, dom13 | Dusty keys, tape texture |
+
+## 8. Done checklist
 
 - The rhythm-section loop grooves on its own, the kick–bass relationship is decided, and the kick is tuned.
 - Microtiming is systematic per role; velocities have accent maps; no part is flat unless that's the point.

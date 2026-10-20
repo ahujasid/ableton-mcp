@@ -25,11 +25,12 @@ Run `review_clip` on each part and listen through the brief. Flag:
 
 **Timing and velocity.**
 - Every part shares the same timing and velocity profile: same offsets, same accents.
-- Velocity standard deviation under ~6 in any non-pad part.
+- Velocity standard deviation under ~6 in any non-pad part; uniform note lengths.
+- A textbook kick-clap-hat pattern with nothing else; fills only ever at the 8-bar mark.
 - Being on the grid is not a problem by itself; uniformity across roles is.
 
 **Harmony.**
-- The genre's most common progression, unaltered.
+- The genre's most common progression, unaltered (I–V–vi–IV, i–♭VI–♭III–♭VII and friends).
 - Root-position triads.
 - Every phrase resolving to the tonic on beat 1.
 - No borrowed or chromatic chord anywhere.
@@ -45,6 +46,7 @@ Run `review_clip` on each part and listen through the brief. Flag:
 **Structure.**
 - Every section 8 or 16 bars, with every element playing all the time.
 - **The same transition device into every section** (one riser is fine; a riser every time is the cliché).
+- The drop at the obvious bar.
 
 **Mix.** Everything equally loud and equally wide.
 
@@ -53,14 +55,15 @@ Run `review_clip` on each part and listen through the brief. Flag:
 1. **Anchor, then bend.** Keep most of the genre's anchors (tempo, kick pattern, key centre, core palette) while one thing moves. The stranger the move, the more familiar its surroundings need to be.
 2. **One per section.** At most one structural curveball plus one local detail per section.
 3. **Say it twice.** A surprise heard once sounds like a mistake; heard again, it sounds intended. Repeat or call back every curveball.
-4. **Deny, then pay off.** Huron's ITPRA model (*Sweet Anticipation*) offers an account of why a delayed or denied resolution can be pleasurable: the prediction error is reappraised as safe. The payoff has to arrive eventually.
-5. **Don't over-syncopate.** Witek et al. (2014) found pleasure peaks at medium syncopation, though later evidence is mixed. Displace one layer, not all of them.
-6. **Every card has three parts:**
+4. **Serve the brief.** Pick moves that push the track's one-sentence feel further, not ones that change the subject.
+5. **Deny, then pay off.** Huron's ITPRA model (*Sweet Anticipation*) offers an account of why a delayed or denied resolution can be pleasurable: the prediction error is reappraised as safe. The payoff has to arrive eventually.
+6. **Don't over-syncopate.** Witek et al. (2014) found pleasure peaks at medium syncopation, though later evidence is mixed. Displace one layer, not all of them.
+7. **Every card has three parts:**
    - **where**: bars or section;
    - **how much**: a number;
    - **undo**: a variant slot or a render label.
-7. **Offer, don't impose.** Give 2–3 options, each with its effect and its risk. Let the user choose, and remember the verdicts.
-8. **Use a different layer from last time.**
+8. **Offer, don't impose.** Give 2–3 options, each with its effect and its risk. Let the user choose, and remember the verdicts.
+9. **Use a different layer from last time.**
 
 ## 3. The deck
 
@@ -98,6 +101,7 @@ A minor, 4/4, beats from the start of the bar, Live note names. Cards marked *(s
 - **Displacement.** Shift one part a 16th or 8th early for one section. Same notes, new feel.
 - **Odd bar.** One 6/4 or 2/4 bar before a drop: shift later clips by 2 beats and track the offset.
 - **Hard stop.** A beat or a bar of total silence before a section.
+- **Aksak interlude.** A short section in 9/8 grouped 2+2+2+3 (a 4.5-beat clip), from Turkish and Balkan music.
 - **Dotted-8th motif.** A figure every 0.75 beat (3 against 4).
 - *(stock)* **Half-time switch:** clap on 3 only.
 - *(stock)* **Kickless peak.**
@@ -106,13 +110,14 @@ A minor, 4/4, beats from the start of the bar, Live note names. Cards marked *(s
 - **Leap language.** Build the hook on 6ths and 7ths.
 - **Displaced cell.** A 3-note cell restarting every three 16ths.
 - **Tonic avoidance.** Circle the root without landing on it until the very end.
-- **Modal argument.** Call and response in different modes.
+- **Modal argument.** Call and response in different modes, e.g. the call in Dorian and the answer in Phrygian.
 - **Augmented callback.** The intro motif returns in the outro at double length or inverted.
 
 ### Sound
 - **Role swap.** A familiar role on an unexpected instrument: a breathy flute patch playing the bassline an octave up, chords on a mallet patch, hats made from filtered noise.
 - **Lo-fi intrusion.** One section through Redux, Erosion or Vinyl Distortion, then clean again.
 - **Dry/wet flip.** A dry, narrow section against a wide, wet one, in either order.
+- **Resample abuse** (the user does this by hand): bounce a part, reverse or pitch it, and use it as a riser or texture.
 - **Self-sampling.** The user runs stem separation (Live 12.3+) on *our own* render and resamples the drum stem as a texture. It's on-brief by construction.
 - **Found sound.** Build a rhythm part from foley.
 

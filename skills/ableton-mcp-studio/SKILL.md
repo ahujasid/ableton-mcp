@@ -33,18 +33,20 @@ Use alongside:
    - `get_session_info` lists tracks, returns and the master with their devices.
    - `get_mixer_overview` gives levels, pans and sends in dB.
    - Indices shift when tracks are added or deleted, and the user edits by hand, so re-read before editing.
-4. Telemetry and dataset recording are off in this fork. Leave them off.
+4. Telemetry and dataset recording are off in this fork, and the dataset tools are hidden. Leave them off. If they ever reappear, only call `set_dataset_consent` after the user has answered in their own words.
 
 ## 1. Units and conventions
 
 | Thing | Convention |
 |---|---|
 | Pitch | MIDI 60 = C3 in Live's naming (36 = C1, 48 = C2, 72 = C4). Use Live's names with the user. |
-| Time | Beats. In 4/4, bar n starts at beat (n − 1) × 4: bar 17 = 64, bar 33 = 128, bar 65 = 256. |
+| Time | Beats. In 4/4, bar n starts at beat (n − 1) × 4: bar 9 = 32, bar 17 = 64, bar 33 = 128, bar 65 = 256. |
+| Notes | `{pitch, start_time, duration, velocity 1–127, mute}` |
 | ms → beats | beats = ms × BPM / 60000. At 125 BPM, 0.01 beat ≈ 4.8 ms and a 16th = 0.25 beat = 120 ms. |
 | Swing (MPC/Linn scale: 50 = straight, 66 = triplet) | The off-16th moves by d = (S − 50)/100 × 0.5 beat: 52 → 0.01, 54 → 0.02, 56 → 0.03, **58 → 0.04**, 62 → 0.06, 66 → 0.08. Linn: 54 % loosens the feel without sounding like swing, and 62 % can feel looser than a perfect 66 at slow tempos. House rule of thumb: 56–58 % reads as loose and natural. |
 | Microtiming | Systematic and per role, the **same every bar**. Never random noise; see the defaults below. |
 | Velocity | Accent maps, not noise. 16ths across a beat, e.g. 100 / 62 / 84 / 58. Ghost notes 20–45. |
+| Articulation | Set durations deliberately: 0.1–0.2 beat for funk bass, plucks and stabs; legato = up to the next note minus about 0.02. |
 
 Microtiming defaults:
 - Kick and the quarter grid: 0.
@@ -63,7 +65,7 @@ Apply swing, offsets and accents with `transform_clip_notes`. Its swing is absol
 - `set_tempo`.
 - `set_song_scale` (root plus Live's scale name, e.g. "Dorian") so scale-aware devices follow.
 - MIDI tracks named by role.
-- Instruments: browse with `get_browser_tree` / `get_browser_items_at_path`. Save big outputs to a file and filter them in code.
+- Instruments: browse with `get_browser_tree` / `get_browser_items_at_path`. Save big outputs to a file and filter them in code. `load_instrument_or_effect` on a track that already has an instrument replaces it. Clip files (.alc) don't load this way.
 - Drums: `load_drum_kit`, then **always** `get_drum_pads`, and write only to the notes it lists.
 - Effects: `add_device` by name ("EQ Eight", "Compressor", "Saturator", "Auto Filter", "Echo", "Reverb", "Utility", "Limiter"). It works on tracks, returns (`track_type="return"`) and the master.
 - Shared space: `create_return_track`, then `add_device` on that return, then sends via `set_track_mixer`.
@@ -71,7 +73,9 @@ Apply swing, offsets and accents with `transform_clip_notes`. Its swing is absol
 **B. Parts as Session clips.** Use one slot per variant (0 = A, 1 = B, 2 = break or fill).
 - Write one bar and tile it with `add_notes_to_clip(repeat_every, repeat_count)`.
 - Shape timing, accents, articulation, transposition or scale snapping with `transform_clip_notes`. Pass `target_clip_index` to write a variant next to the original for A/B.
-- For manual edits: `get_clip_notes`, edit, `clear_notes_from_clip`, then `add_notes_to_clip`. Writes are additive.
+- For manual edits: `get_clip_notes`, edit, `clear_notes_from_clip`, then `add_notes_to_clip`. Writes are additive, so always clear before rewriting.
+- Name clips by part and role ("Bass A groove", "Keys B break").
+- Before a big rewrite, `copy_clip` the original into a spare slot as a backup.
 
 **C. Review before anyone listens.**
 - `review_clip` on every part gives flat velocity, timing profile, low-interval mud, chord names, bar-to-bar variation and syncopation, each with a fix.
@@ -79,11 +83,12 @@ Apply swing, offsets and accents with `transform_clip_notes`. Its swing is absol
 - Fix the flags first. It's cheaper than a render.
 
 **D. Arrangement.**
-- Write the section map (bars, start beat, clip per track).
+- Write the section map (bars, start beat, clip per track). Show it to the user if the structure is new.
 - `fill_arrangement` per track per section.
 - To redo a range, `delete_arrangement_clips` before re-filling it. Arrangement copies don't follow later Session edits.
 - `stop_playback`, then `create_locator` per section.
-- After any `fire_clip`, call `back_to_arrangement`.
+- After any `fire_clip`, call `back_to_arrangement`, or those tracks stay on their Session clips.
+- Finish with `switch_to_arrangement_view`.
 
 **E. Movement: `write_clip_automation`.**
 - Envelopes live in Session clips and travel with them.
@@ -107,7 +112,7 @@ Apply swing, offsets and accents with `transform_clip_notes`. Its swing is absol
 - Sidechain: `add_device` Compressor on the bass or pads, then `set_sidechain` from the kick, then `set_device_parameters`, e.g. `{"name":"Threshold","display":"-24 dB"}`, `{"name":"Ratio","display":"4"}` (Live shows e.g. "4.00 : 1"; the number is what gets matched, but check the format with `get_device_parameters` first), `{"name":"Release","display":"120 ms"}`.
 - `get_device_parameters` shows each parameter's display string.
 
-**H. Measure.** Section 3.
+**H. Audition and measure.** For a quick listen, call `set_arrangement_loop` over the section and `start_playback`, then ask (section 4). For measurement, see section 3. Stop playback before structural edits.
 
 ## 3. The measurement loop (ears)
 
@@ -162,6 +167,8 @@ None of these can be done through the tools; say so and give the user the manual
 - **Stem separation:** Live 12.3+ Suite, done by the user. Useful for reference forensics and self-sampling.
 
 **Samples:**
-1. Splice (when connected and subscribed): `describe_a_sound` / `prompt_to_stack`, then `download_asset`.
+1. Splice (when connected and subscribed): `describe_a_sound` / `prompt_to_stack`, then `download_asset`. Check where downloads land before importing.
 2. `create_audio_clip` on an audio track, with a path on the user's computer.
 3. `set_clip_properties` for pitch, warp mode and gain.
+
+Keep a running section map and track list in your notes, but re-read the set instead of trusting them once the user has touched Live.
