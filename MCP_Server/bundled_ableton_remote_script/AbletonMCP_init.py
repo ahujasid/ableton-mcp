@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.7.1"
+SCRIPT_VERSION = "1.8.0+studio"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -57,6 +57,14 @@ SCRIPT_CAPABILITIES = [
     "create_locator",
     "delete_clip",
     "clear_notes_from_clip",
+    # studio-upgrades fork
+    "set_track_mixer",
+    "get_drum_pads",
+    "copy_clip",
+    "fill_arrangement",
+    "delete_arrangement_clips",
+    "back_to_arrangement",
+    "set_arrangement_loop",
 ]
 
 def create_instance(c_instance):
@@ -300,7 +308,10 @@ class AbletonMCP(ControlSurface):
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement",
                                  "map_rack_magnitude", "inspect_rack",
-                                 "create_locator"]:
+                                 # studio-upgrades fork
+                                 "set_track_mixer", "copy_clip", "fill_arrangement",
+                                 "delete_arrangement_clips", "back_to_arrangement",
+                                 "set_arrangement_loop"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -396,10 +407,49 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             device_index = params.get("device_index", 0)
                             result = self._inspect_rack(track_index, device_index)
-                        elif command_type == "create_locator":
-                            name = params.get("name", "")
-                            time_val = params.get("time", 0.0)
-                            result = self._create_locator(name, time_val)
+                        # ── studio-upgrades fork ───────────────────────────────────
+                        elif command_type == "set_track_mixer":
+                            result = self._set_track_mixer(
+                                params.get("track_index", 0),
+                                track_type=params.get("track_type", "track"),
+                                volume=params.get("volume"),
+                                volume_db=params.get("volume_db"),
+                                panning=params.get("panning"),
+                                mute=params.get("mute"),
+                                solo=params.get("solo"),
+                                sends=params.get("sends"),
+                            )
+                        elif command_type == "copy_clip":
+                            result = self._copy_clip(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("target_track_index", params.get("track_index", 0)),
+                                params.get("target_clip_index", 0),
+                                overwrite=bool(params.get("overwrite", False)),
+                                new_name=params.get("new_name"),
+                            )
+                        elif command_type == "fill_arrangement":
+                            result = self._fill_arrangement(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("start_time", 0.0),
+                                params.get("end_time", 0.0),
+                                step=params.get("step"),
+                            )
+                        elif command_type == "delete_arrangement_clips":
+                            result = self._delete_arrangement_clips(
+                                params.get("track_index", 0),
+                                params.get("start_time", 0.0),
+                                params.get("end_time"),
+                            )
+                        elif command_type == "back_to_arrangement":
+                            result = self._back_to_arrangement()
+                        elif command_type == "set_arrangement_loop":
+                            result = self._set_arrangement_loop(
+                                params.get("start_time", 0.0),
+                                params.get("length", 16.0),
+                                params.get("enabled", True),
+                            )
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -429,6 +479,30 @@ class AbletonMCP(ControlSurface):
                 except queue.Empty:
                     response["status"] = "error"
                     response["message"] = "Timeout waiting for operation to complete"
+            elif command_type == "create_locator":
+                # Live only applies set_or_delete_cue() at the playhead, and
+                # both the playhead move and the new cue become visible on a
+                # later tick -- so this runs as a short scheduled chain rather
+                # than one synchronous main-thread task.
+                response_queue = queue.Queue()
+
+                def start_locator():
+                    try:
+                        self._create_locator_async(
+                            params.get("name", ""), params.get("time", 0.0),
+                            response_queue)
+                    except Exception as e:
+                        self.log_message("Error creating locator: " + str(e))
+                        response_queue.put({"status": "error", "message": str(e)})
+
+                try:
+                    self.schedule_message(0, start_locator)
+                except AssertionError:
+                    start_locator()
+                self._await_main_thread(response, response_queue, 10.0)
+            elif command_type == "get_drum_pads":
+                response["result"] = self._get_drum_pads(
+                    params.get("track_index", 0), params.get("device_index"))
             elif command_type == "get_browser_item":
                 uri = params.get("uri", None)
                 path = params.get("path", None)
@@ -512,6 +586,19 @@ class AbletonMCP(ControlSurface):
         
         return response
     
+    def _await_main_thread(self, response, response_queue, timeout):
+        """Fill ``response`` from a main-thread task's queue (or a timeout)."""
+        try:
+            task_response = response_queue.get(timeout=timeout)
+            if task_response.get("status") == "error":
+                response["status"] = "error"
+                response["message"] = task_response.get("message", "Unknown error")
+            else:
+                response["result"] = task_response.get("result", {})
+        except queue.Empty:
+            response["status"] = "error"
+            response["message"] = "Timeout waiting for operation to complete"
+
     # Command implementations
 
     def _get_script_info(self):
@@ -1136,59 +1223,360 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error duplicating clip to arrangement: " + str(e))
             raise
 
-    def _create_locator(self, name, time_val):
-        """Create (or rename) a named locator at the given beat position.
+    # ── studio-upgrades fork ──────────────────────────────────────────────────
 
-        Uses Live's Song.set_or_delete_cue(), which toggles a cue at the
-        current_song_time. We temporarily move the playhead, toggle, then
-        restore. If a cue already exists at that time we just rename it
-        instead of toggling (which would delete it).
+    def _create_locator_async(self, name, time_val, response_queue):
+        """Create (or rename) a locator at a beat position.
+
+        Song.set_or_delete_cue() toggles a cue at the playhead. The upstream
+        version moved the playhead, toggled and searched for the cue in the
+        same callback, before Live had applied either change, so it never
+        found the cue (and a second call could toggle it back off). Here each
+        step runs on its own tick.
         """
-        try:
-            song = self._song
-            target_time = float(time_val)
-            tolerance = 1e-3
+        song = self._song
+        target = float(time_val)
+        tolerance = 0.01
 
-            # See if a cue already exists at (or near) the target time
-            existing = None
+        def find():
             for cue in song.cue_points:
-                if abs(cue.time - target_time) < tolerance:
-                    existing = cue
-                    break
+                if abs(cue.time - target) < tolerance:
+                    return cue
+            return None
 
-            original_time = song.current_song_time
+        def finish(cue):
+            if cue is None:
+                times = sorted(round(c.time, 3) for c in song.cue_points)
+                response_queue.put({
+                    "status": "error",
+                    "message": "Locator was not created at beat %s (locators now at: %s)"
+                               % (target, times),
+                })
+                return
+            if name:
+                try:
+                    cue.name = str(name)
+                except Exception as e:
+                    self.log_message("Could not rename locator: " + str(e))
+            response_queue.put({
+                "status": "success",
+                "result": {"success": True, "time": cue.time, "name": cue.name},
+            })
 
-            if existing is None:
-                # Move playhead, toggle to create, then locate the new cue
-                song.current_song_time = target_time
-                song.set_or_delete_cue()
-                for cue in song.cue_points:
-                    if abs(cue.time - target_time) < tolerance:
-                        existing = cue
-                        break
-                # Restore playhead
+        existing = find()
+        if existing is not None:
+            finish(existing)
+            return
+        times_before = [c.time for c in song.cue_points]
+
+        if self._safe_song_property("is_playing", bool, False):
+            raise Exception(
+                "Stop playback before adding locators: Live places them at the "
+                "moving playhead.")
+
+        original_time = song.current_song_time
+        song.current_song_time = target
+
+        def step_find():
+            try:
+                cue = find()
+                if cue is None:
+                    # Live may place the cue slightly off the requested
+                    # beat; accept exactly one new cue and report its time.
+                    new = [c for c in song.cue_points
+                           if all(abs(c.time - t) > tolerance for t in times_before)]
+                    if len(new) == 1:
+                        cue = new[0]
                 try:
                     song.current_song_time = original_time
                 except Exception:
                     pass
+                finish(cue)
+            except Exception as e:
+                response_queue.put({"status": "error", "message": str(e)})
 
-            if existing is None:
-                raise Exception("Failed to create cue at time " + str(target_time))
+        def step_toggle():
+            try:
+                if find() is None:
+                    song.set_or_delete_cue()
+                self.schedule_message(1, step_find)
+            except Exception as e:
+                response_queue.put({"status": "error", "message": str(e)})
 
-            if name:
-                try:
-                    existing.name = str(name)
-                except Exception as e:
-                    self.log_message("Could not rename locator: " + str(e))
+        self.schedule_message(1, step_toggle)
 
-            return {
-                "success": True,
-                "time": existing.time,
-                "name": existing.name,
-            }
-        except Exception as e:
-            self.log_message("Error creating locator: " + str(e))
-            raise
+    def _mixer_target(self, track_index, track_type="track"):
+        """Resolve a regular, return or master track for mixer edits."""
+        track_type = (track_type or "track").lower()
+        if track_type == "master":
+            return self._song.master_track
+        tracks = self._song.return_tracks if track_type == "return" else self._song.tracks
+        if track_index < 0 or track_index >= len(tracks):
+            raise IndexError("%s index out of range" % track_type.capitalize())
+        return tracks[track_index]
+
+    @staticmethod
+    def _parse_db(text):
+        cleaned = str(text).replace("dB", "").strip()
+        if "inf" in cleaned:
+            return float("-inf")
+        return float(cleaned)
+
+    def _value_for_db(self, param, db):
+        """Find the raw fader value Live displays as ``db`` (bisection on
+        str_for_value, which is monotonic for volume and send faders)."""
+        to_db = lambda v: self._parse_db(param.str_for_value(v))
+        lo, hi = float(param.min), float(param.max)
+        db = float(db)
+        if db <= to_db(lo):
+            return lo
+        if db >= to_db(hi):
+            return hi
+        for _ in range(40):
+            mid = (lo + hi) / 2.0
+            if to_db(mid) < db:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2.0
+
+    @staticmethod
+    def _param_display(param):
+        try:
+            return param.str_for_value(param.value)
+        except Exception:
+            return str(param.value)
+
+    def _set_track_mixer(self, track_index, track_type="track", volume=None,
+                         volume_db=None, panning=None, mute=None, solo=None,
+                         sends=None):
+        """Set volume (raw or dB), pan, mute, solo and sends on one track."""
+        track = self._mixer_target(track_index, track_type)
+        mixer = track.mixer_device
+        changed = []
+
+        if volume_db is not None:
+            mixer.volume.value = self._value_for_db(mixer.volume, volume_db)
+            changed.append("volume")
+        elif volume is not None:
+            v = float(volume)
+            mixer.volume.value = max(mixer.volume.min, min(mixer.volume.max, v))
+            changed.append("volume")
+
+        if panning is not None:
+            p = float(panning)
+            mixer.panning.value = max(mixer.panning.min, min(mixer.panning.max, p))
+            changed.append("panning")
+
+        is_master = (track_type or "track").lower() == "master"
+        if mute is not None:
+            if is_master:
+                raise Exception("The master track cannot be muted")
+            track.mute = bool(mute)
+            changed.append("mute")
+        if solo is not None:
+            if is_master:
+                raise Exception("The master track cannot be soloed")
+            track.solo = bool(solo)
+            changed.append("solo")
+
+        if sends:
+            items = sends.items() if isinstance(sends, dict) else [
+                (s.get("index"), s.get("value")) for s in sends]
+            send_params = list(mixer.sends)
+            for key, val in items:
+                i = int(key)
+                if i < 0 or i >= len(send_params):
+                    raise IndexError("Send index %d out of range" % i)
+                sp = send_params[i]
+                sp.value = max(sp.min, min(sp.max, float(val)))
+            changed.append("sends")
+
+        result = {
+            "track_name": track.name,
+            "changed": changed,
+            "volume": mixer.volume.value,
+            "volume_display": self._param_display(mixer.volume),
+            "panning": mixer.panning.value,
+            "panning_display": self._param_display(mixer.panning),
+            "sends": [{"index": i, "value": sp.value, "display": self._param_display(sp)}
+                      for i, sp in enumerate(mixer.sends)],
+        }
+        if not is_master:
+            result["mute"] = bool(track.mute)
+            result["solo"] = bool(track.solo)
+        return result
+
+    @staticmethod
+    def _note_name(note):
+        names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        # Ableton's octave numbering: MIDI 60 = C3.
+        return "%s%d" % (names[int(note) % 12], int(note) // 12 - 2)
+
+    def _find_drum_rack(self, devices, depth=0):
+        for device in devices:
+            if getattr(device, "can_have_drum_pads", False):
+                return device
+            if getattr(device, "can_have_chains", False) and depth < 2:
+                for chain in getattr(device, "chains", []):
+                    found = self._find_drum_rack(chain.devices, depth + 1)
+                    if found is not None:
+                        return found
+        return None
+
+    def _get_drum_pads(self, track_index, device_index=None):
+        """List the loaded pads of a Drum Rack: MIDI note, note name, pad name."""
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        if device_index is not None:
+            devices = list(track.devices)
+            if device_index < 0 or device_index >= len(devices):
+                raise IndexError("Device index out of range")
+            rack = devices[device_index]
+            if not getattr(rack, "can_have_drum_pads", False):
+                raise Exception("Device %d on this track is not a Drum Rack" % device_index)
+        else:
+            rack = self._find_drum_rack(track.devices)
+            if rack is None:
+                raise Exception("No Drum Rack found on track '%s'" % track.name)
+
+        pads = []
+        for pad in rack.drum_pads:
+            chains = list(getattr(pad, "chains", []))
+            if not chains:
+                continue
+            pads.append({
+                "note": int(pad.note),
+                "note_name": self._note_name(pad.note),
+                "name": pad.name,
+                "mute": bool(getattr(pad, "mute", False)),
+                "solo": bool(getattr(pad, "solo", False)),
+                "chains": [c.name for c in chains],
+            })
+        return {
+            "track_index": track_index,
+            "track_name": track.name,
+            "rack_name": rack.name,
+            "pad_count": len(pads),
+            "pads": pads,
+        }
+
+    def _copy_clip(self, track_index, clip_index, target_track_index,
+                   target_clip_index, overwrite=False, new_name=None):
+        """Copy a Session clip into another slot (same or different track)."""
+        tracks = self._song.tracks
+        for ti in (track_index, target_track_index):
+            if ti < 0 or ti >= len(tracks):
+                raise IndexError("Track index out of range")
+        src_track, dst_track = tracks[track_index], tracks[target_track_index]
+        if clip_index < 0 or clip_index >= len(src_track.clip_slots):
+            raise IndexError("Source clip index out of range")
+        if target_clip_index < 0 or target_clip_index >= len(dst_track.clip_slots):
+            raise IndexError("Target clip index out of range")
+        src_slot = src_track.clip_slots[clip_index]
+        dst_slot = dst_track.clip_slots[target_clip_index]
+        if not src_slot.has_clip:
+            raise Exception("No clip in source slot")
+        if src_slot is dst_slot or (track_index == target_track_index
+                                    and clip_index == target_clip_index):
+            raise Exception("Source and target are the same slot")
+        if dst_slot.has_clip:
+            if not overwrite:
+                raise Exception("Target slot already has a clip (pass overwrite=true to replace it)")
+            dst_slot.delete_clip()
+
+        src = src_slot.clip
+        duplicate = getattr(src_slot, "duplicate_clip_to", None)
+        method = "duplicate_clip_to"
+        if duplicate is not None:
+            duplicate(dst_slot)
+        else:
+            if not getattr(src, "is_midi_clip", False):
+                raise Exception("This Live version can only copy MIDI clips")
+            method = "note_copy"
+            dst_slot.create_clip(src.length)
+            notes = self._notes_from_clip(src)
+            dst_slot.clip.set_notes(tuple(
+                (n["pitch"], n["start_time"], n["duration"], n["velocity"], n["mute"])
+                for n in notes))
+            dst_slot.clip.name = src.name
+        if new_name:
+            dst_slot.clip.name = str(new_name)
+        return {
+            "source": {"track_index": track_index, "clip_index": clip_index, "name": src.name},
+            "target": {"track_index": target_track_index, "clip_index": target_clip_index,
+                       "name": dst_slot.clip.name},
+            "length": dst_slot.clip.length,
+            "method": method,
+        }
+
+    def _fill_arrangement(self, track_index, clip_index, start_time, end_time, step=None):
+        """Place a Session clip back-to-back across [start_time, end_time)."""
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        if clip_index < 0 or clip_index >= len(track.clip_slots):
+            raise IndexError("Clip slot index out of range")
+        slot = track.clip_slots[clip_index]
+        if not slot.has_clip:
+            raise Exception("No clip in slot %d on track %d" % (clip_index, track_index))
+        clip = slot.clip
+        start, end = float(start_time), float(end_time)
+        length = float(step) if step else float(clip.length)
+        if length <= 0:
+            raise ValueError("Step / clip length must be positive")
+        if end <= start:
+            raise ValueError("end_time must be after start_time")
+        positions = []
+        t = start
+        while t < end - 1e-6:
+            if len(positions) >= 512:
+                raise Exception("Refusing to place more than 512 copies in one call")
+            track.duplicate_clip_to_arrangement(clip, t)
+            positions.append(t)
+            t += length
+        return {
+            "track_name": track.name,
+            "clip_name": clip.name,
+            "copies": len(positions),
+            "positions": positions,
+            "ends_at": positions[-1] + float(clip.length) if positions else start,
+        }
+
+    def _delete_arrangement_clips(self, track_index, start_time=0.0, end_time=None):
+        """Delete arrangement clips whose start falls in [start_time, end_time)."""
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        deleter = getattr(track, "delete_clip", None)
+        if deleter is None:
+            raise Exception("Track.delete_clip is unavailable in this Live version (needs Live 12)")
+        start = float(start_time)
+        end = float(end_time) if end_time is not None else None
+        eps = 1e-6
+        targets = [c for c in list(track.arrangement_clips)
+                   if c.start_time >= start - eps and (end is None or c.start_time < end - eps)]
+        removed = []
+        for clip in targets:
+            removed.append({"name": clip.name, "start_time": clip.start_time})
+            deleter(clip)
+        return {"track_name": track.name, "deleted": len(removed), "clips": removed}
+
+    def _back_to_arrangement(self):
+        """Press Live's Back to Arrangement button."""
+        self._song.back_to_arranger = False
+        return {"back_to_arranger_lit": bool(self._song.back_to_arranger)}
+
+    def _set_arrangement_loop(self, start_time, length, enabled=True):
+        song = self._song
+        if float(length) <= 0:
+            raise ValueError("Loop length must be positive")
+        song.loop_start = float(start_time)
+        song.loop_length = float(length)
+        song.loop = bool(enabled)
+        return {"loop": bool(song.loop), "loop_start": song.loop_start,
+                "loop_length": song.loop_length}
 
     # ── Browser implementations ───────────────────────────────────────────────
 

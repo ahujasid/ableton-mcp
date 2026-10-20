@@ -7,7 +7,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Any, List, Union
+from typing import AsyncIterator, Dict, Any, List, Optional, Union
 
 from .telemetry import record_startup
 from .telemetry_decorator import telemetry_tool, rich_telemetry_tool
@@ -139,7 +139,11 @@ class AbletonConnection:
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
-            "create_locator"
+            "create_locator",
+            # studio-upgrades fork
+            "set_track_mixer", "copy_clip", "fill_arrangement",
+            "delete_arrangement_clips", "back_to_arrangement",
+            "set_arrangement_loop",
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
@@ -741,6 +745,24 @@ def create_audio_clip(ctx: Context, track_index: int, clip_index: int, path: str
         logger.error(f"Error creating audio clip: {str(e)}")
         return f"Error creating audio clip: {str(e)}"
 
+def _tile_notes(notes, repeat_every=0.0, repeat_count=1):
+    """Repeat a note pattern ``repeat_count`` times, ``repeat_every`` beats apart."""
+    repeat_count = int(repeat_count or 1)
+    repeat_every = float(repeat_every or 0.0)
+    if repeat_count <= 1 or repeat_every <= 0:
+        return list(notes)
+    if repeat_count > 256:
+        raise ValueError("repeat_count is capped at 256")
+    tiled = []
+    for i in range(repeat_count):
+        offset = i * repeat_every
+        for note in notes:
+            copy = dict(note)
+            copy["start_time"] = round(float(note.get("start_time", 0.0)) + offset, 6)
+            tiled.append(copy)
+    return tiled
+
+
 @mcp.tool()
 @rich_telemetry_tool("add_notes_to_clip", capture_notes=True)
 @trajectory_tool("add_notes_to_clip")
@@ -749,18 +771,27 @@ def add_notes_to_clip(
     track_index: int,
     clip_index: int,
     notes: List[Dict[str, Union[int, float, bool]]],
+    repeat_every: float = 0.0,
+    repeat_count: int = 1,
     user_prompt: str = ""
 ) -> str:
     """
     Add MIDI notes to a clip.
 
+    To avoid sending long, repetitive note lists, pass one bar (or one
+    pattern) of notes with repeat_every/repeat_count and the server tiles it:
+    e.g. a 1-bar hat pattern with repeat_every=4, repeat_count=8 fills 8 bars.
+
     Parameters:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
     - notes: List of note dictionaries, each with pitch, start_time, duration, velocity, and mute
+    - repeat_every: Pattern length in beats to tile by (0 = no tiling)
+    - repeat_count: How many times to play the pattern in total (1 = once)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        notes = _tile_notes(notes, repeat_every, repeat_count)
         ableton = get_ableton_connection()
         result = ableton.send_command("add_notes_to_clip", {
             "track_index": track_index,
@@ -1316,8 +1347,8 @@ def create_locator(
     """
     Create a named locator (cue point) in the Arrangement at a beat position.
 
-    If a locator already exists at that beat (within ~1e-3 tolerance) it is
-    renamed instead of toggled off. Time is in beats from the start of the
+    If a locator already exists at that beat it is renamed instead of toggled
+    off. Playback must be stopped (Live drops locators at the playhead). Time is in beats from the start of the
     arrangement (e.g. 0.0 = start, 16.0 = bar 5 in 4/4).
 
     Parameters:
@@ -1343,6 +1374,293 @@ def create_locator(
     except Exception as e:
         logger.error(f"Error creating locator: {str(e)}")
         return f"Error creating locator: {str(e)}"
+
+
+# ── studio-upgrades fork: mixer, drum maps, clip copy, arrangement helpers ─────
+
+def _fork_command(capability, command, params):
+    """Gate on the Remote Script capability, then send the command.
+
+    Returns (result, None) on success or (None, message) when the installed
+    Remote Script is too old for this tool.
+    """
+    from .script_handshake import handshake, require_capability
+
+    ableton = get_ableton_connection()
+    missing = require_capability(capability)
+    if missing:
+        # Live may have been (re)started after this server did; re-check once.
+        handshake(ableton.send_command)
+        missing = require_capability(capability)
+    if missing:
+        return None, missing
+    return ableton.send_command(command, params), None
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_track_mixer")
+def set_track_mixer(
+    ctx: Context,
+    track_index: int = 0,
+    track_type: str = "track",
+    volume_db: Optional[float] = None,
+    volume: Optional[float] = None,
+    panning: Optional[float] = None,
+    mute: Optional[bool] = None,
+    solo: Optional[bool] = None,
+    sends: Optional[Dict[str, float]] = None,
+    user_prompt: str = ""
+) -> str:
+    """
+    Set a track's mixer: volume, pan, mute, solo and send levels.
+
+    Only the arguments you pass are changed.
+
+    Parameters:
+    - track_index: Index of the track (or of the return track when track_type="return")
+    - track_type: "track" (default), "return", or "master"
+    - volume_db: Fader level in dB, e.g. -6.0 (0 dB is unity; max is +6 dB)
+    - volume: Raw fader value 0.0-1.0 (0.85 = 0 dB); ignored when volume_db is given
+    - panning: -1.0 (hard left) to 1.0 (hard right)
+    - mute / solo: true or false
+    - sends: {send_index: value 0.0-1.0}, e.g. {"0": 0.3} for send A at 30%
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_index": track_index, "track_type": track_type}
+        for key, val in (("volume_db", volume_db), ("volume", volume),
+                         ("panning", panning), ("mute", mute), ("solo", solo),
+                         ("sends", sends)):
+            if val is not None:
+                params[key] = val
+        result, missing = _fork_command("set_track_mixer", "set_track_mixer", params)
+        if missing:
+            return missing
+        sends_txt = ", ".join(
+            "send {i}: {d}".format(i=s["index"], d=s["display"])
+            for s in result.get("sends", []))
+        state = []
+        if result.get("mute"):
+            state.append("muted")
+        if result.get("solo"):
+            state.append("soloed")
+        return "'{name}': volume {vol}, pan {pan}{sends}{state}".format(
+            name=result.get("track_name", track_index),
+            vol=result.get("volume_display"),
+            pan=result.get("panning_display"),
+            sends=(", " + sends_txt) if sends_txt else "",
+            state=(" (" + ", ".join(state) + ")") if state else "",
+        )
+    except Exception as e:
+        logger.error(f"Error setting mixer: {str(e)}")
+        return f"Error setting mixer: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("get_drum_pads")
+def get_drum_pads(
+    ctx: Context,
+    track_index: int,
+    device_index: Optional[int] = None,
+    user_prompt: str = ""
+) -> str:
+    """
+    List the loaded pads of the Drum Rack on a track, with the MIDI note that
+    triggers each (e.g. 36 / C1 = "Kick"). Call this before writing drum
+    notes so every pitch hits a real sample.
+
+    Parameters:
+    - track_index: Index of the track holding the Drum Rack
+    - device_index: Optional device index; by default the first Drum Rack
+                    (including one nested inside an Instrument Rack) is used
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_index": track_index}
+        if device_index is not None:
+            params["device_index"] = device_index
+        result, missing = _fork_command("get_drum_pads", "get_drum_pads", params)
+        if missing:
+            return missing
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error reading drum pads: {str(e)}")
+        return f"Error reading drum pads: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("copy_clip")
+def copy_clip(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    target_clip_index: int,
+    target_track_index: Optional[int] = None,
+    overwrite: bool = False,
+    new_name: str = "",
+    user_prompt: str = ""
+) -> str:
+    """
+    Copy a Session clip to another slot, on the same track or another one.
+    Useful for making a variation: copy, then clear/add notes on the copy.
+
+    Parameters:
+    - track_index / clip_index: The source clip
+    - target_clip_index: Destination slot
+    - target_track_index: Destination track (defaults to the source track)
+    - overwrite: Replace a clip already in the destination slot
+    - new_name: Optional name for the copy
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "target_track_index": track_index if target_track_index is None else target_track_index,
+            "target_clip_index": target_clip_index,
+            "overwrite": overwrite,
+        }
+        if new_name:
+            params["new_name"] = new_name
+        result, missing = _fork_command("copy_clip", "copy_clip", params)
+        if missing:
+            return missing
+        tgt = result.get("target", {})
+        return "Copied '{src}' to track {t}, slot {c} as '{name}' ({length} beats)".format(
+            src=result.get("source", {}).get("name", "clip"),
+            t=tgt.get("track_index"), c=tgt.get("clip_index"),
+            name=tgt.get("name"), length=result.get("length"),
+        )
+    except Exception as e:
+        logger.error(f"Error copying clip: {str(e)}")
+        return f"Error copying clip: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("fill_arrangement")
+def fill_arrangement(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    start_time: float,
+    end_time: float,
+    step: float = 0.0,
+    user_prompt: str = ""
+) -> str:
+    """
+    Repeat a Session clip back-to-back across a stretch of the Arrangement,
+    in one call (instead of one duplicate_to_arrangement call per bar).
+
+    Parameters:
+    - track_index / clip_index: The Session clip to place
+    - start_time: First beat to place it at (e.g. 32.0 = bar 9 in 4/4)
+    - end_time: Stop before this beat (e.g. 64.0 = up to bar 17)
+    - step: Spacing in beats (defaults to the clip's own length)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_index": track_index, "clip_index": clip_index,
+                  "start_time": start_time, "end_time": end_time}
+        if step:
+            params["step"] = step
+        result, missing = _fork_command("fill_arrangement", "fill_arrangement", params)
+        if missing:
+            return missing
+        return "Placed '{clip}' {n}x on '{track}' from beat {start} to {end}".format(
+            clip=result.get("clip_name", "clip"), n=result.get("copies", 0),
+            track=result.get("track_name", track_index), start=start_time,
+            end=result.get("ends_at", end_time),
+        )
+    except Exception as e:
+        logger.error(f"Error filling arrangement: {str(e)}")
+        return f"Error filling arrangement: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("delete_arrangement_clips")
+def delete_arrangement_clips(
+    ctx: Context,
+    track_index: int,
+    start_time: float = 0.0,
+    end_time: Optional[float] = None,
+    user_prompt: str = ""
+) -> str:
+    """
+    Delete Arrangement clips on one track whose start lies in
+    [start_time, end_time). Leave end_time empty to clear to the end of the song.
+    Requires Live 12 (Track.delete_clip).
+
+    Parameters:
+    - track_index: The track to clear
+    - start_time: First beat of the range (inclusive)
+    - end_time: End beat of the range (exclusive); omit for "to the end"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_index": track_index, "start_time": start_time}
+        if end_time is not None:
+            params["end_time"] = end_time
+        result, missing = _fork_command(
+            "delete_arrangement_clips", "delete_arrangement_clips", params)
+        if missing:
+            return missing
+        return "Deleted {n} arrangement clip(s) from '{track}'".format(
+            n=result.get("deleted", 0), track=result.get("track_name", track_index))
+    except Exception as e:
+        logger.error(f"Error deleting arrangement clips: {str(e)}")
+        return f"Error deleting arrangement clips: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("back_to_arrangement")
+def back_to_arrangement(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Press Live's "Back to Arrangement" button so every track plays the
+    Arrangement again after Session clips were launched.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        result, missing = _fork_command("back_to_arrangement", "back_to_arrangement", {})
+        if missing:
+            return missing
+        return "All tracks are following the Arrangement again"
+    except Exception as e:
+        logger.error(f"Error returning to arrangement: {str(e)}")
+        return f"Error returning to arrangement: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_arrangement_loop")
+def set_arrangement_loop(
+    ctx: Context,
+    start_time: float,
+    length: float,
+    enabled: bool = True,
+    user_prompt: str = ""
+) -> str:
+    """
+    Set the Arrangement loop brace, e.g. to audition one section on repeat.
+
+    Parameters:
+    - start_time: Loop start in beats
+    - length: Loop length in beats (16.0 = 4 bars in 4/4)
+    - enabled: Turn the loop switch on (true) or off (false)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        result, missing = _fork_command(
+            "set_arrangement_loop", "set_arrangement_loop",
+            {"start_time": start_time, "length": length, "enabled": enabled})
+        if missing:
+            return missing
+        return "Loop {state}: beat {start} for {length} beats".format(
+            state="on" if result.get("loop") else "off",
+            start=result.get("loop_start"), length=result.get("loop_length"))
+    except Exception as e:
+        logger.error(f"Error setting loop: {str(e)}")
+        return f"Error setting loop: {str(e)}"
 
 
 # ── Dataset / preference tools (Supabase trajectory recording) ─────────────────

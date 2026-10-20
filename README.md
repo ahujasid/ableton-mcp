@@ -252,6 +252,22 @@ Once the config file has been set on Claude, and the remote script is running in
 - Add notes to MIDI clips
 - Change tempo and other session parameters
 
+#### Added in the `studio-upgrades` fork
+
+| Tool | What it does |
+|---|---|
+| `set_track_mixer` | Volume (in dB or raw), pan, mute, solo and send levels on a track, return or the master |
+| `get_drum_pads` | Lists a Drum Rack's loaded pads with their MIDI notes (36 / C1 = Kick, …), so drum parts hit real samples |
+| `copy_clip` | Copies a Session clip to another slot or track, as a starting point for variations |
+| `fill_arrangement` | Repeats a Session clip back-to-back over a beat range in one call |
+| `delete_arrangement_clips` | Clears Arrangement clips on a track within a beat range (Live 12) |
+| `back_to_arrangement` | Presses "Back to Arrangement" after Session clips were launched |
+| `set_arrangement_loop` | Sets the loop brace to audition a section |
+| `add_notes_to_clip` `repeat_every` / `repeat_count` | Tiles a one-bar pattern across a long clip instead of sending every note |
+
+`create_locator` is also fixed: the playhead move, cue toggle and cue lookup now
+run on separate Live ticks, so locators actually appear (stop playback first).
+
 ### Example Commands
 
 Here are some examples of what you can ask Claude to do:
