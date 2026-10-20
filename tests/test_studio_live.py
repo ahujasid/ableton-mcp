@@ -269,8 +269,8 @@ def test_set_device_parameter_on_return_with_display(mod):
 def test_add_device_prefers_insert_device(mod):
     track = Track("Bass")
 
-    def insert_device(name, index):
-        track.devices.insert(index, Device(name))
+    def insert_device(name, index=None):
+        track.devices.insert(len(track.devices) if index is None else index, Device(name))
     track.insert_device = insert_device
     out = inst(mod, Song([track]))._cmd_add_device({"track_index": 0, "name": "Saturator"})
     assert out["method"] == "insert_device"
@@ -461,63 +461,122 @@ def test_dispatch_routes_studio_commands(mod):
 # ------------------------------------------------------------------ render
 
 class RenderClip(object):
-    def __init__(self, start, path):
+    def __init__(self, start, path, start_marker=0.0, warping=False):
         self.start_time = start
-        self.end_time = start + 1
+        self.end_time = start + 40
         self.file_path = path
         self.name = "rec"
+        self.start_marker = start_marker
+        self.warping = warping
+        self.sample_rate = 48000
+
+    def beat_to_sample_time(self, beat):
+        return beat * 0.5 * self.sample_rate  # 120 BPM
 
 
 def render_setup(mod):
     song = Song([Track("Kick"), Track("Bass")])
     song.tracks[1].arm = True
-    song.tracks[0].solo = False
+    song.tracks[0].implicit_arm = True
+    song.start_time = 10.0
+    song.stop_all_clips = lambda quantized=True: None
     i = inst(mod, song)
     pending = []
     i.schedule_message = lambda delay, cb: pending.append(cb)
 
-    def tick():
-        batch = list(pending)
-        del pending[:]
-        for cb in batch:
-            cb()
+    def tick(n=1):
+        for _ in range(n):
+            batch = list(pending)
+            del pending[:]
+            for cb in batch:
+                cb()
     return song, i, tick
 
 
-def test_render_records_and_restores_state(mod):
+def status(i):
+    return i._cmd_get_render_status({})
+
+
+def test_render_phases_record_and_restore(mod):
     song, i, tick = render_setup(mod)
+    song.view.selected_track = song.tracks[0]
     job = i._cmd_start_render({"start_beat": 64, "end_beat": 96, "preroll_beats": 4,
                                "solo_tracks": [1]})
     render = song.tracks[-1]
-    assert render.name == "MCP Render"
-    assert render.input_routing_type.display_name == "Resampling"
-    assert render.arm and render.mute and render.current_monitoring_state == 2
-    assert song.tracks[1].arm is False  # other arms released while recording
-    assert song.tracks[1].solo is True
-    assert song.record_mode and song.is_playing and not song.loop and not song.metronome
-    assert song.current_song_time == 60
-    assert job["expected_seconds"] == 18.0
+    assert job["state"] == "preparing" and job["expected_seconds"] == 18.0
+    assert render.name == "MCP Render" and not song.record_mode
 
+    tick()  # preparing -> routed + configured -> positioning
+    assert status(i)["state"] == "positioning"
+    assert render.input_routing_type.display_name == "Resampling"
+    assert render.arm and not render.mute and render.current_monitoring_state == 2
+    assert song.tracks[1].arm is False and song.tracks[0].implicit_arm is False
+    assert song.tracks[1].solo is True
+    assert song.start_time == 60 and song.current_song_time == 60
+    assert not song.loop and not song.metronome and song.back_to_arranger is False
+
+    tick()  # positioning confirmed -> recording
+    assert status(i)["state"] == "recording" and song.record_mode and song.is_playing
     song.current_song_time = 80
     tick()
-    assert i._cmd_get_render_status({})["state"] == "recording"
+    assert status(i)["state"] == "recording"
     song.current_song_time = 96.1
     tick()
-    assert i._cmd_get_render_status({})["state"] == "finalizing"
-    render.arrangement_clips.append(RenderClip(60.0, "/tmp/rec.wav"))
-    for _ in range(4):
-        tick()
-    status = i._cmd_get_render_status({"job_id": job["id"]})
-    assert status["state"] == "done"
-    assert status["file_path"] == "/tmp/rec.wav"
-    assert status["window_offset_s"] == 2.0  # 4 beats of preroll at 120 BPM
-    assert status["window_seconds"] == 16.0
-    # everything the user had is back
+    assert status(i)["state"] == "finalizing"
+    render.arrangement_clips.append(RenderClip(60.0, "/tmp/rec.wav", start_marker=0.25))
+    tick(4)
+    st = i._cmd_get_render_status({"job_id": job["id"]})
+    assert st["state"] == "done" and st["file_path"] == "/tmp/rec.wav"
+    # unwarped: start_marker (s) + 4 beats of preroll at 120 BPM
+    assert st["window_offset_s"] == 2.25
+    assert st["window_seconds"] == 16.0
+    assert "_saved" not in st and "_params" not in st
+    # everything the user had is back; the take is muted so it never plays in the song
     assert song.loop and song.metronome and not song.record_mode and not song.is_playing
     assert song.tracks[1].arm is True and song.tracks[1].solo is False
-    assert render.arm is False
-    assert song.current_song_time == 10.0
-    assert "_saved" not in status
+    assert render.arm is False and render.mute is True
+    assert song.current_song_time == 10.0 and song.start_time == 10.0
+    assert song.view.selected_track is song.tracks[0]
+
+
+def test_render_waits_for_routing_on_new_track(mod):
+    song, i, tick = render_setup(mod)
+    real = Track("x", audio=True).available_input_routing_types
+    original_create = song.create_audio_track
+
+    def create(index):
+        original_create(index)
+        song.tracks[-1].available_input_routing_types = []
+    song.create_audio_track = create
+    i._cmd_start_render({"start_beat": 0, "end_beat": 16})
+    tick(3)
+    assert status(i)["state"] == "preparing"
+    song.tracks[-1].available_input_routing_types = real
+    tick()
+    assert status(i)["state"] == "positioning"
+
+
+def test_render_routing_never_appears(mod):
+    song, i, tick = render_setup(mod)
+    song.tracks.append(Track("MCP Render", audio=True))
+    song.tracks[-1].available_input_routing_types = [RoutingType("Ext. In")]
+    i._cmd_start_render({"start_beat": 0, "end_beat": 16})
+    tick(105)
+    st = status(i)
+    assert st["state"] == "error" and "Resampling" in st["error"]
+    assert song.tracks[1].arm is True and song.loop is True and not song.record_mode
+
+
+def test_render_warped_offset_uses_sample_time(mod):
+    song, i, tick = render_setup(mod)
+    i._cmd_start_render({"start_beat": 8, "end_beat": 16, "preroll_beats": 4})
+    tick(2)
+    song.current_song_time = 16.5
+    tick()
+    song.tracks[-1].arrangement_clips.append(RenderClip(4.0, "/tmp/w.wav", start_marker=1.0, warping=True))
+    tick(4)
+    # (start_marker 1 + 4 beats) at 0.5 s per beat
+    assert status(i)["window_offset_s"] == 2.5
 
 
 def test_render_reuses_track_and_refuses_overlap(mod):
@@ -534,18 +593,92 @@ def test_render_reuses_track_and_refuses_overlap(mod):
 def test_render_errors_if_playback_stops(mod):
     song, i, tick = render_setup(mod)
     i._cmd_start_render({"start_beat": 0, "end_beat": 64})
+    tick(2)
     song.is_playing = False
-    for _ in range(12):
-        tick()
-    status = i._cmd_get_render_status({})
-    assert status["state"] == "error" and "stopped" in status["error"]
+    tick(12)
+    st = status(i)
+    assert st["state"] == "error" and "stopped" in st["error"]
     assert song.loop is True
 
 
-def test_render_setup_failure_restores(mod):
-    song, i, tick = render_setup(mod)
-    song.tracks.append(Track("MCP Render", audio=True))
-    song.tracks[-1].available_input_routing_types = [RoutingType("Ext. In")]
-    with pytest.raises(Exception, match="Resampling"):
-        i._cmd_start_render({"start_beat": 0, "end_beat": 16})
-    assert song.tracks[1].arm is True and song.loop is True and not song.record_mode
+# ------------------------------------------------------------------ review fixes
+
+def test_duplicate_track_uses_selected_copy(mod):
+    song = Song([Track("Group"), Track("Child"), Track("Other")])
+
+    def dup(index):
+        song.tracks.insert(2, Track("Group copy"))  # lands after the child
+        song.view.selected_track = song.tracks[2]
+    song.duplicate_track = dup
+    out = inst(mod, song)._cmd_duplicate_track({"track_index": 0, "name": "Group B"})
+    assert out["new_index"] == 2 and song.tracks[2].name == "Group B"
+
+
+def test_clip_properties_moves_range_later_end_first(mod):
+    order = []
+
+    class OrderedClip(Clip):
+        def __setattr__(self, key, value):
+            if key in ("loop_start", "loop_end"):
+                order.append(key)
+            object.__setattr__(self, key, value)
+    t = Track("Loop", slots=1)
+    t.clip_slots[0].clip = OrderedClip("Loop", 4.0)
+    del order[:]
+    inst(mod, Song([t]))._cmd_set_clip_properties({"track_index": 0, "clip_index": 0,
+                                                   "properties": {"loop_start": 8, "loop_end": 12}})
+    assert order == ["loop_end", "loop_start"]
+
+
+def test_automation_rejects_arrangement_clips(mod):
+    song, track = automation_song()
+    with pytest.raises(Exception, match="Arrangement"):
+        inst(mod, song)._cmd_write_clip_automation({
+            "track_index": 0, "clip_index": 0, "arrangement": True,
+            "target": {"mixer": "volume"}, "points": [{"time": 0, "value": 0.5}]})
+
+
+def test_load_groove_from_core_library_and_reuse(mod):
+    class Item(object):
+        def __init__(self, name, children=(), folder=False):
+            self.name = name
+            self.children = list(children)
+            self.is_folder = folder
+
+    class Browser(object):
+        packs = Item("packs", [Item("Core Library", [Item("Grooves", [
+            Item("Swing", [Item("MPC 16 Swing-62.agr")], folder=True)], folder=True)], folder=True)])
+        user_library = Item("user")
+        current_project = Item("proj")
+
+        def load_item(self, item):
+            song.groove_pool.grooves.append(Groove(item.name[:-4]))
+
+    song, track = automation_song()
+    i = inst(mod, song, Browser())
+    out = i._cmd_load_groove({"name": "MPC 16 Swing-62", "track_index": 0, "clip_index": 0})
+    assert out["groove_index"] == 1 and out["applied_to_clip"] == "MPC 16 Swing-62"
+    again = i._cmd_load_groove({"name": "mpc 16 swing-62.agr"})
+    assert again["loaded"] == "(already in pool)" and len(song.groove_pool.grooves) == 2
+
+
+def test_pan_display_values(mod):
+    p = mod.AbletonMCP._parse_quantity
+    assert p("50L") == (-50.0, "pan") and p("25 R") == (25.0, "pan") and p("C") == (0.0, "pan")
+    i = inst(mod, Song())
+    pan = Param("Pan", 0.0, -1.0, 1.0,
+                lambda v: "C" if abs(v) < 0.005 else ("%dL" % round(-v * 50) if v < 0 else "%dR" % round(v * 50)))
+    assert pan.str_for_value(i._value_for_display(pan, "20L")) == "20L"
+
+
+def test_sidechain_matches_attached_track(mod):
+    kick = Track("Kick")
+    comp = Device("Compressor", [Param("S/C On", 0, 0, 1, items=["Off", "On"])])
+    a, b = RoutingType("Kick"), RoutingType("Kick")
+    a.attached_object, b.attached_object = Track("Kick"), kick  # two tracks named Kick
+    comp.available_input_routing_types = [a, b]
+    comp.available_input_routing_channels = []
+    comp.input_routing_type = None
+    song = Song([kick, Track("Bass", devices=[comp])])
+    inst(mod, song)._cmd_set_sidechain({"track_index": 1, "device_index": 0, "source_track_index": 0})
+    assert comp.input_routing_type is b

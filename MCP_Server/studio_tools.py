@@ -124,13 +124,16 @@ def _wait_file_stable(path: str, timeout: float = 15.0) -> None:
         raise RuntimeError(f"Rendered file never appeared or stayed empty: {path}")
 
 
+_RENDER_RUNNING = ("preparing", "positioning", "recording", "finalizing")
+
+
 def _wait_for_render(job_id: str, max_wait: float) -> Dict[str, Any]:
     conn = _server().get_ableton_connection()
     deadline = time.time() + max_wait
     status: Dict[str, Any] = {}
     while True:
         status = conn.send_command("get_render_status", {"job_id": job_id})
-        if status.get("state") not in ("recording", "finalizing"):
+        if status.get("state") not in _RENDER_RUNNING:
             return status
         if time.time() >= deadline:
             return status
@@ -169,7 +172,7 @@ def _render_reply(status: Dict[str, Any], label: str) -> str:
     if state == "done":
         report = _finish_render(status, label)
         return _dump(_compact_report(report))
-    if state in ("recording", "finalizing"):
+    if state in _RENDER_RUNNING:
         return (f"Render '{label}' is still {state} (job {status.get('id')}, "
                 f"~{status.get('expected_seconds')} s of audio). "
                 f"Call get_render_result with job_id='{status.get('id')}' and label='{label}'.")
@@ -638,7 +641,7 @@ def register(mcp, rich_telemetry_tool) -> None:  # noqa: C901 - flat list of too
             job, missing = _send("start_render", "start_render", params)
             if missing:
                 return missing
-            status = _wait_for_render(job["id"], min(MAX_TOOL_WAIT_S, float(job.get("expected_seconds", 30)) + 10))
+            status = _wait_for_render(job["id"], min(MAX_TOOL_WAIT_S, float(job.get("expected_seconds", 30)) + 20))
             return _render_reply(status, label)
         except Exception as e:
             return _err("rendering", e)

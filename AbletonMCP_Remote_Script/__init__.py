@@ -1597,7 +1597,7 @@ class AbletonMCP(ControlSurface):
         track = self._song.tracks[track_index]
         deleter = getattr(track, "delete_clip", None)
         if deleter is None:
-            raise Exception("Track.delete_clip is unavailable in this Live version (needs Live 12)")
+            raise Exception("Track.delete_clip is unavailable in this Live version (needs Live 11+)")
         start = float(start_time)
         end = float(end_time) if end_time is not None else None
         eps = 1e-6
@@ -1720,6 +1720,12 @@ class AbletonMCP(ControlSurface):
         '350 ms' -> (0.35, 's'), '-inf dB' -> (-inf, 'db'). None if no number."""
         import re
         s = str(text).strip().lower().replace(",", ".")
+        pan = re.match(r"^\s*(\d+(?:\.\d+)?)\s*([lr])\s*$", s)
+        if pan:
+            amount = float(pan.group(1))
+            return (-amount if pan.group(2) == "l" else amount), "pan"
+        if s in ("c", "center", "centre"):
+            return 0.0, "pan"
         if "inf" in s:
             unit = "db" if "db" in s else ""
             return (float("-inf") if "-" in s else float("inf")), unit
@@ -1866,8 +1872,10 @@ class AbletonMCP(ControlSurface):
         inserter = getattr(track, "insert_device", None)
         if inserter is not None:
             try:
-                index = before if position is None else int(position)
-                inserter(name, index)
+                if position is None:
+                    inserter(name)
+                else:
+                    inserter(name, int(position))
                 method = "insert_device"
             except Exception as e:
                 notes.append("insert_device failed (%s); used the browser" % e)
@@ -1878,6 +1886,8 @@ class AbletonMCP(ControlSurface):
             self._song.view.selected_track = track
             self.application().browser.load_item(item)
             method = "browser"
+            if position is not None:
+                notes.append("browser loading appends at the end; position ignored")
         return {"track_name": track.name, "method": method, "notes": notes,
                 "added": len(track.devices) - before,
                 "devices": self._device_summary(track)}
@@ -1919,13 +1929,20 @@ class AbletonMCP(ControlSurface):
             raise Exception("%s doesn't expose sidechain routing to scripts. "
                             "Use Live's Compressor, or route it by hand." % device.name)
         source = params.get("source_track_name")
-        if source is None and params.get("source_track_index") is not None:
-            source = self._song.tracks[int(params["source_track_index"])].name
+        source_track = None
+        if params.get("source_track_index") is not None:
+            source_track = self._song.tracks[int(params["source_track_index"])]
+            source = source or source_track.name
         if not source:
             raise Exception("source_track_index or source_track_name required")
         wanted = str(source).strip().lower()
         match = None
-        for t in types:
+        if source_track is not None:
+            for t in types:
+                if self._same(getattr(t, "attached_object", None), source_track):
+                    match = t
+                    break
+        for t in types if match is None else []:
             label = str(t.display_name).strip().lower()
             if label == wanted or label.endswith("-" + wanted) or label.split("-", 1)[-1] == wanted:
                 match = t
@@ -1960,6 +1977,12 @@ class AbletonMCP(ControlSurface):
                 "enabled_parameter": enabled}
 
     # ── clip automation ───────────────────────────────────────────────────────
+
+    def _automation_clip(self, params):
+        if params.get("arrangement"):
+            raise Exception("Live's API can't read or write envelopes on Arrangement clips; "
+                            "automate the Session clip, then place it with fill_arrangement")
+        return self._session_clip(params)
 
     def _session_clip(self, params):
         track = self._track_from(params)
@@ -2018,7 +2041,7 @@ class AbletonMCP(ControlSurface):
         steps (``resolution`` beats) because insert_step is the only writer
         the Live API offers; holds and quantised parameters use one step per
         segment."""
-        track, clip = self._session_clip(params)
+        track, clip = self._automation_clip(params)
         param = self._automation_target(track, params.get("target"))
         points = params.get("points") or []
         if not points:
@@ -2044,10 +2067,12 @@ class AbletonMCP(ControlSurface):
             clip.clear_envelope(param)
             envelope = None
         if envelope is None:
-            envelope = clip.create_automation_envelope(param)
+            try:
+                envelope = clip.create_automation_envelope(param)
+            except Exception as e:
+                raise Exception("Live refused to create an envelope for %s: %s" % (param.name, e))
         if envelope is None:
-            raise Exception("Live refused to create an envelope here (arrangement clips "
-                            "can't take envelope writes; use a Session clip)")
+            raise Exception("Live refused to create an envelope for %s" % param.name)
 
         quantized = bool(getattr(param, "is_quantized", False))
         steps = []
@@ -2075,6 +2100,13 @@ class AbletonMCP(ControlSurface):
             if quantized:
                 v = float(int(round(v)))
             envelope.insert_step(t, length, v)
+        # A parameter the user moved by hand is "overridden" and ignores its
+        # envelope until re-enabled.
+        if hasattr(param, "re_enable_automation"):
+            try:
+                param.re_enable_automation()
+            except Exception:
+                pass
         return {"track_name": track.name, "clip_name": clip.name,
                 "parameter": param.name, "points": len(resolved), "steps": len(steps),
                 "start": resolved[0][0], "end": last_t,
@@ -2082,7 +2114,7 @@ class AbletonMCP(ControlSurface):
                 "last_display": param.str_for_value(last_v)}
 
     def _cmd_clear_clip_automation(self, params):
-        track, clip = self._session_clip(params)
+        track, clip = self._automation_clip(params)
         target = params.get("target")
         if target:
             param = self._automation_target(track, target)
@@ -2092,16 +2124,17 @@ class AbletonMCP(ControlSurface):
         return {"cleared": "all", "clip_name": clip.name}
 
     def _cmd_get_clip_automation(self, params):
-        track, clip = self._session_clip(params)
+        track, clip = self._automation_clip(params)
         param = self._automation_target(track, params.get("target"))
         envelope = clip.automation_envelope(param)
         if envelope is None:
             return {"parameter": param.name, "has_envelope": False}
-        length = float(getattr(clip, "length", 4.0) or 4.0)
-        resolution = max(length / 256.0, float(params.get("resolution", 0.25)))
+        start = float(getattr(clip, "loop_start", 0.0) or 0.0)
+        end = float(getattr(clip, "loop_end", 0.0) or 0.0) or float(getattr(clip, "length", 4.0) or 4.0)
+        resolution = max((end - start) / 256.0, float(params.get("resolution", 0.25)))
         samples = []
-        t = 0.0
-        while t < length - 1e-9:
+        t = start
+        while t < end - 1e-9:
             v = float(envelope.value_at_time(t))
             samples.append({"time": round(t, 4), "value": round(v, 5),
                             "display": param.str_for_value(v)})
@@ -2152,7 +2185,11 @@ class AbletonMCP(ControlSurface):
         track, clip = self._session_clip(params)
         gi = params.get("groove_index")
         if gi is None:
-            clip.groove = None
+            try:
+                clip.groove = None
+            except Exception:
+                raise Exception("Live's API can't remove a clip's groove; remove it in the "
+                                "clip's Groove chooser, or assign a groove with timing 0")
             return {"clip_name": clip.name, "groove": None}
         grooves = self._grooves()
         gi = int(gi)
@@ -2163,41 +2200,85 @@ class AbletonMCP(ControlSurface):
 
     def _cmd_set_groove_amount(self, params):
         amount = max(0.0, min(1.3, float(params.get("amount", 1.0))))
-        self._song.groove_amount = amount
+        try:
+            self._song.groove_amount = amount
+        except Exception:
+            self._song.groove_amount = min(amount, 1.0)
         return {"global_amount": float(self._song.groove_amount)}
 
+    def _groove_roots(self):
+        """Where .agr grooves live: packs → Core Library → Grooves, then the
+        User Library and the current project."""
+        browser = self.application().browser
+        roots = []
+        for pack in getattr(getattr(browser, "packs", None), "children", []) or []:
+            if "core library" in str(pack.name).lower():
+                for child in getattr(pack, "children", []) or []:
+                    if str(child.name).lower() == "grooves":
+                        roots.append(child)
+        for attr in ("user_library", "current_project"):
+            root = getattr(browser, attr, None)
+            if root is not None:
+                for child in getattr(root, "children", []) or []:
+                    if "groove" in str(child.name).lower():
+                        roots.append(child)
+        return roots
+
+    def _find_groove_item(self, name):
+        wanted = str(name).strip().lower()
+        if wanted.endswith(".agr"):
+            wanted = wanted[:-4]
+
+        def walk(item, depth):
+            for child in getattr(item, "children", []) or []:
+                n = str(child.name).strip().lower()
+                if n.endswith(".agr") and n[:-4] == wanted:
+                    return child
+            if depth >= 3:
+                return None
+            for child in getattr(item, "children", []) or []:
+                if getattr(child, "is_folder", False):
+                    found = walk(child, depth + 1)
+                    if found is not None:
+                        return found
+            return None
+
+        for root in self._groove_roots():
+            found = walk(root, 0)
+            if found is not None:
+                return found
+        return None
+
     def _cmd_load_groove(self, params):
-        """Find a groove (.agr) in the browser by name, e.g. "MPC 16 Swing-58",
-        add it to the pool and optionally apply it to a clip."""
+        """Add a library groove (e.g. "MPC 16 Swing-58") to the Groove Pool,
+        reusing it if it's already there, and optionally assign it to a clip."""
         name = str(params.get("name", "")).strip()
-        item = self._browser_find_by_name(
-            name, root_names=("grooves", "packs", "user_library", "current_project"),
-            max_depth=5)
-        if item is None:
-            raise Exception("Groove '%s' not found in the browser" % name)
-        before = [g.name for g in self._grooves()]
-        clip = None
-        if params.get("clip_index") is not None:
-            track, clip = self._session_clip(params)
-            slot = list(track.clip_slots)[int(params["clip_index"])]
-            self._song.view.selected_track = track
-            try:
-                self._song.view.highlighted_clip_slot = slot
-                self._song.view.detail_clip = clip
-            except Exception:
-                pass
-        self.application().browser.load_item(item)
+        if name.lower().endswith(".agr"):
+            name = name[:-4]
         grooves = self._grooves()
-        added = [i for i, g in enumerate(grooves) if g.name not in before]
-        target_index = added[-1] if added else next(
-            (i for i, g in enumerate(grooves) if g.name.lower().startswith(name.lower())), None)
+        index = next((i for i, g in enumerate(grooves) if g.name.lower() == name.lower()), None)
+        loaded = None
+        if index is None:
+            item = self._find_groove_item(name)
+            if item is None:
+                raise Exception("Groove '%s' not found under Core Library > Grooves "
+                                "or the User Library" % name)
+            before = len(grooves)
+            self.application().browser.load_item(item)
+            grooves = self._grooves()
+            if len(grooves) > before:
+                index = len(grooves) - 1
+            else:
+                index = next((i for i, g in enumerate(grooves)
+                              if g.name.lower() == name.lower()), None)
+            loaded = item.name
         applied = None
-        if clip is not None and target_index is not None:
-            if getattr(clip, "groove", None) is None or clip.groove.name != grooves[target_index].name:
-                clip.groove = grooves[target_index]
+        if index is not None and params.get("clip_index") is not None:
+            track, clip = self._session_clip(params)
+            clip.groove = grooves[index]
             applied = clip.groove.name if clip.groove is not None else None
-        return {"loaded": item.name, "groove_index": target_index, "applied_to_clip": applied,
-                "pool": [g.name for g in grooves]}
+        return {"loaded": loaded or "(already in pool)", "groove_index": index,
+                "applied_to_clip": applied, "pool": [g.name for g in grooves]}
 
     # ── clip properties, scale, tracks ────────────────────────────────────────
 
@@ -2209,17 +2290,30 @@ class AbletonMCP(ControlSurface):
         changed = {}
         props = params.get("properties") or {}
         is_audio = bool(getattr(clip, "is_audio_clip", False))
-        for key in ("pitch_coarse", "pitch_fine", "gain", "warping", "warp_mode",
-                    "looping", "loop_start", "loop_end", "start_marker", "end_marker",
-                    "muted", "name", "velocity_amount"):
+        # Moving a range later: set its end first, or Live rejects the start
+        # ("cannot be set behind the end marker").
+        order = ["pitch_coarse", "pitch_fine", "gain", "warping", "warp_mode", "looping"]
+        for lo, hi in (("loop_start", "loop_end"), ("start_marker", "end_marker")):
+            current_end = float(getattr(clip, hi, 0.0) or 0.0)
+            if props.get(lo) is not None and float(props[lo]) >= current_end:
+                order += [hi, lo]
+            else:
+                order += [lo, hi]
+        order += ["muted", "name", "velocity_amount"]
+        if props.get("warp_mode") is not None and isinstance(props["warp_mode"], str):
+            props = dict(props)
+            props["warp_mode"] = self._WARP_MODES[props["warp_mode"].strip().lower()]
+        available = list(getattr(clip, "available_warp_modes", []) or [])
+        if props.get("warp_mode") is not None and available and int(props["warp_mode"]) not in available:
+            raise Exception("Warp mode %s isn't available for this clip (available: %s)"
+                            % (props["warp_mode"], available))
+        for key in order:
             if key not in props or props[key] is None:
                 continue
             value = props[key]
             if key in ("pitch_coarse", "pitch_fine", "gain", "warping", "warp_mode") and not is_audio:
                 raise Exception("%s only applies to audio clips; use transform_clip_notes "
                                 "to transpose MIDI" % key)
-            if key == "warp_mode" and isinstance(value, str):
-                value = self._WARP_MODES[value.strip().lower()]
             if key in ("pitch_coarse", "pitch_fine", "warp_mode"):
                 value = int(value)
             elif key in ("warping", "looping", "muted"):
@@ -2227,7 +2321,8 @@ class AbletonMCP(ControlSurface):
             elif key != "name":
                 value = float(value)
             setattr(clip, key, value)
-            changed[key] = getattr(clip, key)
+            # warping is applied by Live on a later tick; report what was asked
+            changed[key] = value if key in ("warping", "warp_mode") else getattr(clip, key)
         return {"clip_name": clip.name, "changed": changed,
                 "gain_display": getattr(clip, "gain_display_string", None) if is_audio else None}
 
@@ -2282,11 +2377,17 @@ class AbletonMCP(ControlSurface):
     def _cmd_duplicate_track(self, params):
         index = int(params.get("track_index", -1))
         track = self._mixer_target(index, "track")
+        source_name = track.name
         self._song.duplicate_track(index)
-        copy = self._song.tracks[index + 1]
+        # Live selects the copy; for groups it lands after the children, so
+        # index + 1 is not reliable.
+        copy = getattr(self._song.view, "selected_track", None)
+        tracks = list(self._song.tracks)
+        new_index = next((i for i, t in enumerate(tracks) if self._same(t, copy)), index + 1)
+        copy = tracks[new_index]
         if params.get("name"):
             copy.name = str(params["name"])
-        return {"source": track.name, "new_index": index + 1, "name": copy.name}
+        return {"source": source_name, "new_index": new_index, "name": copy.name}
 
     def _cmd_get_mixer_overview(self, params):
         """Every track, return and the master: devices plus fader, pan,
@@ -2310,10 +2411,21 @@ class AbletonMCP(ControlSurface):
     # ── rendering by resampling ───────────────────────────────────────────────
     #
     # Live has no offline export in its API. A render is a real-time
-    # arrangement recording of the Resampling input onto a muted helper audio
-    # track, driven by a tick loop so the socket thread never blocks. The
-    # state the user had (loop, metronome, punch, arms, solos, playhead) is
-    # restored afterwards.
+    # arrangement recording of the Resampling input onto a helper audio track,
+    # driven by a tick loop so the socket thread never blocks:
+    #
+    #   preparing   new tracks expose no input routings in the tick they are
+    #               created, so routing is retried each tick (10 s cap)
+    #   positioning start_time/current_song_time are set, then confirmed on the
+    #               next tick before recording starts
+    #   recording   until the playhead passes end_beat
+    #   finalizing  until the recorded clip and its file_path appear
+    #   done/error  user state (loop, metronome, punch, arms, solos, playhead,
+    #               selection) is restored; the helper track is muted so the
+    #               take never plays back in the song
+    #
+    # The helper track's monitoring is Off (no feedback) and every older take
+    # on it is deleted before recording, so nothing on it reaches Resampling.
 
     _render_job = None
 
@@ -2328,7 +2440,7 @@ class AbletonMCP(ControlSurface):
 
     def _cmd_start_render(self, params):
         job = self._render_job
-        if job and job.get("state") in ("recording", "finalizing"):
+        if job and job.get("state") in ("preparing", "positioning", "recording", "finalizing"):
             raise Exception("A render is already running (job %s)" % job["id"])
         song = self._song
         start = float(params.get("start_beat", 0.0))
@@ -2345,63 +2457,90 @@ class AbletonMCP(ControlSurface):
         tempo = float(song.tempo)
         job = {
             "id": "r%d" % int(time.time() * 1000),
-            "state": "recording",
+            "state": "preparing",
             "start_beat": start, "end_beat": end, "record_from": record_from,
             "tempo": tempo,
             "expected_seconds": round((end - record_from) * 60.0 / tempo, 2),
-            "ticks": 0, "final_ticks": 0,
+            "ticks": 0, "phase_ticks": 0,
             "file_path": None, "error": None,
             "solo_tracks": list(params.get("solo_tracks") or []),
+            "_params": dict(params),
             "_render": render,
         }
-        job["max_ticks"] = int(job["expected_seconds"] * 10) + 150
-        saved = {
+        # recording budget plus room for up to 4 bars of count-in
+        job["max_ticks"] = int((job["expected_seconds"] + 16 * 60.0 / tempo) * 10) + 100
+        view = song.view
+        job["_saved"] = {
             "loop": song.loop,
             "metronome": getattr(song, "metronome", False),
             "punch_in": getattr(song, "punch_in", False),
             "punch_out": getattr(song, "punch_out", False),
-            "record_mode": song.record_mode,
             "song_time": song.current_song_time,
-            "arms": [(t, t.arm) for t in tracks if getattr(t, "can_be_armed", False)],
-            "solos": [(t, t.solo) for t in tracks],
+            "start_time": getattr(song, "start_time", None),
+            "selected_track": getattr(view, "selected_track", None),
+            "arms": [(t, t.arm) for t in tracks
+                     if getattr(t, "can_be_armed", False) and not self._same(t, render)],
+            "solos": [(t, t.solo) for t in tracks if not self._same(t, render)],
         }
-        job["_saved"] = saved
-        try:
-            self._render_configure(job, params, render, tracks, saved)
-        except Exception:
-            self._render_restore(job)
-            raise
         self._render_job = job
         self.schedule_message(1, self._render_tick)
         return self._public_job(job)
 
-    def _render_configure(self, job, params, render, tracks, saved):
-        song = self._song
-        record_from, end = job["record_from"], job["end_beat"]
-        for t, armed in saved["arms"]:
-            if armed and not self._same(t, render):
-                t.arm = False
-        routed = None
-        for rt in getattr(render, "available_input_routing_types", []):
+    @staticmethod
+    def _same(a, b):
+        """Live hands out fresh Python proxies, so compare LOM objects by
+        their underlying pointer rather than identity."""
+        if a is b:
+            return True
+        if a is None or b is None:
+            return False
+        pa, pb = getattr(a, "_live_ptr", None), getattr(b, "_live_ptr", None)
+        if pa is not None and pb is not None:
+            return pa == pb
+        try:
+            return a == b
+        except Exception:
+            return False
+
+    @staticmethod
+    def _public_job(job):
+        return {k: v for k, v in dict(job).items() if not k.startswith("_")}
+
+    def _render_try_route(self, render):
+        for rt in list(getattr(render, "available_input_routing_types", []) or []):
             if "resampl" in str(rt.display_name).lower():
                 render.input_routing_type = rt
-                routed = str(rt.display_name)
-                break
-        if routed is None:
-            raise Exception("Couldn't route the render track to Resampling")
+                return str(rt.display_name)
+        return None
+
+    def _render_configure(self, job):
+        """Everything after routing succeeded: arms, solos, transport, position."""
+        song = self._song
+        render = job["_render"]
+        params = job["_params"]
+        tracks = list(song.tracks)
+        for t in tracks:
+            if self._same(t, render):
+                continue
+            try:
+                if getattr(t, "can_be_armed", False) and t.arm:
+                    t.arm = False
+                if getattr(t, "implicit_arm", False):
+                    t.implicit_arm = False
+            except Exception:
+                pass
         try:
-            render.current_monitoring_state = 2  # Off: no feedback loop
+            render.current_monitoring_state = 2  # Off: plays nothing live, no feedback
         except Exception:
             pass
-        render.mute = True
         for clip in list(getattr(render, "arrangement_clips", [])):
-            if clip.end_time > record_from and clip.start_time < end + 1.0:
-                try:
-                    render.delete_clip(clip)
-                except Exception:
-                    pass
+            try:
+                render.delete_clip(clip)
+            except Exception:
+                pass
+        render.mute = False
 
-        solo = params.get("solo_tracks") or []
+        solo = job["solo_tracks"]
         if solo:
             for t in tracks:
                 if not self._same(t, render):
@@ -2416,29 +2555,33 @@ class AbletonMCP(ControlSurface):
             if hasattr(song, attr):
                 setattr(song, attr, False)
         if params.get("follow_arrangement", True):
+            try:
+                song.stop_all_clips(False)
+            except Exception:
+                pass
             song.back_to_arranger = False
-        render.arm = True
-        song.current_song_time = record_from
-        song.record_mode = True
-        song.start_playing()
-
-    @staticmethod
-    def _same(a, b):
-        """Live hands out fresh Python proxies, so compare LOM objects by
-        their underlying pointer rather than identity."""
-        if a is b:
-            return True
-        pa, pb = getattr(a, "_live_ptr", None), getattr(b, "_live_ptr", None)
-        if pa is not None and pb is not None:
-            return pa == pb
         try:
-            return a == b
+            song.view.selected_track = render
         except Exception:
-            return False
+            pass
+        render.arm = True
+        if hasattr(song, "start_time"):
+            song.start_time = job["record_from"]
+        song.current_song_time = job["record_from"]
 
-    @staticmethod
-    def _public_job(job):
-        return {k: v for k, v in job.items() if not k.startswith("_")}
+    def _render_window_offset(self, job, clip):
+        """Seconds into the recorded file where start_beat sits. Recorded
+        files carry pre-roll, so song time clip.start_time maps to the
+        clip's start_marker, not to the start of the file."""
+        rel = job["start_beat"] - float(clip.start_time)
+        beat_s = 60.0 / job["tempo"]
+        try:
+            if getattr(clip, "warping", False):
+                samples = clip.beat_to_sample_time(float(clip.start_marker) + rel)
+                return float(samples) / float(clip.sample_rate)
+            return float(clip.start_marker) + rel * beat_s
+        except Exception:
+            return rel * beat_s
 
     def _render_restore(self, job):
         song = self._song
@@ -2451,14 +2594,14 @@ class AbletonMCP(ControlSurface):
         except Exception:
             pass
         if render is not None:
-            try:
-                render.arm = False
-            except Exception:
-                pass
+            for attr, value in (("arm", False), ("mute", True)):
+                try:
+                    setattr(render, attr, value)
+                except Exception:
+                    pass
         for t, armed in saved.get("arms", []):
             try:
-                if not self._same(t, render):
-                    t.arm = armed
+                t.arm = armed
             except Exception:
                 pass
         for t, soloed in saved.get("solos", []):
@@ -2473,53 +2616,91 @@ class AbletonMCP(ControlSurface):
                 except Exception:
                     pass
         try:
+            if saved.get("start_time") is not None and hasattr(song, "start_time"):
+                song.start_time = saved["start_time"]
             song.current_song_time = saved.get("song_time", 0.0)
         except Exception:
             pass
+        if saved.get("selected_track") is not None:
+            try:
+                song.view.selected_track = saved["selected_track"]
+            except Exception:
+                pass
+
+    def _render_fail(self, job, message):
+        job["state"] = "error"
+        job["error"] = message
+        self.log_message("Render error: " + message)
+        self._render_restore(job)
 
     def _render_tick(self):
         job = self._render_job
-        if not job or job.get("state") not in ("recording", "finalizing"):
+        if not job or job.get("state") not in ("preparing", "positioning", "recording", "finalizing"):
             return
         song = self._song
         try:
             job["ticks"] += 1
-            if job["state"] == "recording":
+            job["phase_ticks"] += 1
+            state = job["state"]
+
+            if state == "preparing":
+                if self._render_try_route(job["_render"]) is None:
+                    if job["phase_ticks"] > 100:
+                        raise Exception("Couldn't route the render track to Resampling")
+                    self.schedule_message(1, self._render_tick)
+                    return
+                self._render_configure(job)
+                job["state"], job["phase_ticks"] = "positioning", 0
+                self.schedule_message(1, self._render_tick)
+                return
+
+            if state == "positioning":
+                if abs(song.current_song_time - job["record_from"]) > 1e-3:
+                    if job["phase_ticks"] > 20:
+                        raise Exception("Couldn't move the playhead to beat %s" % job["record_from"])
+                    song.current_song_time = job["record_from"]
+                    self.schedule_message(1, self._render_tick)
+                    return
+                song.record_mode = True
+                song.start_playing()
+                job["state"], job["phase_ticks"] = "recording", 0
+                self.schedule_message(1, self._render_tick)
+                return
+
+            if state == "recording":
                 counting = bool(getattr(song, "is_counting_in", False))
                 if song.current_song_time >= job["end_beat"]:
                     song.record_mode = False
                     song.stop_playing()
-                    job["state"] = "finalizing"
-                elif not song.is_playing and not counting and job["ticks"] > 10:
+                    job["state"], job["phase_ticks"] = "finalizing", 0
+                elif not song.is_playing and not counting and job["phase_ticks"] > 10:
                     raise Exception("Playback stopped before the render finished")
-                elif job["ticks"] > job["max_ticks"]:
+                elif job["phase_ticks"] > job["max_ticks"]:
                     raise Exception("Render timed out")
                 self.schedule_message(1, self._render_tick)
                 return
-            job["final_ticks"] += 1
+
+            # finalizing
             render = job["_render"]
             candidates = [c for c in getattr(render, "arrangement_clips", [])
-                          if c.start_time >= job["record_from"] - 0.05]
+                          if c.end_time > job["start_beat"]]
             clip = max(candidates, key=lambda c: c.start_time) if candidates else None
             path = getattr(clip, "file_path", None) if clip is not None else None
-            if path and job["final_ticks"] >= 3:
+            if path and job["phase_ticks"] >= 3:
                 job["file_path"] = str(path)
                 job["clip_start_beat"] = float(clip.start_time)
-                beat_s = 60.0 / job["tempo"]
-                job["window_offset_s"] = round((job["start_beat"] - clip.start_time) * beat_s, 4)
-                job["window_seconds"] = round((job["end_beat"] - job["start_beat"]) * beat_s, 4)
+                job["window_offset_s"] = round(self._render_window_offset(job, clip), 4)
+                job["window_seconds"] = round(
+                    (job["end_beat"] - job["start_beat"]) * 60.0 / job["tempo"], 4)
                 job["state"] = "done"
                 self._render_restore(job)
                 return
-            if job["final_ticks"] > 50:
+            if job["phase_ticks"] > 50:
                 raise Exception("Recording finished but no audio clip appeared on '%s'"
                                 % self.RENDER_TRACK_NAME)
             self.schedule_message(1, self._render_tick)
         except Exception as e:
-            job["state"] = "error"
-            job["error"] = str(e)
-            self.log_message("Render error: " + str(e))
-            self._render_restore(job)
+            self._render_fail(job, str(e))
 
     def _cmd_get_render_status(self, params):
         job = self._render_job
@@ -2532,13 +2713,10 @@ class AbletonMCP(ControlSurface):
 
     def _cmd_cancel_render(self, params):
         job = self._render_job
-        if not job or job.get("state") not in ("recording", "finalizing"):
+        if not job or job.get("state") not in ("preparing", "positioning", "recording", "finalizing"):
             return {"state": "idle"}
-        job["state"] = "error"
-        job["error"] = "cancelled"
-        self._render_restore(job)
+        self._render_fail(job, "cancelled")
         return self._public_job(job)
-
 
     # ── Browser implementations ───────────────────────────────────────────────
 
@@ -3309,8 +3487,12 @@ class AbletonMCP(ControlSurface):
                             "is_enabled": bool(getattr(param, "is_enabled", True)),
                             "is_quantized": bool(getattr(param, "is_quantized", False)),
                         }
-                        if hasattr(param, "value_string"):
-                            entry["value_string"] = str(param.value_string)
+                        entry["display"] = self._param_display(param)
+                        if entry["is_quantized"]:
+                            try:
+                                entry["value_items"] = [str(v) for v in param.value_items]
+                            except Exception:
+                                pass
                         if hasattr(param, "automation_state"):
                             try:
                                 entry["automation_state"] = int(param.automation_state)
@@ -3646,10 +3828,8 @@ class AbletonMCP(ControlSurface):
                 raise IndexError("Parameter index out of range")
             param = device.parameters[parameter_index]
             old = float(param.value)
-            if display is not None:
-                param.value = self._value_for_display(param, display)
-            else:
-                param.value = max(float(param.min), min(float(param.max), float(value)))
+            self._apply_param_value(param, value=None if display is not None else value,
+                                    display=display)
             return {
                 "track_index": track_index,
                 "device_index": device_index,
