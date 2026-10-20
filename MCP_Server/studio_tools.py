@@ -397,11 +397,12 @@ def register(mcp, rich_telemetry_tool) -> None:  # noqa: C901 - flat list of too
     def load_groove(ctx: Context, name: str, track_index: Optional[int] = None,
                     clip_index: Optional[int] = None, user_prompt: str = "") -> str:
         """
-        Load a groove from Live's library into the Groove Pool by name and
-        optionally apply it to a Session clip. Live's Core Library has MPC-style
-        swing grooves such as "MPC 16 Swing-54", "MPC 16 Swing-58", "MPC 16 Swing-62",
-        "MPC 8 Swing-58" and "Logic Swing 16ths 60" (names vary by Live version;
-        if a name fails, browse the Grooves category).
+        Load a groove from Live's library into the Groove Pool by name (reused if
+        it's already there) and optionally apply it to a Session clip. Live 11+
+        swing grooves live in Core Library > Grooves > Swing, e.g.
+        "Swing MPC 3000 16ths 54" (also 57, 61, 64, 68, 71, 74) and
+        "Swing 16ths 54" (Basic: 52, 54, 57, 59, 61, 64, 66, ...). For exact
+        values such as 56 or 58 %, use transform_clip_notes swing instead.
 
         Parameters:
         - name: Groove name without the .agr extension
