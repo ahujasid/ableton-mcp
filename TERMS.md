@@ -91,6 +91,6 @@ Material changes get a new date above and a note in the release notes. This is a
 ## Summary
 
 - Anonymous telemetry: on, no creative content, one variable away from off.
-- Dataset recording: on, includes your prompts and MIDI, one variable away from off.
+- Dataset recording: off until you explicitly opt in; you can disable it at any time.
 - Nothing is sent without configured credentials.
 - You can get your rows deleted; you can't un-train a model.
