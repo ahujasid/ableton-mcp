@@ -786,6 +786,42 @@ def register(mcp, rich_telemetry_tool) -> None:  # noqa: C901 - flat list of too
             return _err("forecasting masking", e)
 
     @mcp.tool()
+    @rich_telemetry_tool("review_interplay")
+    def review_interplay(ctx: Context, clips: List[Dict[str, Any]],
+                         lead_track_index: Optional[int] = None,
+                         user_prompt: str = "") -> str:
+        """
+        How parts talk to each other when they loop together, from their notes:
+        rolling / riding / stabs / walking character per part, interlock vs
+        doubling for every pair, rhythmic imitation (a part echoing another's
+        rhythm 1-8 beats later), how much of the 16th grid the parts cover
+        together, and call and response (which parts answer the lead's gaps).
+
+        Parameters:
+        - clips: list of {"track_index": 2, "clip_index": 0, "role": "bass"}
+        - lead_track_index: Optional track index of the lead (vocal-like) part
+        """
+        try:
+            from . import midi_tools
+            conn = _server().get_ableton_connection()
+            info = conn.send_command("get_session_info", {})
+            names = {t["index"]: t["name"] for t in info.get("tracks", [])}
+            parts, lead = [], None
+            for c in clips:
+                ti, ci = int(c["track_index"]), int(c.get("clip_index", 0))
+                data = _clip_notes(ti, ci)
+                name = names.get(ti, f"track {ti}")
+                if any(p["name"] == name for p in parts):
+                    name = f"{name} [{data.get('clip_name') or ci}]"
+                parts.append({"name": name, "notes": data.get("notes", []),
+                              "clip_length": float(data.get("length", 4.0)), "role": c.get("role")})
+                if lead_track_index is not None and ti == int(lead_track_index):
+                    lead = name
+            return _dump(midi_tools.review_interplay(parts, lead=lead))
+        except Exception as e:
+            return _err("reviewing interplay", e)
+
+    @mcp.tool()
     @rich_telemetry_tool("transform_clip_notes")
     def transform_clip_notes(ctx: Context, track_index: int, clip_index: int,
                              ops: Dict[str, Any], target_clip_index: Optional[int] = None,

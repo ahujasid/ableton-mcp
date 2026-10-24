@@ -588,3 +588,67 @@ def test_tile_notes_copies_and_offsets():
         mt.tile_notes(pattern, 4, 0)
     with pytest.raises(ValueError):
         mt.tile_notes(pattern, 0, 2)
+
+
+# ---------------------------------------------------------------------------
+# review_interplay
+# ---------------------------------------------------------------------------
+
+def _n(p, t, d=0.1, v=100):
+    return {"pitch": p, "start_time": t, "duration": d, "velocity": v, "mute": False}
+
+
+def test_interplay_characters_and_pairs():
+    from MCP_Server.midi_tools import review_interplay
+    rolling = [_n(40, s * 0.25) for s in range(16) if s % 4 != 0]           # 12 off-beat 16ths
+    riff = [_n(52, s * 0.25) for s in range(16) if s % 4 != 0]               # doubles the bass
+    stabs = [_n(64, t, 0.15) for t in (0.75, 1.5, 3.5)]                     # in the gaps
+    kick = [_n(36, b) for b in range(4)]
+    r = review_interplay([
+        {"name": "Bass", "notes": rolling, "clip_length": 4.0, "role": "bass"},
+        {"name": "Guitar", "notes": riff, "clip_length": 4.0},
+        {"name": "Brass", "notes": stabs, "clip_length": 4.0},
+        {"name": "Kick", "notes": kick, "clip_length": 4.0, "role": "drums"},
+    ])
+    parts = {p["name"]: p for p in r["parts"]}
+    assert "rolling" in parts["Bass"]["character"]
+    assert "stabs" in parts["Brass"]["character"]
+    pair = next(p for p in r["pairs"] if {p["a"], p["b"]} == {"Bass", "Guitar"})
+    assert pair["doubling"] == 1.0
+    kb = next(p for p in r["pairs"] if {p["a"], p["b"]} == {"Bass", "Kick"})
+    assert kb["interlock"] == 1.0
+    assert r["coverage_16ths"] == 1.0
+    assert any("Bass and Guitar" in f for f in r["flags"])
+
+
+def test_interplay_call_response_and_imitation():
+    from MCP_Server.midi_tools import review_interplay
+    lead = [_n(65, t, 0.5) for t in (0, 0.5, 1.0, 1.5)]                      # sings beats 0-1
+    answer = [_n(72, t, 0.25) for t in (2.0, 2.5, 3.0)]                      # answers beats 2-3
+    echo = [_n(60, t + 4.0, 0.2) for t in (0, 0.75, 1.5)]                    # rhythm 1 bar later
+    call = [_n(60, t, 0.2) for t in (0, 0.75, 1.5)]
+    r = review_interplay([
+        {"name": "Lead", "notes": lead, "clip_length": 4.0},
+        {"name": "Backing", "notes": answer, "clip_length": 4.0},
+    ], lead="Lead")
+    ans = r["call_and_response"]["answers"][0]
+    assert ans["part"] == "Backing" and ans["fills_lead_gaps"] == 1.0
+    r2 = review_interplay([
+        {"name": "Call", "notes": call, "clip_length": 8.0},
+        {"name": "Echo", "notes": echo, "clip_length": 8.0},
+    ])
+    im = r2["pairs"][0].get("imitation")
+    assert im and im["leader"] == "Call" and im["follower"] == "Echo" and im["beats_later"] == 4
+
+
+def test_interplay_polymeter_cycle_and_lead_errors():
+    from MCP_Server.midi_tools import review_interplay
+    circle = [_n(70, t) for t in (0, 0.75, 1.5)]
+    r = review_interplay([
+        {"name": "Circle", "notes": circle, "clip_length": 2.25},
+        {"name": "Four", "notes": [_n(36, b) for b in range(4)], "clip_length": 4.0},
+    ], span_beats=36)
+    c = next(p for p in r["parts"] if p["name"] == "Circle")
+    assert c["realigns_every_bars"] == 9
+    with pytest.raises(ValueError):
+        review_interplay([{"name": "A", "notes": circle, "clip_length": 4.0}], lead="Nope")

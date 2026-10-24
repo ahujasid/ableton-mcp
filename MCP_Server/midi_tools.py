@@ -923,6 +923,172 @@ def forecast_masking(parts: Sequence[Dict[str, Any]],
 # ---------------------------------------------------------------------------
 
 #: The fixed order in which transform_notes applies ops.
+
+# ---------------------------------------------------------------------------
+# Interplay: how parts lock, answer and imitate each other
+# ---------------------------------------------------------------------------
+
+_INTERPLAY_SPAN_CAP = 64.0
+
+
+def _lcm_span(lengths: Sequence[float]) -> float:
+    lcm = 1
+    for L in lengths:
+        u = max(1, _round_half_up(L / SIXTEENTH))
+        lcm = lcm * u // math.gcd(lcm, u)
+        if lcm * SIXTEENTH >= _INTERPLAY_SPAN_CAP:
+            break
+    return min(lcm * SIXTEENTH, _INTERPLAY_SPAN_CAP)
+
+
+def _tiled(notes, L: float, span: float):
+    """(onset 16th slots, sounding beat indices, mean note length) over the span."""
+    onsets, sounding, lengths = set(), set(), []
+    k = 0
+    while k * L < span - EPS:
+        for n in notes:
+            s = n["start_time"] + k * L
+            if s >= span - EPS:
+                continue
+            onsets.add(int(_round_half_up(s / SIXTEENTH)) % max(1, int(round(span / SIXTEENTH))))
+            e = min(n["start_time"] + n["duration"], L) + k * L
+            for b in range(int(math.floor(s + 1e-9)), int(math.ceil(e - 1e-9))):
+                sounding.add(b)
+            lengths.append(n["duration"])
+        k += 1
+    return onsets, sounding, (_mean(lengths) if lengths else 0.0)
+
+
+def _character(per_bar: float, on_beat: float, on_8th: float, mean_len: float,
+               steps: Optional[float]) -> List[str]:
+    tags = []
+    if per_bar >= 10 and on_beat <= 0.4:
+        tags.append("rolling")
+    if 6 <= per_bar <= 10 and on_8th >= 0.8:
+        tags.append("riding")
+    if per_bar <= 5 and mean_len <= 0.3:
+        tags.append("stabs")
+    if 3 <= per_bar <= 8 and on_8th >= 0.75 and steps is not None and steps >= 0.6:
+        tags.append("walking")
+    return tags
+
+
+def review_interplay(parts: Sequence[Dict[str, Any]], lead: Optional[str] = None,
+                     span_beats: Optional[float] = None) -> Dict[str, Any]:
+    """How parts relate rhythmically when they loop together.
+
+    For each part: onsets per bar, share on the beat and on 8ths, favourite
+    16th positions, and character tags (rolling, riding, stabs, walking).
+    For each pair: ``interlock`` (onsets in one part but not the other, over
+    all onset slots) and ``doubling`` (shared onsets), plus rhythmic
+    ``imitation`` (one part's rhythm repeating the other's 1-8 beats later).
+    With ``lead`` (a part name): how each part answers the lead, i.e. the
+    share of beats right after a lead phrase stops in which that part plays.
+    ``coverage`` is the share of 16ths that at least one part attacks.
+    """
+    if not parts:
+        raise ValueError("parts must be a non-empty list")
+    P = []
+    for i, part in enumerate(parts):
+        name = str(part.get("name") or f"part {i + 1}")
+        L = _positive(part.get("clip_length"), f"clip_length of part '{name}'")
+        _, active, _, _ = _sounding(part.get("notes") or [], L)
+        P.append({"name": name, "role": _role(part.get("role")), "L": L, "notes": active})
+    span = _positive(span_beats, "span_beats") if span_beats else _lcm_span([p["L"] for p in P])
+    n16 = max(1, int(round(span / SIXTEENTH)))
+    bars = span / BAR_BEATS
+
+    report_parts, flags = [], []
+    for p in P:
+        on, sounding, mean_len = _tiled(p["notes"], p["L"], span)
+        p["on"], p["sounding"] = on, sounding
+        cnt = len(on)
+        hist = [0] * 16
+        for s in on:
+            hist[s % 16] += 1
+        pitches = [n["pitch"] for n in p["notes"]]
+        moves = [abs(b - a) for a, b in zip(pitches, pitches[1:]) if a != b]
+        steps = (sum(1 for m in moves if m <= 2) / len(moves)) if moves else None
+        on_beat = (sum(1 for s in on if s % 4 == 0) / cnt) if cnt else 0.0
+        on_8th = (sum(1 for s in on if s % 2 == 0) / cnt) if cnt else 0.0
+        per_bar = cnt / bars if bars else 0.0
+        entry = {
+            "name": p["name"], "onsets_per_bar": _r(per_bar, 2), "on_beat_share": _r(on_beat, 2),
+            "on_8th_share": _r(on_8th, 2),
+            "favourite_16ths": [i for i in sorted(range(16), key=lambda i: -hist[i]) if hist[i]][:5],
+            "mean_length_beats": _r(mean_len, 3),
+            "character": _character(per_bar, on_beat, on_8th, mean_len, steps),
+            "cycle_beats": _r(p["L"], 3),
+        }
+        if p["L"] % BAR_BEATS > EPS and BAR_BEATS % p["L"] > EPS:
+            g = math.gcd(_round_half_up(p["L"] / SIXTEENTH), 16)
+            entry["realigns_every_bars"] = _r(_round_half_up(p["L"] / SIXTEENTH) * 16 / g / 16, 2)
+        if "stabs" in entry["character"] and on_beat > 0.5:
+            flags.append(f"{p['name']}: stabs land mostly on the beat; stabs read better in the gaps "
+                         f"(e.g. 16ths 3, 6, 14, 15 of the bar)")
+        report_parts.append(entry)
+
+    pairs = []
+    for a, b in combinations(P, 2):
+        union = a["on"] | b["on"]
+        if not union:
+            continue
+        inter = a["on"] & b["on"]
+        best = (0.0, 0)
+        for k in range(1, 9):  # imitation: b repeats a's rhythm k beats later (and vice versa)
+            for x, y, sign in ((a, b, 1), (b, a, -1)):
+                shifted = {(s + 4 * k) % n16 for s in x["on"]}
+                if shifted and y["on"]:
+                    j = len(shifted & y["on"]) / len(shifted | y["on"])
+                    if j > best[0]:
+                        best = (j, sign * k)
+        pair = {"a": a["name"], "b": b["name"],
+                "interlock": _r(1 - len(inter) / len(union), 2),
+                "doubling": _r(len(inter) / len(union), 2)}
+        if best[0] >= 0.7 and best[0] > pair["doubling"] + 0.2:
+            leader, follower = (a, b) if best[1] > 0 else (b, a)
+            pair["imitation"] = {"leader": leader["name"], "follower": follower["name"],
+                                 "beats_later": abs(best[1]), "similarity": _r(best[0], 2)}
+        pairs.append(pair)
+        roles = {a["role"], b["role"]}
+        if pair["doubling"] >= 0.6 and not roles & {"drums", "perc"}:
+            flags.append(f"{a['name']} and {b['name']} hit together {round(pair['doubling'] * 100)} % of the time: "
+                         f"fine if they're meant to ride one riff together, otherwise let one answer the other")
+    pairs.sort(key=lambda d: -d["interlock"])
+
+    union_all = set().union(*(p["on"] for p in P)) if P else set()
+    coverage = len(union_all) / n16
+    result = {"span_beats": _r(span, 3), "parts": report_parts, "pairs": pairs,
+              "coverage_16ths": _r(coverage, 2)}
+
+    if lead is not None:
+        L = next((p for p in P if p["name"] == lead), None)
+        if L is None:
+            raise ValueError(f"lead '{lead}' is not one of the parts")
+        n_beats = int(round(span))
+        lead_on = [b in L["sounding"] for b in range(n_beats)]
+        gaps = [b for b in range(n_beats) if not lead_on[b] and lead_on[b - 1]]
+        answers = []
+        for p in P:
+            if p is L:
+                continue
+            onset_beats = {s // 4 for s in p["on"]}
+            fills = (sum(1 for b in gaps if b in onset_beats) / len(gaps)) if gaps else 0.0
+            overlap = (sum(1 for b in range(n_beats) if lead_on[b] and b in onset_beats) /
+                       max(1, sum(lead_on)))
+            answers.append({"part": p["name"], "fills_lead_gaps": _r(fills, 2),
+                            "plays_under_lead": _r(overlap, 2)})
+        answers.sort(key=lambda d: -d["fills_lead_gaps"])
+        result["call_and_response"] = {"lead": lead, "lead_gaps": len(gaps), "answers": answers}
+        if gaps and (not answers or answers[0]["fills_lead_gaps"] < 0.5):
+            flags.append(f"Nothing answers {lead}: add a response (backing line, stab or fill) "
+                         f"in the beats after each lead phrase")
+    if coverage < 0.6 and len(P) > 1:
+        flags.append(f"Only {round(coverage * 100)} % of 16ths are attacked by any part: "
+                     f"more interlock would make the groove roll")
+    result["flags"] = flags
+    return result
+
 OP_ORDER = ("transpose", "scale", "quantize", "swing", "offset", "role_offsets",
             "velocity", "articulation", "humanize")
 
