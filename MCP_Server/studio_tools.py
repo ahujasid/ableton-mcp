@@ -673,7 +673,7 @@ def register(mcp, rich_telemetry_tool) -> None:  # noqa: C901 - flat list of too
         a bounce. Same report as render_section. Give it a label to compare against.
 
         Parameters:
-        - path: WAV/AIFF/FLAC file path on the user's computer
+        - path: WAV, AIFF, FLAC or MP3 file path on the user's computer
         - label: Name for comparisons (e.g. "ref-four")
         - start_seconds / end_seconds: Optional window (e.g. the reference's drop)
         - bpm: The track's tempo, to enable swing and chords-per-bar
