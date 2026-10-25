@@ -5,7 +5,7 @@ description: Use when making, arranging, editing or mixing music in Ableton Live
 
 # Ableton MCP studio
 
-You drive Ableton Live through our AbletonMCP fork (`standard-reference/ableton-mcp`, branch `studio-upgrades`, Remote Script `1.9.0+studio`). It lets you:
+You drive Ableton Live through our AbletonMCP fork (`standard-reference/ableton-mcp`, branch `studio-upgrades`, Remote Script `1.9.1+studio`). It lets you:
 - write and transform notes;
 - build the arrangement;
 - add and set devices by name on any track, return or the master;
@@ -22,7 +22,7 @@ Use alongside:
 ## 0. Before the first edit
 
 1. Load the Ableton tools in one ToolSearch `select:` call. Their names end in `AbletonMCP__toolname`.
-2. Call `get_remote_script_info` and expect `1.9.0+studio`.
+2. Call `get_remote_script_info` and expect `1.9.1+studio`.
    - If it shows an `install_note`, or an older version, the server has already copied the new script into Live's User Library. Ask the user to restart Ableton Live.
    - If the server itself is old (tools like `render_section` are missing), the Claude Desktop config should run:
 

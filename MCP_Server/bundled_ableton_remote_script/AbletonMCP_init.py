@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.9.0+studio"
+SCRIPT_VERSION = "1.9.1+studio"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -97,6 +97,18 @@ def create_instance(c_instance):
 
 class AbletonMCP(ControlSurface):
     """AbletonMCP Remote Script for Ableton Live"""
+
+    @property
+    def _song(self):
+        """The Song of the Set that is open now. Live swaps the Song object
+        when a new Set is created or opened, so a reference cached at start-up
+        goes stale ("did not match C++ signature"). Tests may pin a fake."""
+        pinned = self.__dict__.get("_pinned_song")
+        return pinned if pinned is not None else self.song()
+
+    @_song.setter
+    def _song(self, value):
+        self.__dict__["_pinned_song"] = value
     
     def __init__(self, c_instance):
         """Initialize the control surface"""
@@ -112,8 +124,7 @@ class AbletonMCP(ControlSurface):
         self.server_thread = None
         self.running = False
         
-        # Cache the song reference for easier access
-        self._song = self.song()
+        # self._song is a property (below) so it always points at the open Set
 
         # Passive human-UI event queue (drained by MCP → Supabase)
         self._passive_events = []

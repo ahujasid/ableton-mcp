@@ -571,3 +571,15 @@ def test_missing_capability_rechecks_handshake(monkeypatch):
     assert result is None and missing == "missing copy_clip"
     assert len(calls) == 1
     assert c.sent == []
+
+
+def test_song_follows_the_open_set():
+    """After Ctrl+N Live hands the script a new Song; a cached one goes stale."""
+    mod = _load_script_module()
+    inst = make_instance(mod)
+    sets = iter(["first set", "second set"])
+    current = {"song": next(sets)}
+    inst.song = lambda: current["song"]
+    assert inst._song == "first set"
+    current["song"] = next(sets)
+    assert inst._song == "second set"
