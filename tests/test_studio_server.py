@@ -230,3 +230,39 @@ def test_transform_with_real_midi_tools(conn):
     written = conn.sent[-1][1]["notes"]
     assert [round(n["start_time"], 3) for n in written[:4]] == [0.0, 0.29, 0.5, 0.79]
     assert [n["velocity"] for n in written[:4]] == [100, 62, 84, 58]
+
+
+def _wav_with_header_sizes(path, frames, sr=48000, data_size=None, riff_size=None):
+    import struct
+    pcm = (np.sin(np.arange(frames) / 10.0) * 12000).astype("<i2").tobytes()
+    fmt = struct.pack("<HHIIHH", 1, 1, sr, sr * 2, 2, 16)
+    body = b"WAVE" + b"fmt " + struct.pack("<I", 16) + fmt + b"data" + struct.pack(
+        "<I", len(pcm) if data_size is None else data_size) + pcm
+    riff = len(body) if riff_size is None else riff_size
+    path.write_bytes(b"RIFF" + struct.pack("<I", riff) + body)
+
+
+def test_repair_wav_header_fixes_unfinalised_take(tmp_path):
+    import soundfile as sf
+    p = tmp_path / "take.wav"
+    _wav_with_header_sizes(p, 4800, data_size=0, riff_size=36)
+    assert studio._repair_wav_header(p) is True
+    x, sr = sf.read(str(p))
+    assert sr == 48000 and len(x) == 4800
+    assert studio._repair_wav_header(p) is False  # already consistent
+
+
+def test_repair_wav_header_leaves_other_files(tmp_path):
+    p = tmp_path / "take.aif"
+    p.write_bytes(b"FORM\x00\x00\x00\x04AIFF")
+    assert studio._repair_wav_header(p) is False
+
+
+def test_copy_shared_copies_and_names_the_take_on_failure(tmp_path):
+    src = tmp_path / "a.wav"
+    _wav_with_header_sizes(src, 480)
+    dest = tmp_path / "b.wav"
+    studio._copy_shared(str(src), dest)
+    assert dest.read_bytes() == src.read_bytes()
+    with pytest.raises(OSError, match="couldn't read the recorded take"):
+        studio._copy_shared(str(tmp_path / "missing.wav"), tmp_path / "c.wav", timeout=0)

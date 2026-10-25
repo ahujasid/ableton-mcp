@@ -140,6 +140,79 @@ def _wait_for_render(job_id: str, max_wait: float) -> Dict[str, Any]:
         time.sleep(0.5)
 
 
+_SHARING_VIOLATION = 32  # ERROR_SHARING_VIOLATION
+
+
+def _open_shared_windows(path: str):
+    """Open ``path`` for reading with every share flag set, including
+    FILE_SHARE_DELETE. Live keeps a just-recorded take open with DELETE access
+    (it moves the file into the project when the Set is saved), and Python's
+    ``open()`` doesn't pass FILE_SHARE_DELETE, so it fails with WinError 32."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel32.CreateFileW
+    create.restype = wintypes.HANDLE
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    generic_read, share_all, open_existing, normal = 0x80000000, 0x7, 3, 0x80
+    handle = create(str(path), generic_read, share_all, None, open_existing, normal, None)
+    if handle in (None, wintypes.HANDLE(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    return os.fdopen(fd, "rb")
+
+
+def _copy_shared(src: str, dest: Path, timeout: float = 12.0) -> None:
+    """Copy a file Live may still hold open. Retries sharing violations."""
+    deadline = time.time() + timeout
+    while True:
+        try:
+            if os.name == "nt":
+                with _open_shared_windows(src) as fsrc, open(dest, "wb") as fdst:
+                    shutil.copyfileobj(fsrc, fdst, 1 << 20)
+            else:
+                shutil.copyfile(src, dest)
+            return
+        except OSError as e:
+            if getattr(e, "winerror", None) != _SHARING_VIOLATION or time.time() >= deadline:
+                raise OSError(f"couldn't read the recorded take {src}: {e}") from e
+            time.sleep(0.5)
+
+
+def _repair_wav_header(path: Path) -> bool:
+    """Fix RIFF/data sizes in a WAV whose writer hadn't finalised the header
+    (a take still open in Live can report a 0 or stale data size). Returns
+    True when the header was changed."""
+    import struct
+
+    size = path.stat().st_size
+    with open(path, "r+b") as f:
+        head = f.read(12)
+        if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+            return False
+        changed = False
+        if struct.unpack("<I", head[4:8])[0] != size - 8:
+            f.seek(4)
+            f.write(struct.pack("<I", size - 8))
+            changed = True
+        pos = 12
+        while pos + 8 <= size:
+            f.seek(pos)
+            cid, csize = struct.unpack("<4sI", f.read(8))
+            if cid == b"data":
+                actual = size - (pos + 8)
+                if csize == 0 or csize > actual:
+                    f.seek(pos + 4)
+                    f.write(struct.pack("<I", actual))
+                    changed = True
+                break
+            pos += 8 + csize + (csize & 1)
+        return changed
+
+
 def _finish_render(status: Dict[str, Any], label: str) -> Dict[str, Any]:
     from . import ears
 
@@ -147,7 +220,9 @@ def _finish_render(status: Dict[str, Any], label: str) -> Dict[str, Any]:
     _wait_file_stable(src)
     RENDER_DIR.mkdir(parents=True, exist_ok=True)
     dest = RENDER_DIR / f"{_safe_label(label)}-{status['id']}{Path(src).suffix or '.wav'}"
-    shutil.copy2(src, dest)
+    _copy_shared(src, dest)
+    if dest.suffix.lower() == ".wav":
+        _repair_wav_header(dest)
     start = float(status.get("window_offset_s", 0.0))
     length = float(status.get("window_seconds", 0.0)) or None
     report = ears.analyze(
