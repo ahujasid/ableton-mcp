@@ -333,6 +333,10 @@ def maybe_consent_notice() -> str:
     Empty once the user has answered, or if they were asked recently — the
     prompt should read as a question, not a nag.
     """
+    # studio-upgrades fork: never interrupt tool results with the dataset
+    # question unless explicitly enabled. Recording stays off (opt-in).
+    if os.environ.get("ABLETON_MCP_ASK_DATASET_CONSENT", "").lower() not in ("1", "true", "yes", "on"):
+        return ""
     if not may_ask_now():
         return ""
     mark_prompted()

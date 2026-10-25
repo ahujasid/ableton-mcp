@@ -252,6 +252,54 @@ Once the config file has been set on Claude, and the remote script is running in
 - Add notes to MIDI clips
 - Change tempo and other session parameters
 
+#### Added in the `studio-upgrades` fork
+
+**Arrangement and clips**
+
+| Tool | What it does |
+|---|---|
+| `fill_arrangement` / `delete_arrangement_clips` | Repeat a Session clip across a beat range, or clear a range (Live 12) |
+| `create_locator` | Fixed: playhead move, cue toggle and lookup run on separate ticks |
+| `back_to_arrangement` / `set_arrangement_loop` | Transport helpers |
+| `copy_clip` / `set_clip_properties` | Copy clips; audio pitch, warp mode, gain, loop and markers |
+| `add_notes_to_clip` (`repeat_every`, `repeat_count`) | Tile a pattern server-side |
+| `transform_clip_notes` | Transpose, scale-snap, quantize, absolute swing, per-role microtiming, accent maps, articulation, seeded humanise; optionally into a variant slot |
+| `review_clip` / `forecast_masking` | "Ears by proxy" from MIDI: velocity/timing/swing profile, chord names, low-interval mud, repetition, syncopation, predicted low-end clashes |
+
+**Devices, mixer and groove**
+
+| Tool | What it does |
+|---|---|
+| `add_device` / `delete_device` | Native devices by name on tracks, returns or the master |
+| `set_device_parameters` | Several parameters by name in display units ("1.2 kHz", "-6 dB", "Lowpass") |
+| `set_sidechain` | Key a Compressor from another track |
+| `set_track_mixer` / `get_mixer_overview` | Volume in dB, pan, mute, solo, sends; every track/return/master at a glance |
+| `create_return_track` / `delete_track` / `duplicate_track` | Track management |
+| `get_drum_pads` | Drum Rack pad map (note → sample) |
+| `write_clip_automation` / `get_clip_automation` / `clear_clip_automation` | Clip envelopes from breakpoints with curves (linear, ease, s-curve, exp, step) |
+| `load_groove` / `assign_groove` / `set_groove` / `set_groove_amount` / `get_groove_pool` | Groove pool |
+| `get_song_scale` / `set_song_scale` | Live 12 root and scale |
+
+**Ears**
+
+| Tool | What it does |
+|---|---|
+| `render_section` / `get_render_result` | Real-time resample render of a bar range (optionally soloed stems), then measured |
+| `analyze_audio_file` | Measure a reference or any audio file on disk |
+| `compare_audio` | Loudness-matched comparison that lists only audible differences |
+
+The measurement report includes:
+- integrated LUFS, true peak, LRA and crest factor;
+- band and octave balance with spectral tilt;
+- stereo width per band and low-end mono check;
+- measured swing and kick timing;
+- key candidates and chords per bar;
+- warnings.
+
+**Housekeeping**
+- The server installs or updates the Remote Script in Live's User Library on start, so you only need to restart Live after an update.
+- Telemetry and dataset recording are opt-in (`ABLETON_MCP_ENABLE_TELEMETRY`, `ABLETON_MCP_DATASET_TOOLS`). By default nothing is sent and the consent prompt is silent.
+
 ### Example Commands
 
 Here are some examples of what you can ask Claude to do:
