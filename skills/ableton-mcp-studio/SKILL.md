@@ -171,4 +171,10 @@ None of these can be done through the tools; say so and give the user the manual
 2. `create_audio_clip` on an audio track, with a path on the user's computer.
 3. `set_clip_properties` for pitch, warp mode and gain.
 
+**Audio that must play exactly as recorded** (stems, reference mixes). Live auto-warps long files on import and moves each clip's start marker to the first transient it finds, which differs from file to file. Turning warping off keeps that offset, so stems placed at the same beat start at different points in their files (0–2.6 s apart in one set) and play smeared, like an echo or a delay. For every such clip:
+1. `create_audio_clip`, then `set_clip_properties` `{"warping": false}`.
+2. In a separate call, `{"start_marker": 0, "loop_start": 0}`. Unwarped markers are in seconds.
+3. `duplicate_to_arrangement`. The copy can take a warp-based length (half the file, say), so on the Arrangement clip (`arrangement: true`) also set `start_marker`/`loop_start` to 0 and `end_marker`/`loop_end` to the file's length in seconds.
+4. Check: in `get_session_snapshot(include_notes=false, include_params=false)` every clip should show `loop_start` 0, and in `get_arrangement_clips` every length should equal the file's seconds × BPM / 60. Save the snapshot to a file and filter it in code; it's large.
+
 Keep a running section map and track list in your notes, but re-read the set instead of trusting them once the user has touched Live.
