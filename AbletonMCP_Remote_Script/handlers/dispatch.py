@@ -1151,7 +1151,72 @@ def _get_registry():
             "handler": lambda song, p, ctrl: _record_automation(song, p, ctrl),
             "modifying": True,
         },
+        "lom_get": {
+            "handler": lambda song, p, ctrl: _lom_get(song, p, ctrl),
+            "modifying": True,  # the main thread is the only safe place to read Live
+        },
+        "lom_set": {
+            "handler": lambda song, p, ctrl: _lom_set(song, p, ctrl),
+            "modifying": True,
+        },
+        "lom_call": {
+            "handler": lambda song, p, ctrl: _lom_call(song, p, ctrl),
+            "modifying": True,
+        },
     }
+
+
+def _lom_resolve(song, ctrl, path):
+    """Walk a dotted Live Object Model path: 'tracks.12.devices.0.voices'.
+
+    Starts at the Song; a first part of 'app' starts at the Application.
+    Numbers index a list. Dynamic commands are for anything without its own
+    command, so a Live setting is never out of reach.
+    """
+    parts = path.split(".")
+    obj = song
+    if parts[0] == "app":
+        obj, parts = ctrl.application(), parts[1:]
+    elif parts[0] == "song":
+        parts = parts[1:]
+    for part in parts:
+        obj = obj[int(part)] if part.isdigit() else getattr(obj, part)
+    return obj
+
+
+def _lom_plain(value):
+    """Make a Live value JSON-safe: lists stay lists, objects become their name."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if hasattr(value, "name"):
+        return {"name": str(value.name), "class": type(value).__name__}
+    try:
+        return [_lom_plain(v) for v in value]
+    except TypeError:
+        return str(value)
+
+
+def _lom_get(song, p, ctrl):
+    obj = _lom_resolve(song, ctrl, p["path"])
+    if p.get("list_attrs"):
+        return {"path": p["path"], "class": type(obj).__name__,
+                "attrs": sorted(a for a in dir(obj) if not a.startswith("_"))}
+    return {"path": p["path"], "value": _lom_plain(obj)}
+
+
+def _lom_set(song, p, ctrl):
+    parent, _, attr = p["path"].rpartition(".")
+    obj = _lom_resolve(song, ctrl, parent) if parent else song
+    if attr.isdigit():
+        raise ValueError("lom_set path must end in an attribute name")
+    value = _lom_resolve(song, ctrl, p["value_path"]) if "value_path" in p else p["value"]
+    setattr(obj, attr, value)
+    return {"path": p["path"], "value": _lom_plain(getattr(obj, attr))}
+
+
+def _lom_call(song, p, ctrl):
+    method = _lom_resolve(song, ctrl, p["path"])
+    return {"path": p["path"], "result": _lom_plain(method(*p.get("args", [])))}
 
 
 def is_known(command_type):
