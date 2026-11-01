@@ -217,7 +217,7 @@ def register(mcp: Any, get_ableton_connection: Callable[[], Any]) -> None:
 
     @mcp.tool()
     def lom_call(ctx: Context, path: str, args: list[Any] | None = None) -> str:
-        """Call any Live Object Model method by dotted path, e.g. 'undo'."""
+        """Call any Live Object Model method by dotted path, e.g. 'undo'. Pass an object as an argument with {"$path": "tracks.12.arrangement_clips.0"}."""
         try:
             result = get_ableton_connection().send_command("lom_call", {"path": path, "args": args or []})
             return json.dumps(result, indent=2)

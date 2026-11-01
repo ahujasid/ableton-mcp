@@ -1216,7 +1216,9 @@ def _lom_set(song, p, ctrl):
 
 def _lom_call(song, p, ctrl):
     method = _lom_resolve(song, ctrl, p["path"])
-    return {"path": p["path"], "result": _lom_plain(method(*p.get("args", [])))}
+    args = [_lom_resolve(song, ctrl, a["$path"]) if isinstance(a, dict) and "$path" in a else a
+            for a in p.get("args", [])]
+    return {"path": p["path"], "result": _lom_plain(method(*args))}
 
 
 def is_known(command_type):
