@@ -5,6 +5,25 @@ from __future__ import absolute_import, print_function, unicode_literals
 import traceback
 
 
+def select_track(song, track):
+    """Select ``track``, opening any folded groups above it.
+
+    Live can't select a track hidden in a folded group, and while a group is
+    selected it ignores a request to select a track inside that group, so the
+    selection passes through the master track on the way. Raises instead of
+    leaving the selection elsewhere: Live loads devices onto whatever is selected.
+    """
+    group = track
+    while getattr(group, "is_grouped", False):
+        group = group.group_track
+        if group.fold_state:
+            group.fold_state = 0
+    song.view.selected_track = song.master_track
+    song.view.selected_track = track
+    if song.view.selected_track != track:
+        raise RuntimeError("Live would not select '{0}'".format(track.name))
+
+
 def _iter_browser_root_categories(browser):
     """Yield every top-level browseable item.
 
@@ -209,7 +228,8 @@ def load_browser_item(song, track_index, item_uri, track_type="track", ctrl=None
             raise ValueError(
                 "Browser item with URI '{0}' not found".format(item_uri)
             )
-        song.view.selected_track = track
+
+        select_track(song, track)
         app.browser.load_item(item)
         return {
             "loaded": True,

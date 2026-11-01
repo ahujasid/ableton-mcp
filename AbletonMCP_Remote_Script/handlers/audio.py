@@ -5,6 +5,8 @@ from __future__ import absolute_import, print_function, unicode_literals
 import time
 import traceback
 
+from .browser import select_track
+
 
 def _poll_for_clip(clip_slot, timeout_s=3.0, interval_s=0.1):
     """Poll clip_slot.has_clip until True or timeout."""
@@ -42,10 +44,7 @@ def load_audio_sample(
         # Live's loader targets the focused UI location, so we must point
         # selected_track + selected_scene + highlighted_clip_slot at the
         # destination. Setting only one is not enough.
-        try:
-            song.view.selected_track = track
-        except Exception:
-            pass
+        select_track(song, track)
         try:
             if clip_index < len(song.scenes):
                 song.view.selected_scene = song.scenes[clip_index]

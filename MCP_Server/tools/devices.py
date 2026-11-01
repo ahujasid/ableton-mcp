@@ -193,3 +193,34 @@ def register(mcp: Any, get_ableton_connection: Callable[[], Any]) -> None:
         except Exception as e:
             logger.error(f"Error deleting chain device: {str(e)}")
             return f"Error deleting chain device: {str(e)}"
+
+    @mcp.tool()
+    def lom_get(ctx: Context, path: str, list_attrs: bool = False) -> str:
+        """Read anything in Live's Object Model by dotted path, e.g. 'tracks.12.fold_state' or 'tracks.14.devices.0.voices'. Starts at the Song ('app' starts at the Application). Use list_attrs=True to see what an object offers. Use this when no dedicated tool covers a setting."""
+        try:
+            result = get_ableton_connection().send_command("lom_get", {"path": path, "list_attrs": list_attrs})
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            logger.error(f"Error in lom_get: {str(e)}")
+            return f"Error in lom_get: {str(e)}"
+
+    @mcp.tool()
+    def lom_set(ctx: Context, path: str, value: Any = None, value_path: str = "") -> str:
+        """Set any writable Live Object Model property by dotted path, e.g. 'tracks.12.fold_state' to 0 to open a group, or 'tracks.14.devices.0.voices' to 1 for a mono Simpler. To assign an object, give its path as value_path, e.g. 'view.selected_track' with value_path 'tracks.21'."""
+        try:
+            params = {"path": path, "value_path": value_path} if value_path else {"path": path, "value": value}
+            result = get_ableton_connection().send_command("lom_set", params)
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            logger.error(f"Error in lom_set: {str(e)}")
+            return f"Error in lom_set: {str(e)}"
+
+    @mcp.tool()
+    def lom_call(ctx: Context, path: str, args: list[Any] | None = None) -> str:
+        """Call any Live Object Model method by dotted path, e.g. 'undo'."""
+        try:
+            result = get_ableton_connection().send_command("lom_call", {"path": path, "args": args or []})
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            logger.error(f"Error in lom_call: {str(e)}")
+            return f"Error in lom_call: {str(e)}"

@@ -175,6 +175,22 @@ def _build_registry() -> Dict[str, Tool]:
 
     # ── Devices ──────────────────────────────────────────────────────────
     tools += [
+        Tool("lom_get", "lom_get", "devices",
+             "Read anything in Live's Object Model by dotted path, e.g. tracks.12.fold_state",
+             {"path": Param("str", help="Dotted path from the Song, or from 'app'"),
+              "list_attrs": Param("bool", required=False, default=False, help="List the object's attributes")},
+             returns_json=True),
+        Tool("lom_set", "lom_set", "devices",
+             "Set any writable Live Object Model property by dotted path",
+             {"path": Param("str", help="Dotted path ending in the property"),
+              "value": Param("json", required=False, help="New value"),
+              "value_path": Param("str", required=False, help="Dotted path of an object to assign")},
+             returns_json=True),
+        Tool("lom_call", "lom_call", "devices",
+             "Call any Live Object Model method by dotted path",
+             {"path": Param("str", help="Dotted path ending in the method"),
+              "args": Param("json", required=False, default=[], help="Argument list")},
+             returns_json=True),
         Tool("get_device_parameters", "get_device_parameters", "devices",
              "Get all parameters for a device",
              params={
