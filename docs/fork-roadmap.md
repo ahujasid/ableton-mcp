@@ -25,6 +25,17 @@ another tempo map by analysis, Stem Separation, MIDI Generators/Transformations.
 Status: built in 1.8.0 (with `undo`, `redo`, `get_undo_state`, `delete_track`), unit-tested; live test
 `scripts/live_test_mixer.py`.
 
+## Status (2026-11-01)
+
+| Version | What | Unit tests | Live tested |
+| --- | --- | --- | --- |
+| 1.8.0 | Tier 1 + undo/redo/delete_track | yes | live_test.py 16/17 (undo merged rename+delete: fixed in 1.9.0 with one undo step per call), live_test_mixer.py not yet |
+| 1.9.0 | safety switches; Tier 2 (all but presets); device display values; signal path; clip info/properties; scenes | yes | live_test_devices.py not yet |
+| 1.10.0 | Tier 4 (transport, settings, locators, CPU); Tier 3 notes by id, quantize, duplicate_loop, crop | yes | live_test_transport.py not yet |
+
+Still open: plugin presets, warp markers, arrangement clip create/delete, session clip envelopes,
+Tier 5 device-specific tools, `inspect_rack` / `map_rack_magnitude` tools.
+
 ## Tier 2: editing safety and structure
 
 - Sidechain / device input routing (`DeviceIO`: `routing_type`, `routing_channel`, `available_routing_*`),

@@ -13,6 +13,8 @@ reshaping upstream's files, so upstream releases still merge cleanly.
 | Fake Live objects | `tests/live_fakes.py`. Same attribute names as the real Python LOM; every write is logged in `song.history`. |
 | Unit tests | `tests/test_extended_commands.py`, `tests/test_mixer_routing.py` (script side), `tests/test_extended_tools.py` (tool side, through `FastMCP.call_tool`) |
 | Live tests | `scripts/live_harness.py` + `scripts/live_test*.py` |
+| Safety switches | `MCP_Server/safety.py`: command -> category, config `~/.config/ableton-mcp/safety.json` (env `ABLETON_MCP_SAFETY_CONFIG`), checked in `AbletonConnection.send_command` before anything reaches Live. New writing commands must get a category in `CATEGORIES` (unlisted non-`get_*` commands count as `edit`). |
+| Host-side audio check | `scripts/ableton_io_check.py` (`~/bin/ableton-io-check`): Live <-> Scarlett links, Line Out sources, USB stream, `--listen` levels |
 | LOM coverage | `scripts/api_coverage.py` → `docs/api-coverage.md`; roadmap in `docs/fork-roadmap.md` |
 
 ## Adding a command
@@ -25,8 +27,11 @@ reshaping upstream's files, so upstream releases still merge cleanly.
 3. Tool in `extended_tools.register()`; writers also go in `MODIFYING_COMMANDS`.
 4. Tests: script side against `FakeSong` (assert `song.history == []` on refusals), tool side for the
    params forwarded. `test_every_remote_command_has_a_tool` keeps the two lists in step.
-5. Bump `SCRIPT_VERSION` and `EXPECTED_REMOTE_SCRIPT_VERSION` together when the command surface changes.
-6. Add a live test, regenerate `docs/api-coverage.md`, update the ableton skill.
+5. Give the command a safety category in `MCP_Server/safety.py` if it writes (test_safety checks every
+   MODIFYING_COMMANDS entry has one).
+6. Bump `SCRIPT_VERSION` and `EXPECTED_REMOTE_SCRIPT_VERSION` together when the command surface changes
+   (versions are compared for equality only, so 1.10.0 after 1.9.0 is fine).
+7. Add a live test, regenerate `docs/api-coverage.md`, update the ableton skill.
 
 ## Testing
 
@@ -36,7 +41,20 @@ scripts/deploy.sh                                # tests, then install server (e
 # restart Live with an EMPTY set (File > New Live Set); reconnect the MCP server
 python3 scripts/live_test.py                     # undo/redo/delete_track
 python3 scripts/live_test_mixer.py               # mixer, routing, monitoring, meters, automation
+python3 scripts/live_test_devices.py             # 1.9.0: safety, devices, signal path, clips, scenes
+python3 scripts/live_test_transport.py           # 1.10.0: transport, settings, locators, notes by id
+scripts/restart_live.sh                          # guarded kill + relaunch (empty set only)
 ```
+
+Each live-test run gets its own safety config (everything allowed except deletes in saved sets), so the
+user's switches don't change results; `m.set_safety({...})` switches categories mid-test.
+
+`restart_live.sh` refuses unless the guard passes (or `--unresponsive-ok` after checking the set by other
+means), hard-kills Live, and moves `CrashDetection.cfg` / `CrashRecoveryInfo.cfg` to
+`~/programs/ableton-mcp-crash-markers/` so Live doesn't stop on the recovery dialog. It still can't get past
+Live's other startup modals (the Trial's online licence check, update prompts): while one is open Live's
+Python threads get no time, port 9877 accepts at the kernel level but nothing answers ("No data received").
+With the screen locked nothing can dismiss them, so unattended restarts only work while Jeremy is around.
 
 Use `--frozen` so uv doesn't rewrite `uv.lock`.
 
@@ -48,6 +66,13 @@ They create `mcp-test-*` tracks, touch only those, and delete them (`--keep` lea
 ## Live/LOM facts learned
 
 - Live loads Remote Scripts only at startup: a new script needs a Live restart.
+- Live ran a stale `__pycache__/__init__.cpython-311.pyc` instead of the newer source (1.7.1 bytecode with
+  1.8.0 source); deploy.sh now deletes `__pycache__`.
+- Live merged an API `set_track_name` and a following `delete_track` into one undo step; extended writes now
+  run inside `song.begin_undo_step()` / `end_undo_step()` (Python API, not in the Max LOM docs).
+- `Song.file_path` / `Song.name` are empty for an unsaved set: that is how saved sets (songs) are told apart.
+- Device sidechain routing: Compressor (and others with a sidechain) expose `input_routing_type` /
+  `input_routing_channel` / `available_*` like a track.
 - Several clients may connect to port 9877 at once (one thread each).
 - `Track.solo` set through the API doesn't unsolo other tracks; `set_track_mixer(exclusive_solo=true)` does.
 - Volume is 0..1 (0.85 = 0 dB, 1.0 = +6 dB); `volume_db` bisects `str_for_value` to find the value.
