@@ -140,7 +140,7 @@ class AbletonConnection:
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
             "create_locator"
-        ]
+        ] or command_type in extended_tools.MODIFYING_COMMANDS
 
         # Commands whose work on Live's main thread can take noticeably longer
         # than the default modifying-command budget (e.g. importing/decoding a
@@ -1555,6 +1555,13 @@ def record_audition(
         logger.error(f"Error recording audition: {str(e)}")
         return f"Error recording audition: {str(e)}"
 
+
+
+# Tools for the Remote Script's extended commands (mixer, routing, undo, ...)
+from . import extended_tools  # noqa: E402
+
+# Looked up per call so tests (and reconnects) see the current function.
+extended_tools.register(mcp, lambda: get_ableton_connection())
 
 
 # Main execution

@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.7.1"
+SCRIPT_VERSION = "1.8.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -58,6 +58,19 @@ SCRIPT_CAPABILITIES = [
     "delete_clip",
     "clear_notes_from_clip",
 ]
+
+# Commands added by the mixer/routing/editing extension, kept apart from the
+# upstream if/elif chain so merges stay small. name -> (handler, main_thread).
+# Main-thread handlers change the set; the rest only read it.
+EXTENDED_COMMANDS = {
+    "get_undo_state": ("_cmd_get_undo_state", False),
+    "undo": ("_cmd_undo", True),
+    "redo": ("_cmd_redo", True),
+    "delete_track": ("_cmd_delete_track", True),
+}
+SCRIPT_CAPABILITIES += list(EXTENDED_COMMANDS)
+
+TRACK_TYPES = ("track", "return", "master")
 
 def create_instance(c_instance):
     """Create and return the AbletonMCP script instance"""
@@ -279,6 +292,9 @@ class AbletonMCP(ControlSurface):
         }
         
         try:
+            if command_type in EXTENDED_COMMANDS:
+                response["result"] = self._run_extended(command_type, params)
+                return response
             # Route the command to the appropriate handler
             if command_type == "get_script_info":
                 response["result"] = self._get_script_info()
@@ -2289,6 +2305,89 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error getting session snapshot: " + str(e))
             raise
+
+    # ------------------------------------------------------------------
+    # Extended commands (see EXTENDED_COMMANDS)
+    # ------------------------------------------------------------------
+
+    def _run_extended(self, command_type, params):
+        """Run an extended command, on Live's main thread when it writes."""
+        handler_name, main_thread = EXTENDED_COMMANDS[command_type]
+        handler = getattr(self, handler_name)
+        if not main_thread:
+            return handler(params or {})
+        response_queue = queue.Queue()
+
+        def task():
+            try:
+                response_queue.put(("ok", handler(params or {})))
+            except Exception as e:
+                self.log_message("Error in %s: %s" % (command_type, e))
+                self.log_message(traceback.format_exc())
+                response_queue.put(("error", e))
+
+        try:
+            self.schedule_message(0, task)
+        except AssertionError:
+            task()
+        try:
+            status, value = response_queue.get(timeout=10.0)
+        except queue.Empty:
+            raise RuntimeError("Timeout waiting for %s on Live's main thread" % command_type)
+        if status == "error":
+            raise value
+        return value
+
+    def _resolve_track(self, params):
+        """Return (track, track_type, index) for track_type track|return|master."""
+        track_type = str(params.get("track_type") or "track").lower()
+        if track_type not in TRACK_TYPES:
+            raise ValueError("track_type must be one of %s, got %r" % (", ".join(TRACK_TYPES), track_type))
+        if track_type == "master":
+            return self._song.master_track, "master", 0
+        index = int(params.get("track_index", 0))
+        tracks = self._song.tracks if track_type == "track" else self._song.return_tracks
+        if index < 0 or index >= len(tracks):
+            raise IndexError("%s index %d out of range (0..%d)" % (track_type, index, len(tracks) - 1))
+        return tracks[index], track_type, index
+
+    def _undo_state(self):
+        return {"can_undo": bool(self._song.can_undo), "can_redo": bool(self._song.can_redo)}
+
+    def _cmd_get_undo_state(self, params):
+        return self._undo_state()
+
+    def _cmd_undo(self, params):
+        if not self._song.can_undo:
+            raise RuntimeError("Nothing to undo")
+        self._song.undo()
+        return dict(self._undo_state(), undone=True)
+
+    def _cmd_redo(self, params):
+        if not self._song.can_redo:
+            raise RuntimeError("Nothing to redo")
+        self._song.redo()
+        return dict(self._undo_state(), redone=True)
+
+    def _cmd_delete_track(self, params):
+        """Delete a track or return track. expected_name must match the
+        track's current name, so a stale index can never delete the wrong one."""
+        track, track_type, index = self._resolve_track(params)
+        if track_type == "master":
+            raise ValueError("The master track cannot be deleted")
+        expected = params.get("expected_name")
+        if expected is None or str(expected) != track.name:
+            raise ValueError("expected_name %r does not match %s %d, which is named %r"
+                             % (expected, track_type, index, track.name))
+        if track_type == "track":
+            if len(self._song.tracks) <= 1:
+                raise ValueError("Live needs at least one track; refusing to delete the last one")
+            self._song.delete_track(index)
+            remaining = len(self._song.tracks)
+        else:
+            self._song.delete_return_track(index)
+            remaining = len(self._song.return_tracks)
+        return {"deleted": track_type, "index": index, "name": expected, "remaining": remaining}
 
     def _set_device_parameter(self, track_index, device_index, parameter_index, value):
         try:
