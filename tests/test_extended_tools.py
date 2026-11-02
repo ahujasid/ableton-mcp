@@ -55,6 +55,10 @@ EXTENDED_TOOLS = [
     "get_mixer_state", "get_track_routing", "set_track_routing", "set_track_monitoring",
     "set_track_mixer", "get_track_meters", "back_to_arrangement",
     "get_automation_overrides", "re_enable_automation",
+    "get_set_info", "get_device_chain", "get_device_routing", "get_signal_path", "get_clip_info",
+    "get_scenes", "set_device_parameter_value", "set_device_active", "set_device_routing",
+    "delete_device", "move_device", "set_clip_properties", "duplicate_track", "create_return_track",
+    "create_scene", "duplicate_scene", "delete_scene", "set_scene", "fire_scene", "set_track_look",
 ]
 
 

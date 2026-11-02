@@ -13,6 +13,7 @@ from .telemetry import record_startup
 from .telemetry_decorator import telemetry_tool, rich_telemetry_tool
 from .dataset import dataset_enabled, get_recorder
 from .dataset.trajectory_decorator import trajectory_tool
+from . import safety
 
 ABLETON_HOST = os.environ.get("ABLETON_HOST", "localhost")
 ABLETON_PORT = int(os.environ.get("ABLETON_PORT", "9877"))
@@ -116,8 +117,19 @@ class AbletonConnection:
         whole round-trip (including reconnect) is what keeps a concurrent
         caller from reading someone else's reply.
         """
+        # The user's safety switches (MCP_Server/safety.py) decide before anything
+        # reaches Live. Runs outside the lock: a saved-set rule asks Live for
+        # get_set_info, which is itself a send_command.
+        safety.check(command_type, self._set_is_saved)
         with self._lock:
             return self._send_command_locked(command_type, params)
+
+    def _set_is_saved(self):
+        """True when the open set has a file path (a saved song), via get_set_info."""
+        info = self.send_command("get_set_info")
+        if "is_saved" not in info:
+            raise RuntimeError("get_set_info gave no is_saved (Remote Script too old?)")
+        return bool(info["is_saved"])
 
     def _send_command_locked(self, command_type: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         if not self.sock and not self.connect():

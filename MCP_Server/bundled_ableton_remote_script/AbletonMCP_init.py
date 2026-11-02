@@ -35,7 +35,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.8.0"
+SCRIPT_VERSION = "1.9.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -78,7 +78,39 @@ EXTENDED_COMMANDS = {
     "set_track_mixer": ("_cmd_set_track_mixer", True),
     "back_to_arrangement": ("_cmd_back_to_arrangement", True),
     "re_enable_automation": ("_cmd_re_enable_automation", True),
+    # Set info, devices, signal path, clips, scenes, structure (1.9.0)
+    "get_set_info": ("_cmd_get_set_info", False),
+    "get_device_chain": ("_cmd_get_device_chain", False),
+    "get_device_routing": ("_cmd_get_device_routing", False),
+    "get_signal_path": ("_cmd_get_signal_path", False),
+    "get_clip_info": ("_cmd_get_clip_info", False),
+    "get_scenes": ("_cmd_get_scenes", False),
+    "set_device_parameter_value": ("_cmd_set_device_parameter_value", True),
+    "set_device_active": ("_cmd_set_device_active", True),
+    "set_device_routing": ("_cmd_set_device_routing", True),
+    "delete_device": ("_cmd_delete_device", True),
+    "move_device": ("_cmd_move_device", True),
+    "set_clip_properties": ("_cmd_set_clip_properties", True),
+    "duplicate_track": ("_cmd_duplicate_track", True),
+    "create_return_track": ("_cmd_create_return_track", True),
+    "create_scene": ("_cmd_create_scene", True),
+    "duplicate_scene": ("_cmd_duplicate_scene", True),
+    "delete_scene": ("_cmd_delete_scene", True),
+    "set_scene": ("_cmd_set_scene", True),
+    "fire_scene": ("_cmd_fire_scene", True),
+    "set_track_look": ("_cmd_set_track_look", True),
 }
+
+# Device sidechain input (Compressor, Gate, Auto Filter, Roar, ...)
+DEVICE_ROUTING_ATTRS = [
+    ("input_type", "input_routing_type", "available_input_routing_types"),
+    ("input_channel", "input_routing_channel", "available_input_routing_channels"),
+]
+DEVICE_TYPES = {0: "undefined", 1: "instrument", 2: "audio_effect", 4: "midi_effect"}
+WARP_MODES = {0: "Beats", 1: "Tones", 2: "Texture", 3: "Re-Pitch", 4: "Complex", 5: "REX", 6: "Complex Pro"}
+# Parameters get_signal_path reports as level-setting (Utility Gain, Drive, Output, Dry/Wet...)
+GAIN_PARAM = re.compile(r"gain|volume|output|drive|dry/wet|^mix$|level|makeup|threshold", re.I)
+
 
 # (direction, part) -> (Track attribute, Track attribute listing the choices)
 ROUTING_ATTRS = [
@@ -2345,9 +2377,21 @@ class AbletonMCP(ControlSurface):
             return handler(params or {})
         response_queue = queue.Queue()
 
+        # One Live undo step per command, so undo reverts exactly one tool
+        # call. Without it Live merged an API rename and a delete into a single
+        # step. undo/redo themselves must not open a step.
+        wrap = command_type not in ("undo", "redo") and hasattr(self._song, "begin_undo_step")
+
         def task():
             try:
-                response_queue.put(("ok", handler(params or {})))
+                if wrap:
+                    self._song.begin_undo_step()
+                try:
+                    result = handler(params or {})
+                finally:
+                    if wrap:
+                        self._song.end_undo_step()
+                response_queue.put(("ok", result))
             except Exception as e:
                 self.log_message("Error in %s: %s" % (command_type, e))
                 self.log_message(traceback.format_exc())
@@ -2469,6 +2513,14 @@ class AbletonMCP(ControlSurface):
                 self._read(st, "arm", lambda: bool(track.arm))
                 self._read(st, "monitoring", lambda: MONITORING_STATES[int(track.current_monitoring_state)])
             self._read(st, "is_grouped", lambda: bool(track.is_grouped))
+            if st.get("is_grouped"):
+                self._read(st, "group_track", lambda: track.group_track.name)
+            self._read(st, "is_foldable", lambda: bool(track.is_foldable))
+            if st.get("is_foldable"):
+                self._read(st, "folded", lambda: bool(track.fold_state))
+        if track_type != "master":
+            self._read(st, "color_index", lambda: int(track.color_index))
+        if track_type == "track":
             self._read(st, "back_to_arranger", lambda: bool(track.back_to_arranger))
         self._read(st, "volume", lambda: self._param_state(track.mixer_device.volume))
         self._read(st, "panning", lambda: self._param_state(track.mixer_device.panning))
@@ -2758,6 +2810,616 @@ class AbletonMCP(ControlSurface):
                 continue
         return {"scope": "track", "track_type": track_type, "index": index, "name": track.name,
                 "re_enabled": done}
+
+    # ------------------------------------------------------------------
+    # Set info, devices, signal path, clips, structure (1.9.0)
+    # ------------------------------------------------------------------
+
+    def _cmd_get_set_info(self, params):
+        """Which set is open: a saved set has a file path, a new one doesn't."""
+        out = {}
+        self._read(out, "file_path", lambda: str(self._song.file_path or ""))
+        self._read(out, "name", lambda: str(self._song.name or ""))
+        out["is_saved"] = bool(out.get("file_path")) if out.get("file_path") is not None else None
+        if out["is_saved"] is None:
+            out.pop("is_saved")  # unknown: the safety gate then treats the set as saved
+        out["track_count"] = len(self._song.tracks)
+        out["return_track_count"] = len(self._song.return_tracks)
+        out["scene_count"] = len(self._song.scenes)
+        self._read(out, "tempo", lambda: float(self._song.tempo))
+        return out
+
+    # --- devices -------------------------------------------------------
+
+    def _device_container(self, track, path):
+        """Resolve a device path ("2", "0/1/3": device 0, chain 1, device 3).
+
+        Returns (device, parent, index) where parent (a Track or Chain) owns
+        the device list the device sits in."""
+        parts = [p for p in str(path).replace(".", "/").split("/") if p != ""]
+        if not parts or len(parts) % 2 == 0:
+            raise ValueError("device path %r: use 'd' or 'd/chain/d' (e.g. '0' or '0/1/2')" % (path,))
+        parent = track
+        device = None
+        index = None
+        for n, part in enumerate(parts):
+            try:
+                i = int(part)
+            except ValueError:
+                raise ValueError("device path %r: %r is not a number" % (path, part))
+            if n % 2 == 0:
+                devices = list(parent.devices)
+                if i < 0 or i >= len(devices):
+                    raise IndexError("device path %r: device %d out of range (%d devices)" % (path, i, len(devices)))
+                device, index = devices[i], i
+            else:
+                chains = list(getattr(device, "chains", []) or [])
+                if i < 0 or i >= len(chains):
+                    raise IndexError("device path %r: chain %d out of range (%d chains)" % (path, i, len(chains)))
+                parent = chains[i]
+        return device, parent, index
+
+    def _resolve_device(self, params):
+        track, track_type, tindex = self._resolve_track(params)
+        path = params.get("device")
+        if path is None:
+            path = params.get("device_index")
+        if path is None:
+            raise ValueError("Give device: an index such as 0, or a rack path such as '0/1/2'")
+        device, parent, index = self._device_container(track, path)
+        expected = params.get("expected_device_name")
+        if expected is not None and str(expected) != device.name:
+            raise ValueError("expected_device_name %r does not match device %s, which is %r"
+                             % (expected, path, device.name))
+        return track, track_type, tindex, device, parent, index, str(path)
+
+    @staticmethod
+    def _find_parameter(device, key):
+        params = list(device.parameters)
+        if isinstance(key, int) or (isinstance(key, str) and key.strip().isdigit()):
+            i = int(key)
+            if i < 0 or i >= len(params):
+                raise IndexError("parameter %d out of range (%d parameters)" % (i, len(params)))
+            return i, params[i]
+        names = [p.name for p in params]
+        for i, n in enumerate(names):
+            if n == key:
+                return i, params[i]
+        for i, n in enumerate(names):
+            if n.lower() == str(key).strip().lower():
+                return i, params[i]
+        for i, p in enumerate(params):
+            if str(getattr(p, "original_name", "")).lower() == str(key).strip().lower():
+                return i, p
+        raise ValueError("No parameter %r on %r. Parameters: %s" % (key, device.name, ", ".join(names)))
+
+    def _parameter_state(self, param, index=None):
+        st = {}
+        if index is not None:
+            st["index"] = index
+        self._read(st, "name", lambda: param.name)
+        self._read(st, "value", lambda: float(param.value))
+        self._read(st, "display", lambda: str(param))
+        self._read(st, "min", lambda: float(param.min))
+        self._read(st, "max", lambda: float(param.max))
+        self._read(st, "is_quantized", lambda: bool(param.is_quantized))
+        if st.get("is_quantized"):
+            self._read(st, "value_items", lambda: [str(v) for v in param.value_items])
+        self._read(st, "automation", lambda: AUTOMATION_STATES[int(param.automation_state)])
+        self._read(st, "is_enabled", lambda: bool(param.is_enabled))
+        return st
+
+    @staticmethod
+    def _device_on_param(device):
+        for p in device.parameters:
+            if getattr(p, "original_name", p.name) == "Device On" or p.name == "Device On":
+                return p
+        return None
+
+    def _device_routing_state(self, device, include_available=False):
+        """Sidechain / device input routing, for devices that have it (Compressor,
+        Gate, Auto Filter, Roar, ...). Empty dict when the device has none."""
+        if not hasattr(device, "input_routing_type"):
+            return {}
+        out = {}
+        for key, attr, avail in DEVICE_ROUTING_ATTRS:
+            self._read(out, key, lambda a=attr: self._routing_name(getattr(device, a)))
+            if include_available:
+                self._read(out, "available_" + key,
+                           lambda a=avail: [self._routing_name(x) for x in getattr(device, a)])
+        return out
+
+    def _device_state(self, device, path, depth, include_parameters, max_parameters):
+        st = {"path": path}
+        self._read(st, "name", lambda: device.name)
+        self._read(st, "class_name", lambda: device.class_name)
+        self._read(st, "class_display_name", lambda: device.class_display_name)
+        self._read(st, "type", lambda: DEVICE_TYPES.get(int(device.type), "undefined"))
+        self._read(st, "is_active", lambda: bool(device.is_active))
+        on = self._device_on_param(device)
+        st["device_on"] = (float(on.value) >= 0.5) if on is not None else None
+        self._read(st, "latency_ms", lambda: float(device.latency_in_ms))
+        routing = self._device_routing_state(device)
+        if routing:
+            st["sidechain"] = routing
+        if include_parameters:
+            params = list(device.parameters)
+            st["parameter_count"] = len(params)
+            st["parameters"] = [self._parameter_state(p, i) for i, p in enumerate(params[:max_parameters])]
+            if len(params) > max_parameters:
+                st["parameters_truncated"] = True
+        if getattr(device, "can_have_chains", False):
+            chains = []
+            for c_i, chain in enumerate(getattr(device, "chains", []) or []):
+                c = {"index": c_i}
+                self._read(c, "name", lambda: chain.name)
+                self._read(c, "mute", lambda: bool(chain.mute))
+                self._read(c, "solo", lambda: bool(chain.solo))
+                if depth > 0:
+                    c["devices"] = [self._device_state(d, "%s/%d/%d" % (path, c_i, d_i), depth - 1,
+                                                       include_parameters, max_parameters)
+                                    for d_i, d in enumerate(chain.devices)]
+                else:
+                    c["device_count"] = len(list(chain.devices))
+                chains.append(c)
+            st["chains"] = chains
+        return st
+
+    def _cmd_get_device_chain(self, params):
+        """Every device on a track in signal order, with on/off state, each
+        parameter's value as Live displays it, automation state, sidechain
+        routing, and rack chains down to max_depth."""
+        track, track_type, index = self._resolve_track(params)
+        include_parameters = bool(params.get("include_parameters", True))
+        max_parameters = max(int(params.get("max_parameters", 64)), 0)
+        depth = max(int(params.get("max_depth", 2)), 0)
+        devices = [self._device_state(d, str(i), depth, include_parameters, max_parameters)
+                   for i, d in enumerate(track.devices)]
+        return {"track_type": track_type, "index": index, "name": track.name, "devices": devices}
+
+    @staticmethod
+    def _number_in(text):
+        m = re.search(r"(-?inf|[-+]?\d+(?:\.\d+)?)", str(text))
+        if not m:
+            raise ValueError("no number in %r" % (text,))
+        return float(m.group(1))
+
+    def _value_for_display(self, param, wanted):
+        """Raw value whose display text means `wanted` ("+15 dB", "50 %", "On")."""
+        if bool(getattr(param, "is_quantized", False)):
+            items = [str(v) for v in param.value_items]
+            for i, item in enumerate(items):
+                if item == str(wanted) or item.lower() == str(wanted).strip().lower():
+                    return float(param.min) + i
+            raise ValueError("%r is not one of %s" % (wanted, ", ".join(repr(i) for i in items)))
+        target = self._number_in(wanted)
+        lo, hi = float(param.min), float(param.max)
+        at_lo, at_hi = self._number_in(param.str_for_value(lo)), self._number_in(param.str_for_value(hi))
+        increasing = at_hi >= at_lo
+        low_end, high_end = min(at_lo, at_hi), max(at_lo, at_hi)
+        if target < low_end - 1e-6 or target > high_end + 1e-6:
+            raise ValueError("%s is outside this parameter's range %s .. %s"
+                             % (wanted, param.str_for_value(lo), param.str_for_value(hi)))
+        def first_reaching(strict):
+            # Bisect for the edge where the displayed number passes target
+            # (>= target, or > target when strict), in the parameter's direction.
+            a, b = float(param.min), float(param.max)
+            for _ in range(60):
+                mid = (a + b) / 2.0
+                v = self._number_in(param.str_for_value(mid))
+                below = (v <= target) if strict else (v < target)
+                if below == increasing:
+                    a = mid
+                else:
+                    b = mid
+            return b if increasing else a
+        # Live rounds what it displays, so a whole range of raw values shows
+        # "15.0 dB". Take the middle of that range, not its edge.
+        start, stop = first_reaching(False), first_reaching(True)
+        mid = (start + stop) / 2.0
+        if self._number_in(param.str_for_value(mid)) == self._number_in(param.str_for_value(start)):
+            return mid
+        return start
+
+    def _cmd_set_device_parameter_value(self, params):
+        """Set one device parameter by name or index, to a raw value or to a
+        displayed value ("+15 dB", "On"). Reports automation it overrides."""
+        track, track_type, tindex, device, parent, dindex, path = self._resolve_device(params)
+        key = params.get("parameter")
+        if key is None:
+            raise ValueError("Give parameter: a name such as 'Gain' or an index")
+        pindex, param = self._find_parameter(device, key)
+        has_value, has_display = params.get("value") is not None, params.get("display_value") is not None
+        if has_value == has_display:
+            raise ValueError("Give exactly one of value (raw) or display_value (e.g. '+15 dB')")
+        if not bool(getattr(param, "is_enabled", True)):
+            raise ValueError("Parameter %r is disabled (macro-mapped or locked) and can't be set" % param.name)
+        value = float(params["value"]) if has_value else self._value_for_display(param, params["display_value"])
+        if value < float(param.min) - 1e-9 or value > float(param.max) + 1e-9:
+            raise ValueError("%s %.4f is outside %.4f..%.4f" % (param.name, value, param.min, param.max))
+        before = self._parameter_state(param, pindex)
+        param.value = value
+        after = self._parameter_state(param, pindex)
+        notes = []
+        if before.get("automation") == "playing":
+            notes.append("This parameter is automated: the change overrides its automation (Live shows "
+                         "Re-Enable Automation). re_enable_automation brings the automation back; to remove "
+                         "the automation, the user deletes it by hand (right-click > Delete Automation).")
+        return {"track_type": track_type, "track_index": tindex, "track": track.name, "device": path,
+                "device_name": device.name, "before": before, "after": after, "notes": notes}
+
+    def _cmd_set_device_active(self, params):
+        """Switch a device on or off (its Device On button)."""
+        track, track_type, tindex, device, parent, dindex, path = self._resolve_device(params)
+        if params.get("active") is None:
+            raise ValueError("Give active: true or false")
+        on = self._device_on_param(device)
+        if on is None:
+            raise ValueError("Device %r has no Device On parameter" % device.name)
+        was = float(on.value) >= 0.5
+        on.value = float(on.max) if params["active"] else float(on.min)
+        return {"track": track.name, "device": path, "device_name": device.name, "was_on": was,
+                "device_on": float(on.value) >= 0.5, "is_active": bool(device.is_active)}
+
+    def _cmd_get_device_routing(self, params):
+        track, track_type, tindex, device, parent, dindex, path = self._resolve_device(params)
+        routing = self._device_routing_state(device, include_available=True)
+        return {"track": track.name, "device": path, "device_name": device.name,
+                "has_routing": bool(routing), "routing": routing}
+
+    def _cmd_set_device_routing(self, params):
+        """Set a device's sidechain input by display name (types before channels)."""
+        track, track_type, tindex, device, parent, dindex, path = self._resolve_device(params)
+        if not hasattr(device, "input_routing_type"):
+            raise ValueError("Device %r has no input (sidechain) routing" % device.name)
+        before = self._device_routing_state(device)
+        changed = []
+        for key, attr, avail in DEVICE_ROUTING_ATTRS:
+            wanted = params.get(key)
+            if wanted is None:
+                continue
+            choice = self._match_choice(wanted, list(getattr(device, avail)), "sidechain " + key.replace("_", " "))
+            setattr(device, attr, choice)
+            changed.append(key)
+        if not changed:
+            raise ValueError("Give input_type and/or input_channel")
+        return {"track": track.name, "device": path, "device_name": device.name, "changed": changed,
+                "before": before, "after": self._device_routing_state(device)}
+
+    def _cmd_delete_device(self, params):
+        """Delete a device. expected_device_name must match its current name."""
+        if params.get("expected_device_name") is None:
+            raise ValueError("Give expected_device_name: the device's current name, as a guard against a stale index")
+        track, track_type, tindex, device, parent, dindex, path = self._resolve_device(params)
+        name = device.name
+        parent.delete_device(dindex)
+        return {"track": track.name, "deleted": name, "device": path,
+                "remaining": [d.name for d in parent.devices]}
+
+    def _cmd_move_device(self, params):
+        """Move a top-level device to position target_index on the same or
+        another track (target_track_type / target_track_index)."""
+        track, track_type, tindex, device, parent, dindex, path = self._resolve_device(params)
+        if params.get("target_track_index") is None and params.get("target_track_type") is None:
+            target = track
+        else:
+            target, _tt, _ti = self._resolve_track({"track_type": params.get("target_track_type") or "track",
+                                                   "track_index": params.get("target_track_index", 0)})
+        count = len(list(target.devices))
+        pos = int(params.get("target_index", count))
+        if pos < 0 or pos > count:
+            raise IndexError("target_index %d out of range (0..%d)" % (pos, count))
+        new_index = self._song.move_device(device, target, pos)
+        return {"device_name": device.name, "from_track": track.name, "to_track": target.name,
+                "index": new_index if isinstance(new_index, int) else pos,
+                "devices": [d.name for d in target.devices]}
+
+    # --- signal path ----------------------------------------------------
+
+    def _signal_problems(self, st, devices):
+        """Plain-language reasons the track could be silent or quiet."""
+        problems = []
+        if st.get("mute"):
+            problems.append("track is muted")
+        if st.get("muted_via_solo"):
+            problems.append("track is silenced because another track is soloed")
+        vol = st.get("volume") or {}
+        if vol and "-inf" in str(vol.get("display", "")):
+            problems.append("track fader is at -inf dB")
+        r = st.get("routing") or {}
+        if r.get("input_type") == "No Input":
+            problems.append("input is set to No Input")
+        if r.get("output_type") in ("Sends Only", "No Output"):
+            problems.append("output is %s, so nothing reaches the master directly" % r.get("output_type"))
+        if st.get("monitoring") == "off":
+            problems.append("monitoring is Off: live input is not heard")
+        if st.get("monitoring") == "auto" and st.get("can_be_armed") and not st.get("arm"):
+            problems.append("monitoring is Auto and the track is not armed: live input is only heard "
+                            "when the track is armed (or set monitoring to In)")
+        for d in devices:
+            if d.get("device_on") is False:
+                problems.append("device %s %r is switched off" % (d["path"], d.get("name")))
+            for p in d.get("gain_parameters", []):
+                txt = str(p.get("display", ""))
+                if "-inf" in txt:
+                    problems.append("%s / %s is at %s" % (d.get("name"), p.get("name"), txt))
+                if p.get("automation") in ("playing", "overridden"):
+                    problems.append("%s / %s is automated (%s): its value follows the automation, now %s"
+                                    % (d.get("name"), p.get("name"), p.get("automation"), txt))
+        return problems
+
+    def _cmd_get_signal_path(self, params):
+        """Everything between a track's input and where its audio goes, in one
+        call, plus plain-language problems and optional meter readings."""
+        track, track_type, index = self._resolve_track(params)
+        st = self._track_state(track, track_type, index, include_routing=True)
+        devices = []
+        for i, d in enumerate(track.devices):
+            ds = self._device_state(d, str(i), 0, False, 0)
+            gains = []
+            for p_i, p in enumerate(d.parameters):
+                if GAIN_PARAM.search(str(p.name)):
+                    gains.append(self._parameter_state(p, p_i))
+            ds["gain_parameters"] = gains
+            devices.append(ds)
+        listeners = []
+        name = track.name
+        for other, ot, oi in self._all_tracks():
+            if other is track or ot != "track":
+                continue
+            try:
+                src = self._routing_name(other.input_routing_type)
+            except Exception:
+                continue
+            if src == name:
+                entry = {"track_index": oi, "name": other.name}
+                self._read(entry, "input_channel", lambda o=other: self._routing_name(o.input_routing_channel))
+                listeners.append(entry)
+        sends_used = [s for s in (st.get("sends") or []) if s.get("value", 0) > 0]
+        out = {"track": st, "devices": devices, "fed_to_tracks": listeners, "sends_in_use": sends_used,
+               "problems": self._signal_problems(st, devices)}
+        duration = int(params.get("meter_ms", 0) or 0)
+        if duration > 0:
+            targets = [{"track_type": track_type, "track_index": index}]
+            targets += [{"track_type": "track", "track_index": l["track_index"]} for l in listeners]
+            out["meters"] = self._cmd_get_track_meters({"tracks": targets, "duration_ms": duration,
+                                                        "threshold": params.get("threshold", 0.001)})
+        out["not_visible_to_the_api"] = [
+            "Live's Audio Input/Output Config (Settings > Audio) and the audio interface's own mixer",
+            "arrangement automation envelopes (only whether a parameter is automated)",
+            "Track Delay", "anything outside the computer: cables, pedals, power",
+        ]
+        return out
+
+    # --- clips -----------------------------------------------------------
+
+    def _resolve_clip(self, params):
+        track, track_type, tindex = self._resolve_track(params)
+        if track_type != "track":
+            raise ValueError("Clips live on regular tracks")
+        if params.get("arrangement_index") is not None:
+            clips = list(track.arrangement_clips)
+            i = int(params["arrangement_index"])
+            if i < 0 or i >= len(clips):
+                raise IndexError("arrangement clip %d out of range (%d clips)" % (i, len(clips)))
+            return track, tindex, clips[i], "arrangement %d" % i
+        slots = list(track.clip_slots)
+        i = int(params.get("clip_index", 0))
+        if i < 0 or i >= len(slots):
+            raise IndexError("clip slot %d out of range (%d slots)" % (i, len(slots)))
+        if not slots[i].has_clip:
+            raise ValueError("clip slot %d on %r is empty" % (i, track.name))
+        return track, tindex, slots[i].clip, "slot %d" % i
+
+    def _clip_state(self, clip):
+        st = {}
+        for key, fn in (("name", lambda: clip.name), ("is_audio_clip", lambda: bool(clip.is_audio_clip)),
+                        ("length", lambda: float(clip.length)), ("looping", lambda: bool(clip.looping)),
+                        ("loop_start", lambda: float(clip.loop_start)), ("loop_end", lambda: float(clip.loop_end)),
+                        ("start_marker", lambda: float(clip.start_marker)),
+                        ("end_marker", lambda: float(clip.end_marker)), ("muted", lambda: bool(clip.muted)),
+                        ("color_index", lambda: int(clip.color_index)),
+                        ("launch_mode", lambda: int(clip.launch_mode))):
+            self._read(st, key, fn)
+        if getattr(clip, "is_arrangement_clip", False):
+            self._read(st, "start_time", lambda: float(clip.start_time))
+            self._read(st, "end_time", lambda: float(clip.end_time))
+        if st.get("is_audio_clip"):
+            for key, fn in (("gain", lambda: float(clip.gain)),
+                            ("gain_display", lambda: str(clip.gain_display_string)),
+                            ("warping", lambda: bool(clip.warping)), ("warp_mode", lambda: int(clip.warp_mode)),
+                            ("pitch_coarse", lambda: int(clip.pitch_coarse)),
+                            ("pitch_fine", lambda: float(clip.pitch_fine)),
+                            ("file_path", lambda: str(clip.file_path)),
+                            ("sample_rate", lambda: float(clip.sample_rate))):
+                self._read(st, key, fn)
+            if st.get("warp_mode") is not None:
+                st["warp_mode_name"] = WARP_MODES.get(st["warp_mode"], str(st["warp_mode"]))
+        self._read(st, "has_envelopes", lambda: bool(clip.has_envelopes))
+        return st
+
+    def _cmd_get_clip_info(self, params):
+        """A session clip (clip_index) or arrangement clip (arrangement_index):
+        loop, markers, mute, and for audio clips gain, warp and the sample file."""
+        track, tindex, clip, where = self._resolve_clip(params)
+        return dict(self._clip_state(clip), track=track.name, track_index=tindex, where=where)
+
+    def _cmd_set_clip_properties(self, params):
+        """Set loop/markers/mute/gain/pitch/warping/color of one clip.
+        Everything is validated before anything is written."""
+        track, tindex, clip, where = self._resolve_clip(params)
+        before = self._clip_state(clip)
+        writes = []
+        for key in ("loop_start", "loop_end", "start_marker", "end_marker", "pitch_fine"):
+            if params.get(key) is not None:
+                writes.append((key, float(params[key])))
+        for key in ("looping", "muted", "warping"):
+            if params.get(key) is not None:
+                writes.append((key, bool(params[key])))
+        for key in ("pitch_coarse", "color_index", "launch_mode"):
+            if params.get(key) is not None:
+                writes.append((key, int(params[key])))
+        if params.get("gain") is not None:
+            g = float(params["gain"])
+            if not 0.0 <= g <= 1.0:
+                raise ValueError("gain %.3f is outside 0..1 (use gain_db for dB)" % g)
+            writes.append(("gain", g))
+        audio_only = ("gain", "pitch_coarse", "pitch_fine", "warping", "gain_db")
+        if not before.get("is_audio_clip") and any(k in audio_only for k, _ in writes):
+            raise ValueError("gain, pitch and warping only exist on audio clips")
+        if params.get("gain_db") is not None:
+            if not before.get("is_audio_clip"):
+                raise ValueError("gain_db only exists on audio clips")
+            writes.append(("gain", self._clip_gain_for_db(clip, float(params["gain_db"]))))
+        if params.get("pitch_coarse") is not None and not -48 <= int(params["pitch_coarse"]) <= 48:
+            raise ValueError("pitch_coarse must be -48..48 semitones")
+        if not writes:
+            raise ValueError("Nothing to set")
+        # Live refuses loop_start >= loop_end; order the two writes so the
+        # interval stays valid on the way.
+        new_end = dict(writes).get("loop_end")
+        if new_end is not None and before.get("loop_start") is not None and new_end > before["loop_start"]:
+            writes.sort(key=lambda kv: 0 if kv[0] == "loop_end" else 1)
+        for key, value in writes:
+            setattr(clip, key, value)
+        return {"track": track.name, "where": where, "changed": [k for k, _ in writes],
+                "before": before, "after": self._clip_state(clip)}
+
+    def _clip_gain_for_db(self, clip, db):
+        """Bisect clip.gain (0..1) until gain_display_string shows db."""
+        old = float(clip.gain)
+        lo, hi = 0.0, 1.0
+        try:
+            def db_at(v):
+                clip.gain = v
+                return self._number_in(clip.gain_display_string)
+            top, bottom = db_at(1.0), db_at(0.0)
+            if db > top + 1e-6 or db < bottom - 1e-6:
+                raise ValueError("%.1f dB is outside this clip's gain range %.1f .. %.1f dB" % (db, bottom, top))
+            for _ in range(40):
+                mid = (lo + hi) / 2.0
+                if db_at(mid) < db:
+                    lo = mid
+                else:
+                    hi = mid
+            return hi
+        finally:
+            clip.gain = old
+
+    # --- structure ----------------------------------------------------------
+
+    def _cmd_duplicate_track(self, params):
+        track, track_type, index = self._resolve_track(params)
+        if track_type != "track":
+            raise ValueError("Only regular tracks can be duplicated")
+        self._song.duplicate_track(index)
+        new = self._song.tracks[index + 1]
+        return {"duplicated": track.name, "new_index": index + 1, "new_name": new.name,
+                "track_count": len(self._song.tracks)}
+
+    def _cmd_create_return_track(self, params):
+        self._song.create_return_track()
+        returns = list(self._song.return_tracks)
+        return {"index": len(returns) - 1, "name": returns[-1].name, "return_track_count": len(returns)}
+
+    def _scene_state(self, scene, index):
+        st = {"index": index}
+        for key, fn in (("name", lambda: scene.name), ("is_empty", lambda: bool(scene.is_empty)),
+                        ("tempo", lambda: float(scene.tempo)), ("tempo_enabled", lambda: bool(scene.tempo_enabled)),
+                        ("time_signature_numerator", lambda: int(scene.time_signature_numerator)),
+                        ("time_signature_denominator", lambda: int(scene.time_signature_denominator)),
+                        ("time_signature_enabled", lambda: bool(scene.time_signature_enabled)),
+                        ("color_index", lambda: int(scene.color_index))):
+            self._read(st, key, fn)
+        return st
+
+    def _resolve_scene(self, params):
+        scenes = list(self._song.scenes)
+        i = int(params.get("scene_index", -1))
+        if i < 0 or i >= len(scenes):
+            raise IndexError("scene %d out of range (0..%d)" % (i, len(scenes) - 1))
+        return scenes[i], i
+
+    def _cmd_get_scenes(self, params):
+        return {"scenes": [self._scene_state(s, i) for i, s in enumerate(self._song.scenes)]}
+
+    def _cmd_create_scene(self, params):
+        index = int(params.get("index", -1))
+        count = len(list(self._song.scenes))
+        if index < -1 or index > count:
+            raise IndexError("index %d out of range (-1 or 0..%d)" % (index, count))
+        self._song.create_scene(index)
+        at = count if index == -1 else index
+        return dict(self._scene_state(self._song.scenes[at], at), scene_count=len(self._song.scenes))
+
+    def _cmd_duplicate_scene(self, params):
+        scene, i = self._resolve_scene(params)
+        self._song.duplicate_scene(i)
+        return dict(self._scene_state(self._song.scenes[i + 1], i + 1), scene_count=len(self._song.scenes))
+
+    def _cmd_delete_scene(self, params):
+        scene, i = self._resolve_scene(params)
+        expected = params.get("expected_name")
+        if expected is None or str(expected) != scene.name:
+            raise ValueError("expected_name %r does not match scene %d, which is named %r"
+                             % (expected, i, scene.name))
+        if len(self._song.scenes) <= 1:
+            raise ValueError("Live needs at least one scene; refusing to delete the last one")
+        if not scene.is_empty and not params.get("allow_clips"):
+            raise ValueError("Scene %d has clips; pass allow_clips to delete them with it" % i)
+        self._song.delete_scene(i)
+        return {"deleted": i, "name": expected, "scene_count": len(self._song.scenes)}
+
+    def _cmd_set_scene(self, params):
+        scene, i = self._resolve_scene(params)
+        writes = []
+        if params.get("name") is not None:
+            writes.append(("name", str(params["name"])))
+        if params.get("tempo") is not None:
+            t = float(params["tempo"])
+            if not 20.0 <= t <= 999.0:
+                raise ValueError("tempo %.2f is outside 20..999 BPM" % t)
+            writes.append(("tempo", t))
+            writes.append(("tempo_enabled", True))
+        if params.get("tempo_enabled") is not None:
+            writes = [w for w in writes if w[0] != "tempo_enabled"] + [("tempo_enabled", bool(params["tempo_enabled"]))]
+        for key in ("time_signature_numerator", "time_signature_denominator", "color_index"):
+            if params.get(key) is not None:
+                writes.append((key, int(params[key])))
+        if not writes:
+            raise ValueError("Nothing to set: give name, tempo, tempo_enabled, time signature or color_index")
+        before = self._scene_state(scene, i)
+        for key, value in writes:
+            setattr(scene, key, value)
+        return {"before": before, "after": self._scene_state(scene, i)}
+
+    def _cmd_fire_scene(self, params):
+        scene, i = self._resolve_scene(params)
+        scene.fire()
+        return {"fired": i, "name": scene.name}
+
+    def _cmd_set_track_look(self, params):
+        """Track colour (color_index 0..69) and group folding."""
+        track, track_type, index = self._resolve_track(params)
+        changed = []
+        if params.get("color_index") is not None:
+            c = int(params["color_index"])
+            if not 0 <= c <= 69:
+                raise ValueError("color_index must be 0..69")
+            changed.append(("color_index", c))
+        if params.get("folded") is not None:
+            if not getattr(track, "is_foldable", False):
+                raise ValueError("Track %r is not a group track, so it can't be folded" % track.name)
+            changed.append(("fold_state", 1 if params["folded"] else 0))
+        if not changed:
+            raise ValueError("Give color_index and/or folded")
+        for key, value in changed:
+            setattr(track, key, value)
+        out = {"name": track.name, "changed": [k for k, _ in changed]}
+        self._read(out, "color_index", lambda: int(track.color_index))
+        if getattr(track, "is_foldable", False):
+            self._read(out, "folded", lambda: bool(track.fold_state))
+        return out
 
     def _set_device_parameter(self, track_index, device_index, parameter_index, value):
         try:

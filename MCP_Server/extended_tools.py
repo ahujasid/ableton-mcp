@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import script_handshake
+from . import safety, script_handshake
 from .telemetry_decorator import telemetry_tool
 
 logger = logging.getLogger("AbletonMCPServer")
@@ -25,6 +25,9 @@ MODIFYING_COMMANDS = frozenset({
     "undo", "redo", "delete_track",
     "set_track_routing", "set_track_monitoring", "set_track_mixer",
     "back_to_arrangement", "re_enable_automation",
+    "set_device_parameter_value", "set_device_active", "set_device_routing", "delete_device",
+    "move_device", "set_clip_properties", "duplicate_track", "create_return_track", "create_scene",
+    "duplicate_scene", "delete_scene", "set_scene", "fire_scene", "set_track_look",
 })
 
 def _call(get_connection: Callable[[], Any], command: str, params: dict | None, label: str) -> str:
@@ -289,3 +292,421 @@ def register(mcp: FastMCP, get_connection: Callable[[], Any]) -> None:
         if track_index is not None or track_type is not None:
             params = {"track_index": track_index or 0, "track_type": track_type or "track"}
         return _call(get_connection, "re_enable_automation", params, "re-enabling automation")
+
+    # ------------------------------------------------------------------
+    # Safety switches (read-only view; only the user changes them)
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    @telemetry_tool("get_safety_config")
+    def get_safety_config(ctx: Context, user_prompt: str = "") -> str:
+        """Show which kinds of change the user currently allows: read_only, and
+        the categories delete / playback / mixer / routing / structure / edit /
+        undo, plus stricter rules for saved sets (real songs). A refused call
+        names its category. There is no tool to change these switches: if one
+        blocks what the user asked for, tell them; they change it with
+        `ableton-mcp-safety <category> on|off` or by editing the file.
+
+        Parameters:
+        - user_prompt: leave empty
+        """
+        return json.dumps(safety.describe(), indent=2)
+
+    # ------------------------------------------------------------------
+    # Set, devices, signal path
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    @telemetry_tool("get_set_info")
+    def get_set_info(ctx: Context, user_prompt: str = "") -> str:
+        """Which Live set is open: its file path and name (empty for a new,
+        unsaved set; is_saved tells them apart), track, return and scene counts,
+        and tempo. Check it before changing anything.
+
+        Parameters:
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "get_set_info", {}, "getting set info")
+
+    @mcp.tool()
+    @telemetry_tool("get_device_chain")
+    def get_device_chain(
+        ctx: Context, track_index: int = 0, track_type: str = "track", include_parameters: bool = True,
+        max_parameters: int = 64, max_depth: int = 2, user_prompt: str = "",
+    ) -> str:
+        """Every device on a track in signal order: name, class, whether it is
+        switched on, latency, sidechain routing, rack chains (down to max_depth),
+        and each parameter with its raw value AND the text Live displays
+        ("+15.0 dB", "50 %"), its range and automation state (none / active /
+        overridden). Devices are addressed by path: "1" is the second device,
+        "0/1/2" is device 2 in chain 1 of rack 0.
+
+        Parameters:
+        - track_index, track_type: 'track' (default), 'return' or 'master'
+        - include_parameters: false for a quick list of devices only
+        - max_parameters: per device (plugins can have hundreds)
+        - max_depth: how many rack levels to open
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "get_device_chain",
+                     {"track_index": track_index, "track_type": track_type,
+                      "include_parameters": include_parameters, "max_parameters": max_parameters,
+                      "max_depth": max_depth}, "reading device chain")
+
+    @mcp.tool()
+    @telemetry_tool("set_device_parameter_value")
+    def set_device_parameter_value(
+        ctx: Context, device: str, parameter: str, track_index: int = 0, track_type: str = "track",
+        value: Optional[float] = None, display_value: Optional[str] = None,
+        expected_device_name: Optional[str] = None, user_prompt: str = "",
+    ) -> str:
+        """Set one device parameter by name (or index) on any track, return or
+        the master, either to a raw value or to what Live should display, e.g.
+        display_value="+15 dB" on Utility's Gain or "On" for a switch. Returns
+        before/after with display text. If the parameter is automated, the
+        change overrides the automation and the result says so.
+
+        Parameters:
+        - device: device path, "0" or "0/1/2" for inside a rack (see get_device_chain)
+        - parameter: name such as "Gain", or its index
+        - value: raw value within min..max; or display_value: text such as "-6 dB"
+        - expected_device_name: optional guard; refused if the device has another name
+        - track_index, track_type: 'track', 'return' or 'master'
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "set_device_parameter_value",
+                     {"track_index": track_index, "track_type": track_type, "device": device,
+                      "parameter": parameter, "value": value, "display_value": display_value,
+                      "expected_device_name": expected_device_name}, "setting device parameter")
+
+    @mcp.tool()
+    @telemetry_tool("set_device_active")
+    def set_device_active(
+        ctx: Context, device: str, active: bool, track_index: int = 0, track_type: str = "track",
+        user_prompt: str = "",
+    ) -> str:
+        """Switch a device on or off (its Device On button).
+
+        Parameters:
+        - device: device path, "0" or "0/1/2"
+        - active: true = on, false = off (bypassed)
+        - track_index, track_type: 'track', 'return' or 'master'
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "set_device_active",
+                     {"track_index": track_index, "track_type": track_type, "device": device,
+                      "active": active}, "switching device")
+
+    @mcp.tool()
+    @telemetry_tool("get_device_routing")
+    def get_device_routing(
+        ctx: Context, device: str, track_index: int = 0, track_type: str = "track", user_prompt: str = "",
+    ) -> str:
+        """A device's sidechain input (Compressor, Gate, Auto Filter, ...): the
+        current source type and channel and the choices. has_routing is false
+        for devices without a sidechain.
+
+        Parameters:
+        - device: device path, "0" or "0/1/2"
+        - track_index, track_type: 'track', 'return' or 'master'
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "get_device_routing",
+                     {"track_index": track_index, "track_type": track_type, "device": device},
+                     "reading device routing")
+
+    @mcp.tool()
+    @telemetry_tool("set_device_routing")
+    def set_device_routing(
+        ctx: Context, device: str, track_index: int = 0, track_type: str = "track",
+        input_type: Optional[str] = None, input_channel: Optional[str] = None, user_prompt: str = "",
+    ) -> str:
+        """Set a device's sidechain source by the names Live shows (e.g.
+        input_type="2-Kick", input_channel="Post FX"). A wrong name returns the
+        valid choices. Turning the sidechain on is the device's own parameter
+        (set_device_parameter_value, e.g. "S/C On").
+
+        Parameters:
+        - device: device path
+        - input_type, input_channel: display names (see get_device_routing)
+        - track_index, track_type: 'track', 'return' or 'master'
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "set_device_routing",
+                     {"track_index": track_index, "track_type": track_type, "device": device,
+                      "input_type": input_type, "input_channel": input_channel}, "setting device routing")
+
+    @mcp.tool()
+    @telemetry_tool("delete_device")
+    def delete_device(
+        ctx: Context, device: str, expected_device_name: str, track_index: int = 0, track_type: str = "track",
+        user_prompt: str = "",
+    ) -> str:
+        """Delete one device. expected_device_name must equal the device's
+        current name (from get_device_chain), so a stale index can't delete the
+        wrong one. Live's undo brings it back.
+
+        Parameters:
+        - device: device path, "0" or "0/1/2"
+        - expected_device_name: the device's current name
+        - track_index, track_type: 'track', 'return' or 'master'
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "delete_device",
+                     {"track_index": track_index, "track_type": track_type, "device": device,
+                      "expected_device_name": expected_device_name}, "deleting device")
+
+    @mcp.tool()
+    @telemetry_tool("move_device")
+    def move_device(
+        ctx: Context, device: str, track_index: int = 0, track_type: str = "track",
+        target_track_index: Optional[int] = None, target_track_type: Optional[str] = None,
+        target_index: Optional[int] = None, expected_device_name: Optional[str] = None,
+        user_prompt: str = "",
+    ) -> str:
+        """Move a device to another position in the chain, or onto another
+        track. Without a target track it reorders within the same track; without
+        target_index it goes to the end.
+
+        Parameters:
+        - device: device path of the device to move
+        - target_track_index, target_track_type: where it goes (default: same track)
+        - target_index: position in the target chain (0 = first)
+        - expected_device_name: optional guard
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index, "track_type": track_type, "device": device,
+                                  "expected_device_name": expected_device_name}
+        if target_track_index is not None or target_track_type is not None:
+            params["target_track_index"] = target_track_index or 0
+            params["target_track_type"] = target_track_type or "track"
+        if target_index is not None:
+            params["target_index"] = target_index
+        return _call(get_connection, "move_device", params, "moving device")
+
+    @mcp.tool()
+    @telemetry_tool("get_signal_path")
+    def get_signal_path(
+        ctx: Context, track_index: int = 0, track_type: str = "track", meter_ms: int = 0,
+        user_prompt: str = "",
+    ) -> str:
+        """Trace one track's signal in a single call, for "why is this silent /
+        too quiet / not reaching my hardware": input routing, monitoring, arm,
+        mute/solo, fader, every device with on/off and its level-setting
+        parameters (gain, output, drive, dry/wet) with display text and
+        automation state, output routing, sends in use, and which tracks take
+        this track as their input. "problems" lists plain-language reasons it
+        could be silent. With meter_ms > 0 it also samples the meters of this
+        track and the tracks it feeds (input and output: is signal leaving,
+        is it arriving). "not_visible_to_the_api" lists what to check by hand.
+
+        Parameters:
+        - track_index, track_type: 'track', 'return' or 'master'
+        - meter_ms: 0 = no metering; up to 10000 ms (play audio meanwhile)
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "get_signal_path",
+                     {"track_index": track_index, "track_type": track_type, "meter_ms": meter_ms},
+                     "tracing signal path")
+
+    # ------------------------------------------------------------------
+    # Clips
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    @telemetry_tool("get_clip_info")
+    def get_clip_info(
+        ctx: Context, track_index: int, clip_index: Optional[int] = None,
+        arrangement_index: Optional[int] = None, user_prompt: str = "",
+    ) -> str:
+        """One clip's properties: name, length, loop on/start/end, start/end
+        markers, muted, colour, launch mode; for audio clips also gain (raw and
+        as Live shows it in dB), warping and warp mode, pitch, the sample file.
+        Give clip_index for a Session slot or arrangement_index for the n-th
+        Arrangement clip (order of get_arrangement_clips).
+
+        Parameters:
+        - track_index: the track
+        - clip_index: Session clip slot (scene row), or
+        - arrangement_index: index into the track's Arrangement clips
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index}
+        if arrangement_index is not None:
+            params["arrangement_index"] = arrangement_index
+        else:
+            params["clip_index"] = clip_index or 0
+        return _call(get_connection, "get_clip_info", params, "reading clip")
+
+    @mcp.tool()
+    @telemetry_tool("set_clip_properties")
+    def set_clip_properties(
+        ctx: Context, track_index: int, clip_index: Optional[int] = None,
+        arrangement_index: Optional[int] = None,
+        looping: Optional[bool] = None, loop_start: Optional[float] = None, loop_end: Optional[float] = None,
+        start_marker: Optional[float] = None, end_marker: Optional[float] = None,
+        muted: Optional[bool] = None, gain: Optional[float] = None, gain_db: Optional[float] = None,
+        pitch_coarse: Optional[int] = None, pitch_fine: Optional[float] = None,
+        warping: Optional[bool] = None, color_index: Optional[int] = None,
+        launch_mode: Optional[int] = None, user_prompt: str = "",
+    ) -> str:
+        """Change a clip: loop on/off and loop start/end, start/end markers (in
+        beats), mute (the clip's own on/off), and for audio clips gain (raw
+        0..1 or gain_db), pitch (semitones / cents) and warping. Only the fields
+        given change; everything is checked before anything is written.
+
+        Parameters:
+        - track_index plus clip_index (Session) or arrangement_index
+        - looping, loop_start, loop_end, start_marker, end_marker, muted
+        - gain (0..1) or gain_db (e.g. 6.0), pitch_coarse (-48..48), pitch_fine (cents), warping
+        - color_index, launch_mode (0 trigger, 1 gate, 2 toggle, 3 repeat)
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index}
+        if arrangement_index is not None:
+            params["arrangement_index"] = arrangement_index
+        else:
+            params["clip_index"] = clip_index or 0
+        for k, v in (("looping", looping), ("loop_start", loop_start), ("loop_end", loop_end),
+                     ("start_marker", start_marker), ("end_marker", end_marker), ("muted", muted),
+                     ("gain", gain), ("gain_db", gain_db), ("pitch_coarse", pitch_coarse),
+                     ("pitch_fine", pitch_fine), ("warping", warping), ("color_index", color_index),
+                     ("launch_mode", launch_mode)):
+            if v is not None:
+                params[k] = v
+        return _call(get_connection, "set_clip_properties", params, "setting clip properties")
+
+    # ------------------------------------------------------------------
+    # Structure: tracks, returns, scenes
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    @telemetry_tool("duplicate_track")
+    def duplicate_track(ctx: Context, track_index: int, user_prompt: str = "") -> str:
+        """Duplicate a track with its devices and clips; the copy lands right
+        after it.
+
+        Parameters:
+        - track_index: the track to copy
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "duplicate_track", {"track_index": track_index}, "duplicating track")
+
+    @mcp.tool()
+    @telemetry_tool("create_return_track")
+    def create_return_track(ctx: Context, user_prompt: str = "") -> str:
+        """Add a return track at the end of the returns.
+
+        Parameters:
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "create_return_track", {}, "creating return track")
+
+    @mcp.tool()
+    @telemetry_tool("get_scenes")
+    def get_scenes(ctx: Context, user_prompt: str = "") -> str:
+        """List the Session scenes: name, empty or not, tempo and time signature
+        (and whether they are enabled), colour.
+
+        Parameters:
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "get_scenes", {}, "listing scenes")
+
+    @mcp.tool()
+    @telemetry_tool("create_scene")
+    def create_scene(ctx: Context, index: int = -1, user_prompt: str = "") -> str:
+        """Insert an empty scene at index (-1 = at the end).
+
+        Parameters:
+        - index: position, -1 for the end
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "create_scene", {"index": index}, "creating scene")
+
+    @mcp.tool()
+    @telemetry_tool("duplicate_scene")
+    def duplicate_scene(ctx: Context, scene_index: int, user_prompt: str = "") -> str:
+        """Duplicate a scene with its clips; the copy goes right below it.
+
+        Parameters:
+        - scene_index: the scene to copy
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "duplicate_scene", {"scene_index": scene_index}, "duplicating scene")
+
+    @mcp.tool()
+    @telemetry_tool("delete_scene")
+    def delete_scene(
+        ctx: Context, scene_index: int, expected_name: str, allow_clips: bool = False, user_prompt: str = "",
+    ) -> str:
+        """Delete a scene. expected_name must equal its current name ("" for an
+        unnamed scene). A scene holding clips is refused unless allow_clips.
+
+        Parameters:
+        - scene_index: the scene
+        - expected_name: its current name, from get_scenes
+        - allow_clips: also delete the clips in it
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "delete_scene",
+                     {"scene_index": scene_index, "expected_name": expected_name, "allow_clips": allow_clips},
+                     "deleting scene")
+
+    @mcp.tool()
+    @telemetry_tool("set_scene")
+    def set_scene(
+        ctx: Context, scene_index: int, name: Optional[str] = None, tempo: Optional[float] = None,
+        tempo_enabled: Optional[bool] = None, time_signature_numerator: Optional[int] = None,
+        time_signature_denominator: Optional[int] = None, color_index: Optional[int] = None,
+        user_prompt: str = "",
+    ) -> str:
+        """Rename a scene or set its tempo / time signature / colour. Setting a
+        tempo also enables it (pass tempo_enabled=false to keep it off).
+
+        Parameters:
+        - scene_index: the scene
+        - name, tempo (BPM), tempo_enabled, time_signature_numerator/denominator, color_index
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"scene_index": scene_index}
+        for k, v in (("name", name), ("tempo", tempo), ("tempo_enabled", tempo_enabled),
+                     ("time_signature_numerator", time_signature_numerator),
+                     ("time_signature_denominator", time_signature_denominator), ("color_index", color_index)):
+            if v is not None:
+                params[k] = v
+        return _call(get_connection, "set_scene", params, "setting scene")
+
+    @mcp.tool()
+    @telemetry_tool("fire_scene")
+    def fire_scene(ctx: Context, scene_index: int, user_prompt: str = "") -> str:
+        """Launch a scene (all its clips), like clicking its launch button. This
+        starts playback and makes sound.
+
+        Parameters:
+        - scene_index: the scene
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "fire_scene", {"scene_index": scene_index}, "firing scene")
+
+    @mcp.tool()
+    @telemetry_tool("set_track_look")
+    def set_track_look(
+        ctx: Context, track_index: int, track_type: str = "track", color_index: Optional[int] = None,
+        folded: Optional[bool] = None, user_prompt: str = "",
+    ) -> str:
+        """Set a track's colour (color_index 0..69, Live's palette) and fold or
+        unfold a group track.
+
+        Parameters:
+        - track_index, track_type: 'track' or 'return'
+        - color_index: 0..69
+        - folded: true folds a group track, false unfolds it
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index, "track_type": track_type}
+        if color_index is not None:
+            params["color_index"] = color_index
+        if folded is not None:
+            params["folded"] = folded
+        return _call(get_connection, "set_track_look", params, "setting track look")

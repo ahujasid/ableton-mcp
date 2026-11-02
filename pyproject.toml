@@ -21,6 +21,7 @@ dependencies = [
 [project.scripts]
 ableton-mcp = "MCP_Server.server:main"
 ableton-mcp-install-script = "MCP_Server.remote_script_install:main"
+ableton-mcp-safety = "MCP_Server.safety:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

@@ -82,6 +82,10 @@ class FakeParameter(object):
         self.max = max
         self.kind = kind
         self.automation_state = 0
+        self.original_name = name
+        self.is_quantized = False
+        self.is_enabled = True
+        self.value_items = []
         self._history = history
 
     @property
@@ -104,6 +108,8 @@ class FakeParameter(object):
             if abs(v) < 1e-9:
                 return "C"
             return "%d%s" % (round(abs(v) * 50), "R" if v > 0 else "L")
+        if self.kind == "db_linear":
+            return "%.1f dB" % v
         return "%.2f" % v
 
     def __str__(self):
@@ -148,6 +154,10 @@ class FakeTrack(object):
         self.has_midi_input = not audio
         self.can_be_armed = armable
         self.is_grouped = False
+        self.group_track = None
+        self.is_foldable = False
+        self.fold_state = 0
+        self.color_index = 0
         self.back_to_arranger = False
         self.muted_via_solo = False
         self._mute = self._solo = self._arm = False
@@ -155,11 +165,16 @@ class FakeTrack(object):
         self.mixer_device = FakeMixer(sends, history)
         self.devices = []
         self.clip_slots = []
+        self.arrangement_clips = []
         self._in_type, self._in_chan = Routing("Ext. In"), Routing("1/2")
         self._out_type, self._out_chan = Routing("Master"), Routing("Track In")
         for side in ("input", "output"):
             for part in ("left", "right", "level"):
                 setattr(self, "%s_meter_%s" % (side, part), 0.0)
+
+    def delete_device(self, index):
+        self._history.log("track.delete_device", self.name, index)
+        del self.devices[index]
 
     def _set(self, attr, value):
         self._history.log("set", self.name, attr, value)
@@ -230,9 +245,156 @@ class FakeMasterTrack(FakeReturnTrack):
 
 
 class FakeDevice(object):
-    def __init__(self, name, params):
+    """A device. Parameter 0 is "Device On", as in Live."""
+
+    def __init__(self, name, params, history=None, class_name="AudioEffect", dtype=2, chains=None,
+                 device_on=True):
+        self._history = history
         self.name = name
-        self.parameters = params
+        self.class_name = class_name
+        self.class_display_name = class_name
+        self.type = dtype
+        self.latency_in_ms = 0.0
+        on = FakeParameter("Device On", 1.0 if device_on else 0.0, 0.0, 1.0, history=history)
+        on.original_name = "Device On"
+        on.is_quantized = True
+        on.value_items = ["Off", "On"]
+        self.parameters = [on] + list(params)
+        self.chains = chains or []
+        self.can_have_chains = chains is not None
+
+    @property
+    def is_active(self):
+        return self.parameters[0].value >= 0.5
+
+
+class FakeSidechainDevice(FakeDevice):
+    """A Compressor-like device with sidechain input routing."""
+
+    def __init__(self, name, params, history=None):
+        super(FakeSidechainDevice, self).__init__(name, params, history, class_name="Compressor2")
+        self._sc_type, self._sc_chan = Routing("No Input"), None
+
+    @property
+    def available_input_routing_types(self):
+        return [Routing(n) for n in ("No Input", "1-Audio", "2-MIDI", "Ext. In")]
+
+    @property
+    def available_input_routing_channels(self):
+        return [Routing(n) for n in {"1-Audio": ["Pre FX", "Post FX", "Post Mixer"],
+                                     "Ext. In": ["1/2", "3/4"]}.get(self._sc_type.display_name, [])]
+
+    def _set_sc(self, attr, v):
+        self._history.log("set", self.name, attr, v.display_name)
+        setattr(self, attr, v)
+        if attr == "_sc_type":
+            chans = self.available_input_routing_channels
+            self._sc_chan = chans[0] if chans else None
+
+    input_routing_type = property(lambda s: s._sc_type, lambda s, v: s._set_sc("_sc_type", v))
+    input_routing_channel = property(lambda s: s._sc_chan, lambda s, v: s._set_sc("_sc_chan", v))
+
+
+class FakeChain(object):
+    def __init__(self, name, devices, history):
+        self.name = name
+        self.devices = devices
+        self.mute = False
+        self.solo = False
+        self._history = history
+
+    def delete_device(self, index):
+        self._history.log("chain.delete_device", self.name, index)
+        del self.devices[index]
+
+
+def utility(history, gain=0.0, automated=0):
+    """Live's Utility: Gain shown in dB over a -35..35 range (raw = dB here)."""
+    g = FakeParameter("Gain", gain, -35.0, 35.0, history=history, kind="db_linear")
+    g.automation_state = automated
+    return FakeDevice("Utility", [g, FakeParameter("Mono", 0.0, 0.0, 1.0, history=history)],
+                      history, class_name="StereoGain")
+
+
+class FakeClip(object):
+    def __init__(self, name, history, audio=True, length=4.0, arrangement=False):
+        self._history = history
+        self.name = name
+        self.is_audio_clip = audio
+        self.is_midi_clip = not audio
+        self.is_arrangement_clip = arrangement
+        self.length = length
+        self.looping = True
+        self.loop_start, self.loop_end = 0.0, length
+        self.start_marker, self.end_marker = 0.0, length
+        self.muted = False
+        self.color_index = 0
+        self.launch_mode = 0
+        self.has_envelopes = False
+        self.start_time, self.end_time = 0.0, length
+        if audio:
+            self._gain = 0.4
+            self.warping = True
+            self.warp_mode = 0
+            self.pitch_coarse = 0
+            self.pitch_fine = 0.0
+            self.file_path = "Z:\\home\\jeremy\\take.wav"
+            self.sample_rate = 48000.0
+        self._ready = True
+
+    def __setattr__(self, key, value):
+        h = self.__dict__.get("_history") if self.__dict__.get("_ready") else None
+        if h is not None and not key.startswith("_"):
+            if key == "loop_start" and value >= self.__dict__.get("loop_end", float("inf")):
+                raise RuntimeError("loop_start must be before loop_end")
+            h.log("clip", key, value)
+        object.__setattr__(self, key, value)
+
+    # Clip gain: 0..1 raw, shown in dB; 0.4 = 0 dB, 1.0 = +24 dB, 0 = -inf
+    gain = property(lambda s: s._gain, lambda s, v: s._set_gain(v))
+
+    def _set_gain(self, v):
+        self.__dict__["_gain"] = v
+        if self._history is not None and not self.__dict__.get("_quiet"):
+            self._history.log("clip", "gain", v)
+
+    @property
+    def gain_display_string(self):
+        if self._gain <= 0:
+            return "-inf dB"
+        return "%.1f dB" % (24.0 * math.log(self._gain / 0.4) / math.log(1.0 / 0.4))
+
+
+class FakeClipSlot(object):
+    def __init__(self, clip=None):
+        self.clip = clip
+
+    @property
+    def has_clip(self):
+        return self.clip is not None
+
+
+class FakeScene(object):
+    def __init__(self, name, history, empty=True):
+        self._history = history
+        self.name = name
+        self.is_empty = empty
+        self.tempo = 120.0
+        self.tempo_enabled = False
+        self.time_signature_numerator = 4
+        self.time_signature_denominator = 4
+        self.time_signature_enabled = False
+        self.color_index = 0
+        self._ready = True
+
+    def __setattr__(self, key, value):
+        h = self.__dict__.get("_history") if self.__dict__.get("_ready") else None
+        if h is not None and not key.startswith("_"):
+            h.log("scene", key, value)
+        object.__setattr__(self, key, value)
+
+    def fire(self):
+        self._history.log("scene.fire", self.name)
 
 
 class FakeSong(object):
@@ -247,6 +409,11 @@ class FakeSong(object):
         self._back_to_arranger = False
         self.re_enable_automation_enabled = False
         self.exclusive_solo = True
+        self.file_path = ""
+        self.name = ""
+        self.tempo = 120.0
+        self.scenes = [FakeScene("", self.h) for _ in range(2)]
+        self.undo_steps = []  # "begin"/"end" in order, to check they pair up
 
     @property
     def history(self):
@@ -276,6 +443,45 @@ class FakeSong(object):
         self.h.log("delete_track", index)
         del self.tracks[index]
         self.undo_depth += 1
+
+    def begin_undo_step(self):
+        self.undo_steps.append("begin")
+
+    def end_undo_step(self):
+        self.undo_steps.append("end")
+
+    def duplicate_track(self, index):
+        self.h.log("duplicate_track", index)
+        src = self.tracks[index]
+        self.tracks.insert(index + 1, FakeTrack(src.name + " copy", self.h, sends=len(self.return_tracks)))
+
+    def create_return_track(self):
+        self.h.log("create_return_track")
+        self.return_tracks.append(FakeReturnTrack("%s-Return" % chr(65 + len(self.return_tracks)), self.h))
+
+    def move_device(self, device, target, index):
+        self.h.log("move_device", device.name, target.name, index)
+        for t in self.tracks + self.return_tracks + [self.master_track]:
+            if device in t.devices:
+                t.devices.remove(device)
+        target.devices.insert(index, device)
+        return index
+
+    def create_scene(self, index):
+        self.h.log("create_scene", index)
+        sc = FakeScene("", self.h)
+        if index == -1:
+            self.scenes.append(sc)
+        else:
+            self.scenes.insert(index, sc)
+
+    def duplicate_scene(self, index):
+        self.h.log("duplicate_scene", index)
+        self.scenes.insert(index + 1, FakeScene(self.scenes[index].name, self.h, self.scenes[index].is_empty))
+
+    def delete_scene(self, index):
+        self.h.log("delete_scene", index)
+        del self.scenes[index]
 
     def delete_return_track(self, index):
         self.h.log("delete_return_track", index)
