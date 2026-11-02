@@ -28,6 +28,12 @@ uv tool install --quiet --editable --force "$REPO"
 
 echo "== Remote Script -> $TARGET/AbletonMCP"
 ableton-mcp-install-script --target "$TARGET"
+# Live's embedded Python kept running a stale __pycache__/*.pyc after the source changed
+# (2026-11-01: 1.8.0 source, 1.7.1 bytecode loaded). Drop it so Live compiles the new file.
+if [ -d "$TARGET/AbletonMCP/__pycache__" ]; then
+  rm -rf "$TARGET/AbletonMCP/__pycache__"
+  echo "   removed stale __pycache__"
+fi
 
 ver=$(sed -n 's/^SCRIPT_VERSION = "\(.*\)"/\1/p' AbletonMCP_Remote_Script/__init__.py)
 cat <<EOF
