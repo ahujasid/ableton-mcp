@@ -50,7 +50,20 @@ def call(name, **args):
     return blocks[0].text
 
 
-@pytest.mark.parametrize("tool", ["get_undo_state", "undo", "redo", "delete_track"])
+EXTENDED_TOOLS = [
+    "get_undo_state", "undo", "redo", "delete_track",
+    "get_mixer_state", "get_track_routing", "set_track_routing", "set_track_monitoring",
+    "set_track_mixer", "get_track_meters", "back_to_arrangement",
+    "get_automation_overrides", "re_enable_automation",
+]
+
+
+def test_every_remote_command_has_a_tool():
+    from live_fakes import load_script_module
+    assert set(load_script_module().EXTENDED_COMMANDS) == set(EXTENDED_TOOLS)
+
+
+@pytest.mark.parametrize("tool", EXTENDED_TOOLS)
 def test_tool_is_registered(tool):
     names = {t.name for t in asyncio.run(server.mcp.list_tools())}
     assert tool in names
@@ -93,3 +106,48 @@ def test_missing_capability_is_reported_without_sending(conn, monkeypatch):
 def test_extended_writes_get_the_modifying_timeout():
     from MCP_Server.extended_tools import MODIFYING_COMMANDS
     assert {"undo", "redo", "delete_track"} <= MODIFYING_COMMANDS
+
+
+def test_set_track_mixer_forwards_only_what_was_given(conn):
+    c = conn({"changed": ["volume"]})
+    call("set_track_mixer", track_index=2, volume_db=-6.0, sends={"A": 0.25})
+    (cmd, params), = c.sent
+    assert cmd == "set_track_mixer"
+    assert params["volume_db"] == -6.0 and params["sends"] == {"A": 0.25}
+    assert params["volume"] is None and params["mute"] is None and params["exclusive_solo"] is False
+
+
+def test_set_track_routing_forwards_names(conn):
+    c = conn({})
+    call("set_track_routing", track_index=1, input_type="Ext. In", input_channel="3/4")
+    assert c.sent[0][1] == {"track_index": 1, "track_type": "track", "input_type": "Ext. In",
+                            "input_channel": "3/4", "output_type": None, "output_channel": None}
+
+
+def test_get_track_meters_forwards_track_list(conn):
+    c = conn({"tracks": []})
+    call("get_track_meters", tracks=[{"track_type": "master"}], duration_ms=500)
+    assert c.sent[0] == ("get_track_meters", {"tracks": [{"track_type": "master"}], "duration_ms": 500,
+                                              "interval_ms": 50, "threshold": 0.001})
+
+
+def test_re_enable_automation_without_track_is_song_wide(conn):
+    c = conn({})
+    call("re_enable_automation")
+    call("re_enable_automation", track_type="return", track_index=1)
+    assert c.sent == [("re_enable_automation", {}),
+                      ("re_enable_automation", {"track_index": 1, "track_type": "return"})]
+
+
+def test_set_track_monitoring_forwards_state(conn):
+    c = conn({})
+    call("set_track_monitoring", track_index=3, state="in")
+    assert c.sent == [("set_track_monitoring", {"track_index": 3, "state": "in"})]
+
+
+def test_meter_watch_fits_inside_the_socket_timeout():
+    import inspect
+    from live_fakes import load_script_module
+    src = inspect.getsource(server.AbletonConnection._send_command_locked)
+    assert '"get_track_meters": 15.0' in src
+    assert load_script_module().MAX_METER_DURATION_MS / 1000.0 < 15.0

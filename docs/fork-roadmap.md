@@ -22,7 +22,13 @@ another tempo map by analysis, Stem Separation, MIDI Generators/Transformations.
 | `get_overridden_automation()` / `re_enable_automation(...)` | `DeviceParameter.automation_state`, `.re_enable_automation`, `Song.re_enable_automation` | Find which params you overrode, re-enable one or all |
 | return + master tracks | `Song.return_tracks`, `Song.master_track` | Every tool above takes `track_type` |
 
+Status: built in 1.8.0 (with `undo`, `redo`, `get_undo_state`, `delete_track`), unit-tested; live test
+`scripts/live_test_mixer.py`.
+
 ## Tier 2: editing safety and structure
+
+- Sidechain / device input routing (`DeviceIO`: `routing_type`, `routing_channel`, `available_routing_*`),
+  e.g. a compressor's sidechain source.
 
 - `undo` / `redo` (`Song.undo/redo`, `can_undo`): lets the agent revert its own mistake.
 - `delete_track`, `duplicate_track`, `delete_device`, `move_device` (`Song.move_device`).

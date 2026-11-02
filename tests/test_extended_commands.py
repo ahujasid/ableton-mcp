@@ -85,7 +85,7 @@ def test_undo_then_redo(script, song):
     song.undo_depth = 1
     assert ok(script, "undo") == {"can_undo": False, "can_redo": True, "undone": True}
     assert ok(script, "redo") == {"can_undo": True, "can_redo": False, "redone": True}
-    assert song.history == ["undo", "redo"]
+    assert song.history == [("undo",), ("redo",)]
 
 
 def test_redo_with_nothing_to_redo_is_refused(script, song):

@@ -1,0 +1,55 @@
+# Developing the extended ableton-mcp tools
+
+This fork adds tools on top of upstream ableton-mcp 1.4.5 (Remote Script 1.7.1 → 1.8.0) without
+reshaping upstream's files, so upstream releases still merge cleanly.
+
+## Where things live
+
+| Piece | File |
+| --- | --- |
+| Live-side commands | `AbletonMCP_Remote_Script/__init__.py`: `EXTENDED_COMMANDS` registry (name → handler, main-thread?) and the `_cmd_*` handlers in the "Extended commands" section. One hook in `_process_command` routes them. |
+| Bundled copy the installer ships | `MCP_Server/bundled_ableton_remote_script/AbletonMCP_init.py`. Must be byte-identical: `cp AbletonMCP_Remote_Script/__init__.py MCP_Server/bundled_ableton_remote_script/AbletonMCP_init.py` |
+| MCP tools | `MCP_Server/extended_tools.py`, registered from `server.py` by `extended_tools.register(...)`. Writing commands go in `MODIFYING_COMMANDS` (longer socket timeout). |
+| Fake Live objects | `tests/live_fakes.py`. Same attribute names as the real Python LOM; every write is logged in `song.history`. |
+| Unit tests | `tests/test_extended_commands.py`, `tests/test_mixer_routing.py` (script side), `tests/test_extended_tools.py` (tool side, through `FastMCP.call_tool`) |
+| Live tests | `scripts/live_harness.py` + `scripts/live_test*.py` |
+| LOM coverage | `scripts/api_coverage.py` → `docs/api-coverage.md`; roadmap in `docs/fork-roadmap.md` |
+
+## Adding a command
+
+1. Handler `_cmd_<name>(self, params)` in the Remote Script; add it to `EXTENDED_COMMANDS` with
+   `True` if it writes (it then runs on Live's main thread). Resolve tracks with
+   `self._resolve_track(params)` (`track_type` track/return/master). Read with `self._read(...)` so a
+   property Live refuses becomes `null` + an `unavailable` reason, never a fake 0/False.
+2. Validate everything before the first write, so a refused call changes nothing.
+3. Tool in `extended_tools.register()`; writers also go in `MODIFYING_COMMANDS`.
+4. Tests: script side against `FakeSong` (assert `song.history == []` on refusals), tool side for the
+   params forwarded. `test_every_remote_command_has_a_tool` keeps the two lists in step.
+5. Bump `SCRIPT_VERSION` and `EXPECTED_REMOTE_SCRIPT_VERSION` together when the command surface changes.
+6. Add a live test, regenerate `docs/api-coverage.md`, update the ableton skill.
+
+## Testing
+
+```sh
+uv run --frozen --with pytest pytest -q          # unit tests, no Live needed
+scripts/deploy.sh                                # tests, then install server (editable) + Remote Script
+# restart Live with an EMPTY set (File > New Live Set); reconnect the MCP server
+python3 scripts/live_test.py                     # undo/redo/delete_track
+python3 scripts/live_test_mixer.py               # mixer, routing, monitoring, meters, automation
+```
+
+Use `--frozen` so uv doesn't rewrite `uv.lock`.
+
+Live tests refuse any set with more than 4 tracks, a track not named like Live's defaults
+(`1-MIDI`, `3-Audio`) or more than 2 returns; `--force` only overrides clips/devices on default tracks.
+They create `mcp-test-*` tracks, touch only those, and delete them (`--keep` leaves them).
+**Never run them, or try a new write command, on a song.**
+
+## Live/LOM facts learned
+
+- Live loads Remote Scripts only at startup: a new script needs a Live restart.
+- Several clients may connect to port 9877 at once (one thread each).
+- `Track.solo` set through the API doesn't unsolo other tracks; `set_track_mixer(exclusive_solo=true)` does.
+- Volume is 0..1 (0.85 = 0 dB, 1.0 = +6 dB); `volume_db` bisects `str_for_value` to find the value.
+- Return and master tracks have no input routing or input meters; the master has no mute/solo/sends.
+- Not in the LOM: Track Delay, arrangement automation envelopes, Live's audio I/O preferences.

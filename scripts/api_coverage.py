@@ -63,7 +63,9 @@ def main():
     args = ap.parse_args()
 
     source = open(SCRIPT, encoding="utf-8").read()
+    # Attribute access, plus names used as strings (getattr tables, meter field lists).
     used_names = set(re.findall(r"\.([a-z_][a-z0-9_]*)", source))
+    used_names |= set(re.findall(r"[\"']([a-z_][a-z0-9_]*)[\"']", source))
 
     files = sorted(f for f in os.listdir(args.lom) if f.endswith(".txt") and not f.startswith("_"))
     total = used = 0

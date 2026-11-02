@@ -146,7 +146,9 @@ class AbletonConnection:
         # than the default modifying-command budget (e.g. importing/decoding a
         # large audio file). Give them a wider socket timeout so we don't time
         # out before the Remote Script's own queue does.
-        long_running_commands = {"create_audio_clip": 65.0}
+        long_running_commands = {"create_audio_clip": 65.0,
+                                 # samples meters for up to 10 s
+                                 "get_track_meters": 15.0}
         
         try:
             logger.info(f"Sending command: {command_type} with params: {params}")

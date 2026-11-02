@@ -5,6 +5,7 @@ from _Framework.ControlSurface import ControlSurface
 import os
 import socket
 import json
+import re
 import threading
 import time
 import traceback
@@ -67,7 +68,33 @@ EXTENDED_COMMANDS = {
     "undo": ("_cmd_undo", True),
     "redo": ("_cmd_redo", True),
     "delete_track": ("_cmd_delete_track", True),
+    # Mixer, routing, monitoring, meters
+    "get_mixer_state": ("_cmd_get_mixer_state", False),
+    "get_track_routing": ("_cmd_get_track_routing", False),
+    "get_track_meters": ("_cmd_get_track_meters", False),
+    "get_automation_overrides": ("_cmd_get_automation_overrides", False),
+    "set_track_routing": ("_cmd_set_track_routing", True),
+    "set_track_monitoring": ("_cmd_set_track_monitoring", True),
+    "set_track_mixer": ("_cmd_set_track_mixer", True),
+    "back_to_arrangement": ("_cmd_back_to_arrangement", True),
+    "re_enable_automation": ("_cmd_re_enable_automation", True),
 }
+
+# (direction, part) -> (Track attribute, Track attribute listing the choices)
+ROUTING_ATTRS = [
+    ("input_type", "input_routing_type", "available_input_routing_types"),
+    ("input_channel", "input_routing_channel", "available_input_routing_channels"),
+    ("output_type", "output_routing_type", "available_output_routing_types"),
+    ("output_channel", "output_routing_channel", "available_output_routing_channels"),
+]
+
+# Track.current_monitoring_state values
+MONITORING_STATES = ("in", "auto", "off")
+# DeviceParameter.automation_state values
+AUTOMATION_STATES = ("none", "playing", "overridden")
+# Meter sampling limits for get_track_meters
+MAX_METER_DURATION_MS = 10000
+MIN_METER_INTERVAL_MS = 20
 SCRIPT_CAPABILITIES += list(EXTENDED_COMMANDS)
 
 TRACK_TYPES = ("track", "return", "master")
@@ -2388,6 +2415,349 @@ class AbletonMCP(ControlSurface):
             self._song.delete_return_track(index)
             remaining = len(self._song.return_tracks)
         return {"deleted": track_type, "index": index, "name": expected, "remaining": remaining}
+
+    # -- mixer / routing helpers -------------------------------------------
+
+    def _all_tracks(self):
+        """Yield (track, track_type, index) for every track, return and the master."""
+        for i, t in enumerate(self._song.tracks):
+            yield t, "track", i
+        for i, t in enumerate(self._song.return_tracks):
+            yield t, "return", i
+        yield self._song.master_track, "master", 0
+
+    @staticmethod
+    def _read(track_state, key, fn):
+        """Store fn() under key, or None plus an 'unavailable' entry if Live
+        refuses (e.g. input routing on the master). A failed read must never
+        look like a real value such as 0 or False."""
+        try:
+            track_state[key] = fn()
+        except Exception as e:
+            track_state[key] = None
+            track_state.setdefault("unavailable", {})[key] = str(e) or e.__class__.__name__
+
+    @staticmethod
+    def _param_state(param):
+        return {"value": float(param.value), "display": str(param),
+                "min": float(param.min), "max": float(param.max)}
+
+    @staticmethod
+    def _routing_name(obj):
+        return getattr(obj, "display_name", None) if obj is not None else None
+
+    def _routing_state(self, track, include_available=False):
+        out = {}
+        for key, attr, avail in ROUTING_ATTRS:
+            self._read(out, key, lambda a=attr: self._routing_name(getattr(track, a)))
+            if include_available:
+                self._read(out, "available_" + key,
+                           lambda a=avail: [self._routing_name(x) for x in getattr(track, a)])
+        return out
+
+    def _track_state(self, track, track_type, index, include_routing=True):
+        st = {"track_type": track_type, "index": index}
+        self._read(st, "name", lambda: track.name)
+        if track_type != "master":
+            self._read(st, "mute", lambda: bool(track.mute))
+            self._read(st, "solo", lambda: bool(track.solo))
+            self._read(st, "muted_via_solo", lambda: bool(track.muted_via_solo))
+        if track_type == "track":
+            self._read(st, "is_audio_track", lambda: bool(track.has_audio_input))
+            self._read(st, "can_be_armed", lambda: bool(track.can_be_armed))
+            if st.get("can_be_armed"):
+                self._read(st, "arm", lambda: bool(track.arm))
+                self._read(st, "monitoring", lambda: MONITORING_STATES[int(track.current_monitoring_state)])
+            self._read(st, "is_grouped", lambda: bool(track.is_grouped))
+            self._read(st, "back_to_arranger", lambda: bool(track.back_to_arranger))
+        self._read(st, "volume", lambda: self._param_state(track.mixer_device.volume))
+        self._read(st, "panning", lambda: self._param_state(track.mixer_device.panning))
+        if track_type != "master":
+            returns = list(self._song.return_tracks)
+
+            def sends():
+                out = []
+                for i, p in enumerate(track.mixer_device.sends):
+                    d = self._param_state(p)
+                    d["index"] = i
+                    d["return_name"] = returns[i].name if i < len(returns) else None
+                    out.append(d)
+                return out
+            self._read(st, "sends", sends)
+        if include_routing:
+            st["routing"] = self._routing_state(track)
+        return st
+
+    def _cmd_get_mixer_state(self, params):
+        include_routing = bool(params.get("include_routing", True))
+        out = {"tracks": [], "returns": [], "master": None}
+        self._read(out, "back_to_arranger", lambda: bool(self._song.back_to_arranger))
+        self._read(out, "re_enable_automation_enabled", lambda: bool(self._song.re_enable_automation_enabled))
+        self._read(out, "exclusive_solo", lambda: bool(self._song.exclusive_solo))
+        for track, track_type, index in self._all_tracks():
+            st = self._track_state(track, track_type, index, include_routing)
+            if track_type == "track":
+                out["tracks"].append(st)
+            elif track_type == "return":
+                out["returns"].append(st)
+            else:
+                out["master"] = st
+        out["soloed"] = [t["name"] for t in out["tracks"] + out["returns"] if t.get("solo")]
+        out["silenced_by_solo"] = [t["name"] for t in out["tracks"] + out["returns"] if t.get("muted_via_solo")]
+        return out
+
+    def _cmd_get_track_routing(self, params):
+        track, track_type, index = self._resolve_track(params)
+        out = {"track_type": track_type, "index": index, "name": track.name}
+        out.update(self._routing_state(track, include_available=bool(params.get("include_available", True))))
+        if track_type == "track":
+            self._read(out, "monitoring", lambda: MONITORING_STATES[int(track.current_monitoring_state)])
+        return out
+
+    @staticmethod
+    def _match_choice(wanted, options, what):
+        """Pick the option whose display_name equals wanted (exactly, then ignoring case)."""
+        names = [getattr(o, "display_name", "") for o in options]
+        for o, n in zip(options, names):
+            if n == wanted:
+                return o
+        for o, n in zip(options, names):
+            if n.lower() == str(wanted).strip().lower():
+                return o
+        raise ValueError("%s %r is not available. Choices: %s" % (what, wanted, ", ".join(repr(n) for n in names)))
+
+    def _cmd_set_track_routing(self, params):
+        """Set any of input_type, input_channel, output_type, output_channel by
+        display name. Types are set before channels, since the channel list
+        depends on the type."""
+        track, track_type, index = self._resolve_track(params)
+        before = self._routing_state(track)
+        changed = []
+        # ROUTING_ATTRS lists each type before its channel.
+        for key, attr, avail in ROUTING_ATTRS:
+            wanted = params.get(key)
+            if wanted is None:
+                continue
+            choice = self._match_choice(wanted, list(getattr(track, avail)), key.replace("_", " "))
+            setattr(track, attr, choice)
+            changed.append(key)
+        if not changed:
+            raise ValueError("Give at least one of input_type, input_channel, output_type, output_channel")
+        return {"track_type": track_type, "index": index, "name": track.name, "changed": changed,
+                "before": before, "after": self._routing_state(track)}
+
+    def _cmd_set_track_monitoring(self, params):
+        track, track_type, index = self._resolve_track(params)
+        if track_type != "track":
+            raise ValueError("Only regular tracks have a monitoring setting")
+        state = str(params.get("state", "")).strip().lower()
+        if state not in MONITORING_STATES:
+            raise ValueError("state must be one of in, auto, off; got %r" % params.get("state"))
+        if not track.can_be_armed:
+            raise ValueError("Track %r has no monitoring setting (group tracks don't)" % track.name)
+        before = MONITORING_STATES[int(track.current_monitoring_state)]
+        track.current_monitoring_state = MONITORING_STATES.index(state)
+        return {"index": index, "name": track.name, "before": before,
+                "monitoring": MONITORING_STATES[int(track.current_monitoring_state)]}
+
+    @staticmethod
+    def _db_of(param, value):
+        """Parse Live's dB text for value ('-6.0 dB', '-inf dB') into a float."""
+        text = param.str_for_value(value)
+        m = re.search(r"(-?inf|[-+]?\d+(?:\.\d+)?)\s*dB", text)
+        if not m:
+            raise ValueError("Cannot read dB from %r" % text)
+        return float(m.group(1))
+
+    def _value_for_db(self, param, db):
+        """Bisect the parameter's 0..1 range for the value Live displays as db."""
+        lo, hi = float(param.min), float(param.max)
+        top = self._db_of(param, hi)
+        if db > top + 1e-6:
+            raise ValueError("%.2f dB is above this fader's maximum of %.2f dB" % (db, top))
+        if db == float("-inf"):
+            return lo
+        for _ in range(60):
+            mid = (lo + hi) / 2.0
+            if self._db_of(param, mid) < db:
+                lo = mid
+            else:
+                hi = mid
+        return hi
+
+    @staticmethod
+    def _set_param(param, value, label):
+        value = float(value)
+        if value < float(param.min) - 1e-9 or value > float(param.max) + 1e-9:
+            raise ValueError("%s %.4f is outside %.4f..%.4f" % (label, value, param.min, param.max))
+        param.value = value
+
+    def _send_index(self, key, count):
+        k = str(key).strip()
+        if k.isdigit():
+            i = int(k)
+        elif len(k) == 1 and k.isalpha():
+            i = ord(k.upper()) - ord("A")
+        else:
+            names = [r.name for r in self._song.return_tracks]
+            if k not in names:
+                raise ValueError("Send %r: use an index, a letter (A, B, ...) or a return name %s" % (key, names))
+            i = names.index(k)
+        if i < 0 or i >= count:
+            raise IndexError("Send %r out of range (this track has %d sends)" % (key, count))
+        return i
+
+    def _cmd_set_track_mixer(self, params):
+        """Set any of volume / volume_db, panning, sends, mute, solo, arm."""
+        track, track_type, index = self._resolve_track(params)
+        before = self._track_state(track, track_type, index, include_routing=False)
+        mixer = track.mixer_device
+        changed = []
+        notes = []
+        # Validate everything before writing anything, so a bad field changes nothing.
+        writes = []
+        if params.get("volume") is not None and params.get("volume_db") is not None:
+            raise ValueError("Give volume or volume_db, not both")
+        if params.get("volume") is not None:
+            writes.append(("volume", mixer.volume, float(params["volume"])))
+        if params.get("volume_db") is not None:
+            writes.append(("volume", mixer.volume, self._value_for_db(mixer.volume, float(params["volume_db"]))))
+        if params.get("panning") is not None:
+            writes.append(("panning", mixer.panning, float(params["panning"])))
+        sends = params.get("sends") or {}
+        if sends and track_type == "master":
+            raise ValueError("The master track has no sends")
+        send_params = list(mixer.sends) if sends else []
+        for key, value in sends.items():
+            i = self._send_index(key, len(send_params))
+            writes.append(("send %d" % i, send_params[i], float(value)))
+        for label, param, value in writes:
+            if value < float(param.min) - 1e-9 or value > float(param.max) + 1e-9:
+                raise ValueError("%s %.4f is outside %.4f..%.4f" % (label, value, param.min, param.max))
+        flags = [(k, params.get(k)) for k in ("mute", "solo", "arm") if params.get(k) is not None]
+        for k, _v in flags:
+            if track_type == "master":
+                raise ValueError("The master track has no %s" % k)
+            if k == "arm" and (track_type != "track" or not track.can_be_armed):
+                raise ValueError("Track %r cannot be armed" % track.name)
+
+        for label, param, value in writes:
+            self._set_param(param, value, label)
+            changed.append(label)
+        for k, v in flags:
+            setattr(track, k, bool(v))
+            changed.append(k)
+        if params.get("solo") and params.get("exclusive_solo"):
+            for other, ot, oi in self._all_tracks():
+                if ot != "master" and other is not track and other.solo:
+                    other.solo = False
+                    notes.append("unsoloed %s" % other.name)
+        elif params.get("solo"):
+            notes.append("solo set without unsoloing other tracks (pass exclusive_solo to do that)")
+        if not changed:
+            raise ValueError("Nothing to set: give volume, volume_db, panning, sends, mute, solo or arm")
+        return {"changed": changed, "notes": notes, "before": before,
+                "after": self._track_state(track, track_type, index, include_routing=False)}
+
+    def _cmd_get_track_meters(self, params):
+        """Sample meters for duration_ms and report the peaks per track."""
+        duration = min(max(int(params.get("duration_ms", 1000)), 0), MAX_METER_DURATION_MS)
+        interval = max(int(params.get("interval_ms", 50)), MIN_METER_INTERVAL_MS)
+        threshold = float(params.get("threshold", 0.001))
+        wanted = params.get("tracks")
+        if wanted:
+            targets = [self._resolve_track(w) for w in wanted]
+        else:
+            targets = list(self._all_tracks())
+        fields = ("input_meter_left", "input_meter_right", "input_meter_level",
+                  "output_meter_left", "output_meter_right", "output_meter_level")
+        peaks = [dict((f, None) for f in fields) for _ in targets]
+        errors = [dict() for _ in targets]
+        samples = 0
+        end = time.time() + duration / 1000.0
+        while True:
+            for n, (track, _tt, _i) in enumerate(targets):
+                for f in fields:
+                    if f in errors[n]:
+                        continue
+                    try:
+                        v = float(getattr(track, f))
+                    except Exception as e:
+                        errors[n][f] = str(e) or e.__class__.__name__
+                        continue
+                    peaks[n][f] = v if peaks[n][f] is None else max(peaks[n][f], v)
+            samples += 1
+            if time.time() >= end:
+                break
+            time.sleep(interval / 1000.0)
+        out = []
+        for n, (track, track_type, index) in enumerate(targets):
+            p = peaks[n]
+            entry = {"track_type": track_type, "index": index, "name": track.name, "peaks": p}
+            for side in ("input", "output"):
+                vals = [p[side + "_meter_" + s] for s in ("left", "right", "level")]
+                known = [v for v in vals if v is not None]
+                # None = Live gave no meter for this side: unknown, not silent.
+                entry[side + "_signal"] = (max(known) > threshold) if known else None
+            if errors[n]:
+                entry["unavailable"] = errors[n]
+            out.append(entry)
+        return {"duration_ms": duration, "samples": samples, "threshold": threshold, "tracks": out}
+
+    def _cmd_back_to_arrangement(self, params):
+        was = bool(self._song.back_to_arranger)
+        if was:
+            self._song.back_to_arranger = False
+        return {"was_lit": was, "back_to_arranger": bool(self._song.back_to_arranger)}
+
+    def _automatable(self, track, track_type):
+        """Yield (where, param) for the mixer and top-level device parameters."""
+        mixer = track.mixer_device
+        yield "Mixer", mixer.volume
+        yield "Mixer", mixer.panning
+        if track_type != "master":
+            for p in mixer.sends:
+                yield "Mixer", p
+        for d_i, device in enumerate(track.devices):
+            for p in device.parameters:
+                yield "%d:%s" % (d_i, device.name), p
+
+    def _cmd_get_automation_overrides(self, params):
+        """List parameters whose automation is overridden (state 2), or every
+        automated one when include_playing is set."""
+        include_playing = bool(params.get("include_playing", False))
+        found = []
+        for track, track_type, index in self._all_tracks():
+            for where, p in self._automatable(track, track_type):
+                try:
+                    state = int(p.automation_state)
+                except Exception:
+                    continue
+                if state == 2 or (include_playing and state == 1):
+                    found.append({"track_type": track_type, "index": index, "track": track.name,
+                                  "device": where, "parameter": p.name, "state": AUTOMATION_STATES[state]})
+        return {"re_enable_automation_enabled": bool(self._song.re_enable_automation_enabled),
+                "overridden_count": sum(1 for f in found if f["state"] == "overridden"),
+                "parameters": found}
+
+    def _cmd_re_enable_automation(self, params):
+        """Re-enable overridden automation: everywhere (Live's Re-Enable
+        Automation button), or only on one track when track_type/track_index given."""
+        if params.get("track_index") is None and params.get("track_type") in (None, ""):
+            was = bool(self._song.re_enable_automation_enabled)
+            self._song.re_enable_automation()
+            return {"scope": "song", "was_enabled": was}
+        track, track_type, index = self._resolve_track(params)
+        done = []
+        for where, p in self._automatable(track, track_type):
+            try:
+                if int(p.automation_state) == 2:
+                    p.re_enable_automation()
+                    done.append("%s / %s" % (where, p.name))
+            except Exception:
+                continue
+        return {"scope": "track", "track_type": track_type, "index": index, "name": track.name,
+                "re_enabled": done}
 
     def _set_device_parameter(self, track_index, device_index, parameter_index, value):
         try:
