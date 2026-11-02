@@ -37,8 +37,8 @@ DEFAULT_PATH = os.path.join(os.path.expanduser("~"), ".config", "ableton-mcp", "
 
 # What each category means, shown by get_safety_config and the CLI.
 CATEGORY_HELP = {
-    "delete": "delete tracks, return tracks, clips, devices and scenes; clear a clip's notes",
-    "playback": "start/stop the transport, launch or stop clips and scenes (makes sound)",
+    "delete": "delete tracks, return tracks, clips, devices, scenes and notes; clear a clip's notes",
+    "playback": "start/stop the transport, launch or stop clips and scenes (makes sound), jump to locators",
     "mixer": "volume, pan, sends, mute, solo, arm; re-enable automation",
     "routing": "track and device (sidechain) input/output routing, monitoring",
     "structure": "create, duplicate or move tracks, scenes and devices; load instruments/effects",
@@ -47,8 +47,10 @@ CATEGORY_HELP = {
 }
 
 CATEGORIES = {
-    "delete": {"delete_track", "delete_clip", "clear_notes_from_clip", "delete_device", "delete_scene"},
-    "playback": {"start_playback", "stop_playback", "fire_clip", "stop_clip", "fire_scene"},
+    "delete": {"delete_track", "delete_clip", "clear_notes_from_clip", "delete_device", "delete_scene",
+               "remove_notes"},
+    "playback": {"start_playback", "stop_playback", "fire_clip", "stop_clip", "fire_scene", "stop_all_clips",
+                 "jump_to_cue"},
     "mixer": {"set_track_mixer", "re_enable_automation"},
     "routing": {"set_track_routing", "set_track_monitoring", "set_device_routing"},
     "structure": {"create_midi_track", "create_audio_track", "duplicate_track", "create_return_track",

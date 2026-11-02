@@ -28,6 +28,8 @@ MODIFYING_COMMANDS = frozenset({
     "set_device_parameter_value", "set_device_active", "set_device_routing", "delete_device",
     "move_device", "set_clip_properties", "duplicate_track", "create_return_track", "create_scene",
     "duplicate_scene", "delete_scene", "set_scene", "fire_scene", "set_track_look",
+    "set_song_settings", "jump_to_cue", "stop_all_clips", "capture_midi", "modify_notes", "remove_notes",
+    "edit_clip",
 })
 
 def _call(get_connection: Callable[[], Any], command: str, params: dict | None, label: str) -> str:
@@ -710,3 +712,188 @@ def register(mcp: FastMCP, get_connection: Callable[[], Any]) -> None:
         if folded is not None:
             params["folded"] = folded
         return _call(get_connection, "set_track_look", params, "setting track look")
+
+    # ------------------------------------------------------------------
+    # Transport and song settings
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    @telemetry_tool("get_transport")
+    def get_transport(ctx: Context, user_prompt: str = "") -> str:
+        """Transport and song settings in one call: playing, playhead, tempo,
+        time signature, loop on/start/length, metronome, overdub, record and
+        punch flags, count-in, launch quantization, MIDI record quantization,
+        groove and swing, scale (root, name, on), locators (cue points) and
+        Live's CPU load.
+
+        Parameters:
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "get_transport", {}, "reading transport")
+
+    @mcp.tool()
+    @telemetry_tool("set_song_settings")
+    def set_song_settings(
+        ctx: Context, loop: Optional[bool] = None, loop_start: Optional[float] = None,
+        loop_length: Optional[float] = None, metronome: Optional[bool] = None, overdub: Optional[bool] = None,
+        arrangement_overdub: Optional[bool] = None, punch_in: Optional[bool] = None,
+        punch_out: Optional[bool] = None, clip_trigger_quantization: Optional[str] = None,
+        midi_recording_quantization: Optional[str] = None, groove_amount: Optional[float] = None,
+        swing_amount: Optional[float] = None, root_note: Optional[str] = None, scale_name: Optional[str] = None,
+        scale_mode: Optional[bool] = None, signature_numerator: Optional[int] = None,
+        signature_denominator: Optional[int] = None, user_prompt: str = "",
+    ) -> str:
+        """Change song-wide settings; only the fields given change. Starting a
+        recording is deliberately not possible here.
+
+        Parameters:
+        - loop, loop_start, loop_length (beats): the Arrangement loop brace
+        - metronome, overdub (session MIDI overdub), arrangement_overdub, punch_in, punch_out
+        - clip_trigger_quantization: None, 8 Bars, 4 Bars, 2 Bars, 1 Bar, 1/2, 1/2T, 1/4, 1/4T, 1/8, 1/8T, 1/16, 1/16T, 1/32
+        - midi_recording_quantization: None, 1/4, 1/8, 1/8T, 1/8+1/8T, 1/16, 1/16T, 1/16+1/16T, 1/32
+        - groove_amount (0..1.31), swing_amount (0..1)
+        - root_note (C, C#, ... B), scale_name (e.g. Major, Minor, Dorian), scale_mode
+        - signature_numerator, signature_denominator
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {}
+        for k, v in (("loop", loop), ("loop_start", loop_start), ("loop_length", loop_length),
+                     ("metronome", metronome), ("overdub", overdub), ("arrangement_overdub", arrangement_overdub),
+                     ("punch_in", punch_in), ("punch_out", punch_out),
+                     ("clip_trigger_quantization", clip_trigger_quantization),
+                     ("midi_recording_quantization", midi_recording_quantization),
+                     ("groove_amount", groove_amount), ("swing_amount", swing_amount), ("root_note", root_note),
+                     ("scale_name", scale_name), ("scale_mode", scale_mode),
+                     ("signature_numerator", signature_numerator),
+                     ("signature_denominator", signature_denominator)):
+            if v is not None:
+                params[k] = v
+        return _call(get_connection, "set_song_settings", params, "changing song settings")
+
+    @mcp.tool()
+    @telemetry_tool("jump_to_cue")
+    def jump_to_cue(ctx: Context, cue: str, user_prompt: str = "") -> str:
+        """Move the playhead to a locator, by its index in time order ("0") or
+        its name ("Chorus").
+
+        Parameters:
+        - cue: index or name
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "jump_to_cue", {"cue": cue}, "jumping to locator")
+
+    @mcp.tool()
+    @telemetry_tool("stop_all_clips")
+    def stop_all_clips(ctx: Context, user_prompt: str = "") -> str:
+        """Stop every playing Session clip (Live's Stop All Clips button).
+
+        Parameters:
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "stop_all_clips", {}, "stopping clips")
+
+    @mcp.tool()
+    @telemetry_tool("capture_midi")
+    def capture_midi(ctx: Context, user_prompt: str = "") -> str:
+        """Capture MIDI: turn what was just played on an armed/monitored MIDI
+        track into a clip (Live's Capture MIDI button).
+
+        Parameters:
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "capture_midi", {}, "capturing MIDI")
+
+    # ------------------------------------------------------------------
+    # Notes by id, clip edits
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    @telemetry_tool("get_notes")
+    def get_notes(
+        ctx: Context, track_index: int, clip_index: Optional[int] = None,
+        arrangement_index: Optional[int] = None, user_prompt: str = "",
+    ) -> str:
+        """Every note in a MIDI clip with its note_id (for modify_notes and
+        remove_notes), pitch, start_time, duration, velocity, mute,
+        probability, velocity_deviation and release_velocity.
+
+        Parameters:
+        - track_index plus clip_index (Session) or arrangement_index
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index}
+        if arrangement_index is not None:
+            params["arrangement_index"] = arrangement_index
+        else:
+            params["clip_index"] = clip_index or 0
+        return _call(get_connection, "get_notes", params, "reading notes")
+
+    @mcp.tool()
+    @telemetry_tool("modify_notes")
+    def modify_notes(
+        ctx: Context, track_index: int, notes: List[Dict[str, Any]], clip_index: Optional[int] = None,
+        arrangement_index: Optional[int] = None, user_prompt: str = "",
+    ) -> str:
+        """Edit existing notes in place, by note_id from get_notes - no clearing
+        and re-adding. Each entry is {note_id, and any of pitch, start_time,
+        duration, velocity, mute, probability (0..1), velocity_deviation,
+        release_velocity}. All entries are checked before anything changes.
+
+        Parameters:
+        - track_index plus clip_index (Session) or arrangement_index
+        - notes: list of changes, e.g. [{"note_id": 12, "velocity": 90, "probability": 0.5}]
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index, "notes": notes}
+        if arrangement_index is not None:
+            params["arrangement_index"] = arrangement_index
+        else:
+            params["clip_index"] = clip_index or 0
+        return _call(get_connection, "modify_notes", params, "modifying notes")
+
+    @mcp.tool()
+    @telemetry_tool("remove_notes")
+    def remove_notes(
+        ctx: Context, track_index: int, note_ids: List[int], clip_index: Optional[int] = None,
+        arrangement_index: Optional[int] = None, user_prompt: str = "",
+    ) -> str:
+        """Delete specific notes by note_id (from get_notes). Refused if any id
+        is not in the clip.
+
+        Parameters:
+        - track_index plus clip_index (Session) or arrangement_index
+        - note_ids: ids to delete
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index, "note_ids": note_ids}
+        if arrangement_index is not None:
+            params["arrangement_index"] = arrangement_index
+        else:
+            params["clip_index"] = clip_index or 0
+        return _call(get_connection, "remove_notes", params, "removing notes")
+
+    @mcp.tool()
+    @telemetry_tool("edit_clip")
+    def edit_clip(
+        ctx: Context, track_index: int, action: str, clip_index: Optional[int] = None,
+        arrangement_index: Optional[int] = None, grid: str = "1/16", amount: float = 1.0,
+        user_prompt: str = "",
+    ) -> str:
+        """Clip edits Live does in one step:
+        - quantize: snap notes (MIDI) or warp markers to grid by amount (1.0 = fully)
+        - duplicate_loop: double the loop, copying notes and envelopes (MIDI only)
+        - crop: remove everything outside the loop (or outside the markers)
+
+        Parameters:
+        - track_index plus clip_index (Session) or arrangement_index
+        - action: quantize, duplicate_loop or crop
+        - grid: 1/4, 1/8, 1/8T, 1/8+1/8T, 1/16, 1/16T, 1/16+1/16T, 1/32 (quantize only)
+        - amount: 0..1 (quantize only)
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index, "action": action, "grid": grid, "amount": amount}
+        if arrangement_index is not None:
+            params["arrangement_index"] = arrangement_index
+        else:
+            params["clip_index"] = clip_index or 0
+        return _call(get_connection, "edit_clip", params, "editing clip")

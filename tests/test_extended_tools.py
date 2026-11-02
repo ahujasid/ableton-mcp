@@ -59,6 +59,8 @@ EXTENDED_TOOLS = [
     "get_scenes", "set_device_parameter_value", "set_device_active", "set_device_routing",
     "delete_device", "move_device", "set_clip_properties", "duplicate_track", "create_return_track",
     "create_scene", "duplicate_scene", "delete_scene", "set_scene", "fire_scene", "set_track_look",
+    "get_transport", "set_song_settings", "jump_to_cue", "stop_all_clips", "capture_midi", "get_notes",
+    "modify_notes", "remove_notes", "edit_clip",
 ]
 
 

@@ -35,7 +35,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.9.0"
+SCRIPT_VERSION = "1.10.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -99,7 +99,26 @@ EXTENDED_COMMANDS = {
     "set_scene": ("_cmd_set_scene", True),
     "fire_scene": ("_cmd_fire_scene", True),
     "set_track_look": ("_cmd_set_track_look", True),
+    # Transport and song settings, notes by id (1.10.0)
+    "get_transport": ("_cmd_get_transport", False),
+    "set_song_settings": ("_cmd_set_song_settings", True),
+    "jump_to_cue": ("_cmd_jump_to_cue", True),
+    "stop_all_clips": ("_cmd_stop_all_clips", True),
+    "capture_midi": ("_cmd_capture_midi", True),
+    "get_notes": ("_cmd_get_notes", False),
+    "modify_notes": ("_cmd_modify_notes", True),
+    "remove_notes": ("_cmd_remove_notes", True),
+    "edit_clip": ("_cmd_edit_clip", True),
 }
+
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+# Song.clip_trigger_quantization
+CLIP_QUANTIZATION = ["None", "8 Bars", "4 Bars", "2 Bars", "1 Bar", "1/2", "1/2T", "1/4", "1/4T", "1/8",
+                     "1/8T", "1/16", "1/16T", "1/32"]
+# Song.midi_recording_quantization and Clip.quantize grid
+NOTE_GRIDS = ["None", "1/4", "1/8", "1/8T", "1/8+1/8T", "1/16", "1/16T", "1/16+1/16T", "1/32"]
+NOTE_FIELDS = ("note_id", "pitch", "start_time", "duration", "velocity", "mute", "probability",
+               "velocity_deviation", "release_velocity")
 
 # Device sidechain input (Compressor, Gate, Auto Filter, Roar, ...)
 DEVICE_ROUTING_ATTRS = [
@@ -3420,6 +3439,262 @@ class AbletonMCP(ControlSurface):
         if getattr(track, "is_foldable", False):
             self._read(out, "folded", lambda: bool(track.fold_state))
         return out
+
+    # ------------------------------------------------------------------
+    # Transport and song settings, notes by id (1.10.0)
+    # ------------------------------------------------------------------
+
+    def _transport_state(self):
+        s = self._song
+        st = {}
+        for key, fn in (("is_playing", lambda: bool(s.is_playing)),
+                        ("current_song_time", lambda: float(s.current_song_time)),
+                        ("tempo", lambda: float(s.tempo)),
+                        ("signature", lambda: "%d/%d" % (s.signature_numerator, s.signature_denominator)),
+                        ("loop", lambda: bool(s.loop)), ("loop_start", lambda: float(s.loop_start)),
+                        ("loop_length", lambda: float(s.loop_length)), ("metronome", lambda: bool(s.metronome)),
+                        ("overdub", lambda: bool(s.overdub)),
+                        ("arrangement_overdub", lambda: bool(s.arrangement_overdub)),
+                        ("record_mode", lambda: bool(s.record_mode)),
+                        ("session_record", lambda: bool(s.session_record)),
+                        ("punch_in", lambda: bool(s.punch_in)), ("punch_out", lambda: bool(s.punch_out)),
+                        ("count_in_duration", lambda: int(s.count_in_duration)),
+                        ("clip_trigger_quantization",
+                         lambda: CLIP_QUANTIZATION[int(s.clip_trigger_quantization)]),
+                        ("midi_recording_quantization",
+                         lambda: NOTE_GRIDS[int(s.midi_recording_quantization)]),
+                        ("groove_amount", lambda: float(s.groove_amount)),
+                        ("swing_amount", lambda: float(s.swing_amount)),
+                        ("root_note", lambda: NOTE_NAMES[int(s.root_note)]),
+                        ("scale_name", lambda: str(s.scale_name)), ("scale_mode", lambda: bool(s.scale_mode)),
+                        ("song_length", lambda: float(s.song_length))):
+            self._read(st, key, fn)
+
+        def cues():
+            return [{"index": i, "name": c.name, "time": float(c.time)}
+                    for i, c in enumerate(sorted(s.cue_points, key=lambda c: c.time))]
+        self._read(st, "cue_points", cues)
+
+        def cpu():
+            app = self.application()
+            return {"average": float(app.average_process_usage), "peak": float(app.peak_process_usage)}
+        self._read(st, "cpu", cpu)
+        return st
+
+    def _cmd_get_transport(self, params):
+        """Transport, loop, metronome, recording flags, quantization, groove,
+        scale, cue points and Live's CPU load."""
+        return self._transport_state()
+
+    def _cmd_set_song_settings(self, params):
+        """Set loop / metronome / overdub / punch / quantization / groove /
+        swing / scale / time signature. Recording itself (record_mode,
+        session_record) is deliberately not settable."""
+        s = self._song
+        writes = []
+        for key in ("loop", "metronome", "overdub", "arrangement_overdub", "punch_in", "punch_out", "scale_mode"):
+            if params.get(key) is not None:
+                writes.append((key, bool(params[key])))
+        for key, lo, hi in (("loop_start", 0.0, None), ("loop_length", 0.0, None),
+                            ("groove_amount", 0.0, 1.31), ("swing_amount", 0.0, 1.0)):
+            if params.get(key) is not None:
+                v = float(params[key])
+                if v < lo or (hi is not None and v > hi) or (key == "loop_length" and v <= 0):
+                    raise ValueError("%s %.3f is out of range" % (key, v))
+                writes.append((key, v))
+        if params.get("clip_trigger_quantization") is not None:
+            writes.append(("clip_trigger_quantization",
+                           self._choice_index(params["clip_trigger_quantization"], CLIP_QUANTIZATION,
+                                              "clip_trigger_quantization")))
+        if params.get("midi_recording_quantization") is not None:
+            writes.append(("midi_recording_quantization",
+                           self._choice_index(params["midi_recording_quantization"], NOTE_GRIDS,
+                                              "midi_recording_quantization")))
+        if params.get("root_note") is not None:
+            writes.append(("root_note", self._choice_index(params["root_note"], NOTE_NAMES, "root_note")))
+        if params.get("scale_name") is not None:
+            writes.append(("scale_name", str(params["scale_name"])))
+        for key in ("signature_numerator", "signature_denominator"):
+            if params.get(key) is not None:
+                v = int(params[key])
+                if key == "signature_numerator" and not 1 <= v <= 99:
+                    raise ValueError("signature_numerator must be 1..99")
+                if key == "signature_denominator" and v not in (1, 2, 4, 8, 16):
+                    raise ValueError("signature_denominator must be 1, 2, 4, 8 or 16")
+                writes.append((key, v))
+        if not writes:
+            raise ValueError("Nothing to set")
+        before = self._transport_state()
+        # Loop: length first when moving the start would push the loop past the song end.
+        for key, value in writes:
+            setattr(s, key, value)
+        return {"changed": [k for k, _ in writes], "before": before, "after": self._transport_state()}
+
+    @staticmethod
+    def _choice_index(value, choices, what):
+        if isinstance(value, int) or str(value).strip().isdigit():
+            i = int(value)
+            if 0 <= i < len(choices):
+                return i
+        else:
+            for i, c in enumerate(choices):
+                if c.lower() == str(value).strip().lower():
+                    return i
+        raise ValueError("%s %r: choose one of %s" % (what, value, ", ".join(choices)))
+
+    def _cmd_jump_to_cue(self, params):
+        """Move the playhead to a locator, by index (time order) or name."""
+        cues = sorted(self._song.cue_points, key=lambda c: c.time)
+        if not cues:
+            raise ValueError("The set has no locators")
+        key = params.get("cue")
+        if key is None:
+            raise ValueError("Give cue: an index or a locator name")
+        if isinstance(key, int) or str(key).strip().isdigit():
+            i = int(key)
+            if i < 0 or i >= len(cues):
+                raise IndexError("locator %d out of range (%d locators)" % (i, len(cues)))
+            cue = cues[i]
+        else:
+            matches = [c for c in cues if c.name == key] or [c for c in cues if c.name.lower() == str(key).lower()]
+            if not matches:
+                raise ValueError("No locator %r. Locators: %s" % (key, ", ".join(c.name for c in cues)))
+            cue = matches[0]
+        cue.jump()
+        return {"jumped_to": cue.name, "time": float(cue.time)}
+
+    def _cmd_stop_all_clips(self, params):
+        self._song.stop_all_clips()
+        return {"stopped": True}
+
+    def _cmd_capture_midi(self, params):
+        if not bool(getattr(self._song, "can_capture_midi", False)):
+            raise ValueError("Nothing to capture: Live has no recently played MIDI")
+        self._song.capture_midi()
+        return {"captured": True}
+
+    # --- notes by id ------------------------------------------------------
+
+    def _midi_clip(self, params):
+        track, tindex, clip, where = self._resolve_clip(params)
+        if not getattr(clip, "is_midi_clip", False):
+            raise ValueError("%s on %r is not a MIDI clip" % (where, track.name))
+        return track, tindex, clip, where
+
+    @staticmethod
+    def _all_notes(clip):
+        if hasattr(clip, "get_all_notes_extended"):
+            return clip.get_all_notes_extended()
+        return clip.get_notes_extended(0, 128, -1.0e6, 2.0e6)
+
+    @staticmethod
+    def _note_dict(n):
+        d = {}
+        for f in NOTE_FIELDS:
+            if hasattr(n, f):
+                v = getattr(n, f)
+                d[f] = bool(v) if f == "mute" else (int(v) if f in ("note_id", "pitch") else float(v))
+        return d
+
+    def _cmd_get_notes(self, params):
+        """All notes of a MIDI clip with their ids, probability and velocity
+        deviation, sorted by time then pitch."""
+        track, tindex, clip, where = self._midi_clip(params)
+        notes = sorted((self._note_dict(n) for n in self._all_notes(clip)),
+                       key=lambda d: (d.get("start_time", 0), d.get("pitch", 0)))
+        return {"track": track.name, "where": where, "count": len(notes), "notes": notes}
+
+    def _cmd_modify_notes(self, params):
+        """Change existing notes in place by note_id (pitch, start_time,
+        duration, velocity, mute, probability, velocity_deviation,
+        release_velocity). Unknown ids or bad values change nothing."""
+        track, tindex, clip, where = self._midi_clip(params)
+        changes = params.get("notes") or []
+        if not changes:
+            raise ValueError("Give notes: [{note_id, field: value, ...}]")
+        notes = self._all_notes(clip)
+        by_id = dict((int(n.note_id), n) for n in notes)
+        plan = []
+        for ch in changes:
+            if "note_id" not in ch:
+                raise ValueError("every entry needs note_id")
+            nid = int(ch["note_id"])
+            if nid not in by_id:
+                raise ValueError("note_id %d is not in this clip" % nid)
+            for f, v in ch.items():
+                if f == "note_id":
+                    continue
+                if f not in NOTE_FIELDS:
+                    raise ValueError("unknown note field %r (fields: %s)" % (f, ", ".join(NOTE_FIELDS[1:])))
+                v = self._check_note_value(f, v)
+                plan.append((by_id[nid], f, v))
+        for n, f, v in plan:
+            setattr(n, f, v)
+        clip.apply_note_modifications(notes)
+        return {"track": track.name, "where": where, "modified": sorted(set(int(c["note_id"]) for c in changes))}
+
+    @staticmethod
+    def _check_note_value(field, v):
+        if field == "pitch":
+            v = int(v)
+            if not 0 <= v <= 127:
+                raise ValueError("pitch must be 0..127")
+        elif field in ("velocity", "release_velocity"):
+            v = float(v)
+            if not 0 <= v <= 127:
+                raise ValueError("%s must be 0..127" % field)
+        elif field == "duration":
+            v = float(v)
+            if v <= 0:
+                raise ValueError("duration must be > 0")
+        elif field == "probability":
+            v = float(v)
+            if not 0 <= v <= 1:
+                raise ValueError("probability must be 0..1")
+        elif field == "velocity_deviation":
+            v = float(v)
+            if not -127 <= v <= 127:
+                raise ValueError("velocity_deviation must be -127..127")
+        elif field == "mute":
+            v = bool(v)
+        else:
+            v = float(v)
+        return v
+
+    def _cmd_remove_notes(self, params):
+        """Delete notes by note_id."""
+        track, tindex, clip, where = self._midi_clip(params)
+        ids = [int(i) for i in (params.get("note_ids") or [])]
+        if not ids:
+            raise ValueError("Give note_ids")
+        present = set(int(n.note_id) for n in self._all_notes(clip))
+        missing = [i for i in ids if i not in present]
+        if missing:
+            raise ValueError("note ids not in this clip: %s" % missing)
+        clip.remove_notes_by_id(ids)
+        return {"track": track.name, "where": where, "removed": ids}
+
+    def _cmd_edit_clip(self, params):
+        """quantize (grid + amount), duplicate_loop, or crop one clip."""
+        track, tindex, clip, where = self._resolve_clip(params)
+        action = str(params.get("action", "")).strip().lower()
+        if action == "quantize":
+            grid = self._choice_index(params.get("grid", "1/16"), NOTE_GRIDS, "grid")
+            if grid == 0:
+                raise ValueError("grid 'None' does not quantize")
+            amount = float(params.get("amount", 1.0))
+            if not 0 < amount <= 1:
+                raise ValueError("amount must be in (0, 1]")
+            clip.quantize(grid, amount)
+        elif action == "duplicate_loop":
+            if not getattr(clip, "is_midi_clip", False):
+                raise ValueError("duplicate_loop works on MIDI clips only")
+            clip.duplicate_loop()
+        elif action == "crop":
+            clip.crop()
+        else:
+            raise ValueError("action must be quantize, duplicate_loop or crop")
+        return dict(self._clip_state(clip), track=track.name, where=where, action=action)
 
     def _set_device_parameter(self, track_index, device_index, parameter_index, value):
         try:
