@@ -224,7 +224,9 @@ def _move_device(song, p, ctrl):
         raise IndexError("New position out of range")
     device = device_list[device_index]
     name = device.name
-    track.move_device(device, new_position)
+    # Live inserts before the target slot, so a move to the right needs one more
+    # to land in new_position. Track has no move_device in Live 12.
+    song.move_device(device, track, new_position + 1 if new_position > device_index else new_position)
     return {
         "moved": name,
         "from": device_index,
