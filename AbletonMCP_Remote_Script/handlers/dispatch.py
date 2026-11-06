@@ -224,7 +224,9 @@ def _move_device(song, p, ctrl):
         raise IndexError("New position out of range")
     device = device_list[device_index]
     name = device.name
-    track.move_device(device, new_position)
+    # Live inserts before the target slot, so a move to the right needs one more
+    # to land in new_position. Track has no move_device in Live 12.
+    song.move_device(device, track, new_position + 1 if new_position > device_index else new_position)
     return {
         "moved": name,
         "from": device_index,
@@ -1216,7 +1218,9 @@ def _lom_set(song, p, ctrl):
 
 def _lom_call(song, p, ctrl):
     method = _lom_resolve(song, ctrl, p["path"])
-    return {"path": p["path"], "result": _lom_plain(method(*p.get("args", [])))}
+    args = [_lom_resolve(song, ctrl, a["$path"]) if isinstance(a, dict) and "$path" in a else a
+            for a in p.get("args", [])]
+    return {"path": p["path"], "result": _lom_plain(method(*args))}
 
 
 def is_known(command_type):
