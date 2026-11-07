@@ -1177,6 +1177,10 @@ def _get_registry():
             "handler": lambda song, p, ctrl: _simpler_region(song, p, ctrl),
             "modifying": True,
         },
+        "browser_find": {
+            "handler": lambda song, p, ctrl: _browser_find(song, p, ctrl),
+            "modifying": False,
+        },
     }
 
 
@@ -1302,6 +1306,34 @@ def _simpler_region(song, p, ctrl):
         "mode": ["classic", "one-shot", "slicing"][int(dev.playback_mode)],
         "fade_out": params.find_parameter(dev, "Fade Out").str_for_value(params.find_parameter(dev, "Fade Out").value),
     }
+
+
+def _browser_find(song, p, ctrl):
+    """Find browser items by name inside Live, in one call: no per-folder round trips.
+
+    name: exact item name ("Serum 2", "Kickstart 2", "Auto Filter"), or contains: a
+    case-insensitive substring. roots: browser sections to search (default plugins,
+    audio_effects, instruments, midi_effects, user_folders, packs). Returns each match's
+    dotted path, ready for lom_call app.browser.load_item with {"$path": path}.
+    """
+    browser = ctrl.application().browser
+    roots = p.get("roots") or ["plugins", "audio_effects", "instruments", "midi_effects", "user_folders", "packs"]
+    want, part = p.get("name"), (p.get("contains") or "").lower()
+    limit, max_depth = int(p.get("limit", 10)), int(p.get("depth", 6))
+    found, stack = [], []
+    for r in roots:
+        top = getattr(browser, r)
+        items = top if r == "user_folders" else top.children
+        stack.extend(("app.browser.%s%s.%d" % (r, "" if r == "user_folders" else ".children", i), it, 1)
+                     for i, it in enumerate(items))
+    while stack and len(found) < limit:
+        path, item, depth = stack.pop(0)
+        n = str(item.name)
+        if (want and n == want) or (part and part in n.lower()):
+            found.append({"path": path, "name": n, "loadable": bool(item.is_loadable)})
+        if item.is_folder and depth < max_depth:
+            stack.extend(("%s.children.%d" % (path, i), it, depth + 1) for i, it in enumerate(item.children))
+    return {"matches": found}
 
 
 def is_known(command_type):
