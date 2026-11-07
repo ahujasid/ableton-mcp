@@ -224,3 +224,41 @@ def register(mcp: Any, get_ableton_connection: Callable[[], Any]) -> None:
         except Exception as e:
             logger.error(f"Error in lom_call: {str(e)}")
             return f"Error in lom_call: {str(e)}"
+
+    @mcp.tool()
+    def lom_set_param(ctx: Context, path: str, value: Any, param: str = "") -> str:
+        """Set a device parameter by the value Live shows, in one call: value "1.80 s", "830 Hz", "-18 dB", "40 %", "On" or "Ping Pong" (a number is taken as raw). path is the device ('return_tracks.0.devices.0') with param its name ('Decay Time'), or a parameter path ('tracks.3.mixer_device.volume')."""
+        try:
+            body = {"path": path, "value": value, **({"param": param} if param else {})}
+            return json.dumps(get_ableton_connection().send_command("lom_set_param", body), indent=2)
+        except Exception as e:
+            logger.error(f"Error in lom_set_param: {str(e)}")
+            return f"Error in lom_set_param: {str(e)}"
+
+    @mcp.tool()
+    def lom_batch(ctx: Context, ops: list[dict[str, Any]], continue_on_error: bool = False) -> str:
+        """Run many operations in one round trip. Each op is {"op": "get"|"set"|"call"|"set_param"|"simpler_region", ...the same fields as that tool}. Stops at the first error unless continue_on_error."""
+        try:
+            body = {"ops": ops, "continue_on_error": continue_on_error}
+            return json.dumps(get_ableton_connection().send_command("lom_batch", body), indent=2)
+        except Exception as e:
+            logger.error(f"Error in lom_batch: {str(e)}")
+            return f"Error in lom_batch: {str(e)}"
+
+    @mcp.tool()
+    def simpler_region(ctx: Context, path: str, start_ms: float | None = None, end_ms: float | None = None,
+                       warp: bool | None = None, mode: str = "", fade_in: str = "", fade_out: str = "",
+                       trigger: str = "") -> str:
+        """Set what a Simpler shows, by path ('tracks.6.devices.0'): the visible start/end markers in ms (Fade Out acts at the end marker; S Start/S Length are reset so nothing is shortened twice), warp on/off, mode 'classic'|'one-shot'|'slicing', fade_in/fade_out like '80 ms', trigger 'Trigger'|'Gate'. Returns what it now shows."""
+        try:
+            body: dict[str, Any] = {"path": path}
+            for k, v in (("start_ms", start_ms), ("end_ms", end_ms), ("warp", warp)):
+                if v is not None:
+                    body[k] = v
+            for k, v in (("mode", mode), ("fade_in", fade_in), ("fade_out", fade_out), ("trigger", trigger)):
+                if v:
+                    body[k] = v
+            return json.dumps(get_ableton_connection().send_command("simpler_region", body), indent=2)
+        except Exception as e:
+            logger.error(f"Error in simpler_region: {str(e)}")
+            return f"Error in simpler_region: {str(e)}"

@@ -6,7 +6,7 @@ Toggle control surface off/on to pick up changes.
 
 from __future__ import absolute_import, print_function, unicode_literals
 
-from . import tracks, browser, devices, arrangement, audio, automation
+from . import tracks, browser, devices, arrangement, audio, automation, params
 
 
 def _resolve_track(song, track_index, track_type):
@@ -1165,6 +1165,18 @@ def _get_registry():
             "handler": lambda song, p, ctrl: _lom_call(song, p, ctrl),
             "modifying": True,
         },
+        "lom_set_param": {
+            "handler": lambda song, p, ctrl: _lom_set_param(song, p, ctrl),
+            "modifying": True,
+        },
+        "lom_batch": {
+            "handler": lambda song, p, ctrl: _lom_batch(song, p, ctrl),
+            "modifying": True,
+        },
+        "simpler_region": {
+            "handler": lambda song, p, ctrl: _simpler_region(song, p, ctrl),
+            "modifying": True,
+        },
     }
 
 
@@ -1221,6 +1233,75 @@ def _lom_call(song, p, ctrl):
     args = [_lom_resolve(song, ctrl, a["$path"]) if isinstance(a, dict) and "$path" in a else a
             for a in p.get("args", [])]
     return {"path": p["path"], "result": _lom_plain(method(*args))}
+
+
+def _param_of(song, ctrl, p):
+    """{"path": "<device path>", "param": "Decay Time"} or {"path": "<parameter path>"}."""
+    obj = _lom_resolve(song, ctrl, p["path"])
+    return params.find_parameter(obj, p["param"]) if p.get("param") else obj
+
+
+def _lom_set_param(song, p, ctrl):
+    """Set a parameter by its shown value ("1.80 s", "830 Hz", "-18 dB", "On", "Ping Pong") or a raw number."""
+    param = _param_of(song, ctrl, p)
+    param.value = params.resolve_value(param, p["value"])
+    return {"param": param.name, "value": param.value, "display": param.str_for_value(param.value)}
+
+
+def _lom_batch(song, p, ctrl):
+    """Run many get/set/call/set_param operations in one round trip.
+
+    ops: [{"op": "set_param", "path": ..., "param": ..., "value": ...}, {"op": "get", "path": ...}, ...]
+    Stops at the first error unless continue_on_error is true; each result says ok or error.
+    """
+    run = {"get": _lom_get, "set": _lom_set, "call": _lom_call, "set_param": _lom_set_param,
+           "simpler_region": _simpler_region}
+    results = []
+    for op in p.get("ops", []):
+        try:
+            results.append({"ok": True, "result": run[op["op"]](song, op, ctrl)})
+        except Exception as e:  # report and decide per batch, never half-silently
+            results.append({"ok": False, "op": op, "error": str(e)})
+            if not p.get("continue_on_error"):
+                break
+    return {"results": results, "done": sum(1 for r in results if r["ok"]), "total": len(p.get("ops", []))}
+
+
+def _simpler_region(song, p, ctrl):
+    """Set what a Simpler shows: the sample region in ms, warp, mode and fades.
+
+    path: the Simpler. start_ms/end_ms move the visible markers (Fade Out acts at
+    the end marker); giving either resets S Start/S Length to 0/100 % so the sample
+    is not shortened a second time, invisibly. mode: classic | one-shot | slicing.
+    """
+    dev = _lom_resolve(song, ctrl, p["path"])
+    sample = dev.sample
+    sr = float(sample.sample_rate)
+    if "warp" in p:
+        sample.warping = bool(p["warp"])
+    if "mode" in p:
+        dev.playback_mode = {"classic": 0, "one-shot": 1, "slicing": 2}[p["mode"]]
+    if "start_ms" in p or "end_ms" in p:
+        params.find_parameter(dev, "S Start").value = params.find_parameter(dev, "S Start").min
+        params.find_parameter(dev, "S Length").value = params.find_parameter(dev, "S Length").max
+        last = int(sample.length) - 1
+        if "start_ms" in p:
+            sample.start_marker = max(0, min(last, int(sr * p["start_ms"] / 1000.0)))
+        if "end_ms" in p:
+            sample.end_marker = max(sample.start_marker + 1, min(last, int(sr * p["end_ms"] / 1000.0)))
+    for key, name in (("fade_in", "Fade In"), ("fade_out", "Fade Out"), ("trigger", "Trigger Mode")):
+        if key in p:
+            param = params.find_parameter(dev, name)
+            param.value = params.resolve_value(param, p[key])
+    return {
+        "file": str(sample.file_path).rsplit("/", 1)[-1],
+        "start_ms": round(sample.start_marker / sr * 1000.0, 1),
+        "end_ms": round(sample.end_marker / sr * 1000.0, 1),
+        "length_ms": round(sample.length / sr * 1000.0, 1),
+        "warp": bool(sample.warping),
+        "mode": ["classic", "one-shot", "slicing"][int(dev.playback_mode)],
+        "fade_out": params.find_parameter(dev, "Fade Out").str_for_value(params.find_parameter(dev, "Fade Out").value),
+    }
 
 
 def is_known(command_type):
