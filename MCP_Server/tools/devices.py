@@ -246,6 +246,16 @@ def register(mcp: Any, get_ableton_connection: Callable[[], Any]) -> None:
             return f"Error in lom_batch: {str(e)}"
 
     @mcp.tool()
+    def browser_find(ctx: Context, name: str = "", contains: str = "", roots: list[str] | None = None, limit: int = 10) -> str:
+        """Find Live browser items by exact name ("Serum 2") or substring, searched inside Live in one call. roots: plugins, audio_effects, instruments, midi_effects, user_folders, packs. Load a match with lom_call('app.browser.load_item', [{"$path": path}]) after selecting the track."""
+        try:
+            body = {"name": name, "contains": contains, "limit": limit, **({"roots": roots} if roots else {})}
+            return json.dumps(get_ableton_connection().send_command("browser_find", body), indent=2)
+        except Exception as e:
+            logger.error(f"Error in browser_find: {str(e)}")
+            return f"Error in browser_find: {str(e)}"
+
+    @mcp.tool()
     def simpler_region(ctx: Context, path: str, start_ms: float | None = None, end_ms: float | None = None,
                        warp: bool | None = None, mode: str = "", fade_in: str = "", fade_out: str = "",
                        trigger: str = "") -> str:
