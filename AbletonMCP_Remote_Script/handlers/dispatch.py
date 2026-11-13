@@ -1202,10 +1202,16 @@ def _lom_resolve(song, ctrl, path):
     return obj
 
 
+_NOTE_FIELDS = ("pitch", "start_time", "duration", "velocity", "mute",
+                "probability", "velocity_deviation", "release_velocity")
+
+
 def _lom_plain(value):
-    """Make a Live value JSON-safe: lists stay lists, objects become their name."""
+    """Make a Live value JSON-safe: lists stay lists, MIDI notes become dicts, objects their name."""
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
+    if hasattr(value, "pitch") and hasattr(value, "start_time"):
+        return dict((f, getattr(value, f)) for f in _NOTE_FIELDS + ("note_id",) if hasattr(value, f))
     if hasattr(value, "name"):
         return {"name": str(value.name), "class": type(value).__name__}
     try:
@@ -1234,9 +1240,20 @@ def _lom_set(song, p, ctrl):
 
 def _lom_call(song, p, ctrl):
     method = _lom_resolve(song, ctrl, p["path"])
-    args = [_lom_resolve(song, ctrl, a["$path"]) if isinstance(a, dict) and "$path" in a else a
-            for a in p.get("args", [])]
+    args = [_lom_arg(song, ctrl, a) for a in p.get("args", [])]
     return {"path": p["path"], "result": _lom_plain(method(*args))}
+
+
+def _lom_arg(song, ctrl, a):
+    """{"$path": ...} is a Live object; {"$notes": [{pitch, start_time, duration, ...}]} is
+    the tuple of MidiNoteSpecification that clip.add_new_notes takes; anything else as is."""
+    if isinstance(a, dict) and "$path" in a:
+        return _lom_resolve(song, ctrl, a["$path"])
+    if isinstance(a, dict) and "$notes" in a:
+        import Live
+        return tuple(Live.Clip.MidiNoteSpecification(**dict(
+            (k, n[k]) for k in _NOTE_FIELDS if k in n)) for n in a["$notes"])
+    return a
 
 
 def _param_of(song, ctrl, p):
@@ -1319,6 +1336,8 @@ def _browser_find(song, p, ctrl):
     browser = ctrl.application().browser
     roots = p.get("roots") or ["plugins", "audio_effects", "instruments", "midi_effects", "user_folders", "packs"]
     want, part = p.get("name"), (p.get("contains") or "").lower()
+    if not (want or part):
+        raise ValueError("browser_find needs name (exact) or contains (substring)")
     limit, max_depth = int(p.get("limit", 10)), int(p.get("depth", 6))
     found, stack = [], []
     for r in roots:

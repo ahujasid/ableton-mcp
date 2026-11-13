@@ -217,7 +217,10 @@ def register(mcp: Any, get_ableton_connection: Callable[[], Any]) -> None:
 
     @mcp.tool()
     def lom_call(ctx: Context, path: str, args: list[Any] | None = None) -> str:
-        """Call any Live Object Model method by dotted path, e.g. 'undo'. Pass an object as an argument with {"$path": "tracks.12.arrangement_clips.0"}."""
+        """Call any Live Object Model method by dotted path, e.g. 'undo'. Pass an object as an argument with {"$path": "tracks.12.arrangement_clips.0"}.
+        MIDI: 'tracks.17.create_midi_clip' [start_beats, length] makes an arrangement clip; '<clip>.get_notes_extended' [0, 128, 0, length] returns notes as dicts;
+        '<clip>.add_new_notes' [{"$notes": [{"pitch": 36, "start_time": 0.5, "duration": 0.45, "velocity": 100, "probability": 1.0}]}] writes them;
+        '<clip>.remove_notes_extended' [0, 128, 0, length] clears them. A new MIDI track auto-arms when selected: disarm it, or it monitors input instead of playing."""
         try:
             result = get_ableton_connection().send_command("lom_call", {"path": path, "args": args or []})
             return json.dumps(result, indent=2)
