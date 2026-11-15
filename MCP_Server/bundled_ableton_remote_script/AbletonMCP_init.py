@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.7.1"
+SCRIPT_VERSION = "1.8.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -57,6 +57,21 @@ SCRIPT_CAPABILITIES = [
     "create_locator",
     "delete_clip",
     "clear_notes_from_clip",
+    "create_scene",
+    "set_scene_name",
+    "create_return_track",
+    "get_mixer_overview",
+    "load_device",
+    "get_device_parameters_ex",
+    "set_device_parameter_ex",
+    "set_device_name",
+    "set_send",
+    "add_notes_extended",
+    "set_notes_probability",
+    "get_clip_properties",
+    "set_clip_property",
+    "get_track_routing",
+    "set_track_input",
 ]
 
 def create_instance(c_instance):
@@ -278,6 +293,9 @@ class AbletonMCP(ControlSurface):
             "result": {}
         }
         
+        if command_type in self._EXT_COMMANDS:
+            return self._run_ext_command(command_type, params)
+
         try:
             # Route the command to the appropriate handler
             if command_type == "get_script_info":
@@ -512,6 +530,328 @@ class AbletonMCP(ControlSurface):
         
         return response
     
+    # ── Live-set extension commands ──────────────────────────────────────
+    # Fork addition (feat/live-set-tools). Every handler runs on Live's main
+    # thread through _run_ext_command and takes keyword arguments only, so the
+    # MCP server can pass its params dict straight through.
+
+    _EXT_COMMANDS = (
+        "create_scene",
+        "set_scene_name",
+        "create_return_track",
+        "get_mixer_overview",
+        "load_device",
+        "get_device_parameters_ex",
+        "set_device_parameter_ex",
+        "set_device_name",
+        "set_send",
+        "add_notes_extended",
+        "set_notes_probability",
+        "get_clip_properties",
+        "set_clip_property",
+        "get_track_routing",
+        "set_track_input",
+    )
+
+    # Clip attributes set_clip_property may touch. Matched as substrings so
+    # the Live 11 / Live 12 follow-action names both pass, whatever they are.
+    _EXT_CLIP_PROPERTY_HINTS = (
+        "follow", "launch", "legato", "loop", "quantization",
+        "velocity_amount", "muted", "color", "warping",
+    )
+
+    def _run_ext_command(self, command_type, params):
+        handler = getattr(self, "_ext_" + command_type)
+        response_queue = queue.Queue()
+
+        def task():
+            try:
+                result = handler(**(params or {}))
+                response_queue.put({"status": "success", "result": result})
+            except Exception as e:
+                self.log_message("Error in " + command_type + ": " + str(e))
+                self.log_message(traceback.format_exc())
+                response_queue.put({"status": "error", "message": str(e)})
+
+        try:
+            self.schedule_message(0, task)
+        except AssertionError:
+            task()
+
+        try:
+            return response_queue.get(timeout=10.0)
+        except queue.Empty:
+            return {"status": "error",
+                    "message": "Timeout waiting for operation to complete"}
+
+    def _ext_track(self, track_kind="track", track_index=0):
+        """Resolve a regular, return or master track."""
+        kind = (track_kind or "track").lower()
+        if kind == "master":
+            return self._song.master_track
+        if kind == "return":
+            tracks = self._song.return_tracks
+        elif kind == "track":
+            tracks = self._song.tracks
+        else:
+            raise ValueError("track_kind must be 'track', 'return' or 'master'")
+        if track_index < 0 or track_index >= len(tracks):
+            raise IndexError("{0} index {1} out of range (0..{2})".format(
+                kind, track_index, len(tracks) - 1))
+        return tracks[track_index]
+
+    def _ext_device(self, track_kind, track_index, device_index):
+        track = self._ext_track(track_kind, track_index)
+        if device_index < 0 or device_index >= len(track.devices):
+            raise IndexError("Device index out of range")
+        return track, track.devices[device_index]
+
+    def _ext_clip(self, track_index, clip_index):
+        track = self._ext_track("track", track_index)
+        if clip_index < 0 or clip_index >= len(track.clip_slots):
+            raise IndexError("Clip index out of range")
+        slot = track.clip_slots[clip_index]
+        if not slot.has_clip:
+            raise Exception("No clip in slot")
+        return slot.clip
+
+    def _ext_device_list(self, track):
+        return [{"index": i, "name": d.name, "class_name": d.class_name}
+                for i, d in enumerate(track.devices)]
+
+    # Scenes and returns
+
+    def _ext_create_scene(self, index=-1, count=1, name="", **_):
+        created = []
+        for i in range(max(1, int(count))):
+            at = -1 if index == -1 else index + i
+            self._song.create_scene(at)
+            new_index = len(self._song.scenes) - 1 if at == -1 else at
+            if name:
+                self._song.scenes[new_index].name = name
+            created.append(new_index)
+        return {"created": created, "scene_count": len(self._song.scenes)}
+
+    def _ext_set_scene_name(self, scene_index=0, name="", **_):
+        scenes = self._song.scenes
+        if scene_index < 0 or scene_index >= len(scenes):
+            raise IndexError("Scene index out of range")
+        scenes[scene_index].name = name
+        return {"scene_index": scene_index, "name": scenes[scene_index].name}
+
+    def _ext_create_return_track(self, name="", **_):
+        # Live prefixes return names with their letter ("A-", "B-"...): strip a
+        # letter prefix the caller may have typed, or the name doubles it.
+        if len(name) > 2 and name[1] == "-" and name[0].isalpha():
+            name = name[2:]
+        self._song.create_return_track()
+        index = len(self._song.return_tracks) - 1
+        track = self._song.return_tracks[index]
+        if name:
+            track.name = name
+        return {"return_index": index, "name": track.name}
+
+    def _ext_get_mixer_overview(self, **_):
+        def sends(track):
+            return [round(float(s.value), 3) for s in track.mixer_device.sends]
+        return {
+            "scene_count": len(self._song.scenes),
+            "scenes": [s.name for s in self._song.scenes],
+            "tracks": [{"index": i, "name": t.name, "sends": sends(t),
+                        "devices": self._ext_device_list(t)}
+                       for i, t in enumerate(self._song.tracks)],
+            "returns": [{"index": i, "name": t.name, "sends": sends(t),
+                         "devices": self._ext_device_list(t)}
+                        for i, t in enumerate(self._song.return_tracks)],
+            "master": {"name": self._song.master_track.name,
+                       "devices": self._ext_device_list(self._song.master_track)},
+        }
+
+    # Devices on any track kind
+
+    def _ext_load_device(self, track_kind="track", track_index=0, uri="", **_):
+        track = self._ext_track(track_kind, track_index)
+        app = self.application()
+        item = self._find_browser_item_by_uri(app.browser, uri)
+        if not item:
+            raise ValueError("Browser item with URI '{0}' not found".format(uri))
+        self._song.view.selected_track = track
+        app.browser.load_item(item)
+        return {"loaded": item.name, "track": track.name,
+                "devices": self._ext_device_list(track)}
+
+    def _ext_get_device_parameters_ex(self, track_kind="track", track_index=0,
+                                      device_index=0, **_):
+        _, device = self._ext_device(track_kind, track_index, device_index)
+        return self._serialize_device(device, device_index, include_params=True)
+
+    def _ext_set_device_parameter_ex(self, track_kind="track", track_index=0,
+                                     device_index=0, parameter_index=0,
+                                     value=0.0, **_):
+        _, device = self._ext_device(track_kind, track_index, device_index)
+        if parameter_index < 0 or parameter_index >= len(device.parameters):
+            raise IndexError("Parameter index out of range")
+        param = device.parameters[parameter_index]
+        old = float(param.value)
+        param.value = float(value)
+        return {"name": param.name, "old_value": old,
+                "value": float(param.value),
+                "min": float(param.min), "max": float(param.max)}
+
+    def _ext_set_device_name(self, track_kind="track", track_index=0,
+                             device_index=0, name="", **_):
+        _, device = self._ext_device(track_kind, track_index, device_index)
+        device.name = name
+        return {"device_index": device_index, "name": device.name}
+
+    def _ext_set_send(self, track_kind="track", track_index=0, send_index=0,
+                      value=0.0, **_):
+        track = self._ext_track(track_kind, track_index)
+        sends = track.mixer_device.sends
+        if send_index < 0 or send_index >= len(sends):
+            raise IndexError("Send index out of range")
+        sends[send_index].value = max(0.0, min(1.0, float(value)))
+        return {"track": track.name, "send_index": send_index,
+                "value": float(sends[send_index].value)}
+
+    # Notes with probability (Live 11+ note API)
+
+    def _ext_add_notes_extended(self, track_index=0, clip_index=0, notes=None, **_):
+        import Live
+        clip = self._ext_clip(track_index, clip_index)
+        spec_cls = getattr(Live.Clip, "MidiNoteSpecification", None)
+        if spec_cls is None or not hasattr(clip, "add_new_notes"):
+            raise Exception("Extended note API needs Live 11 or newer")
+        specs = []
+        for n in notes or []:
+            specs.append(spec_cls(
+                pitch=int(n.get("pitch", 60)),
+                start_time=float(n.get("start_time", 0.0)),
+                duration=float(n.get("duration", 0.25)),
+                velocity=float(n.get("velocity", 100)),
+                mute=bool(n.get("mute", False)),
+                probability=float(n.get("probability", 1.0)),
+                velocity_deviation=float(n.get("velocity_deviation", 0.0)),
+                release_velocity=float(n.get("release_velocity", 64)),
+            ))
+        clip.add_new_notes(tuple(specs))
+        return {"note_count": len(specs)}
+
+    def _ext_set_notes_probability(self, track_index=0, clip_index=0,
+                                   probability=1.0, pitch=-1,
+                                   start_times=None, from_time=0.0,
+                                   time_span=-1.0, velocity_deviation=None, **_):
+        clip = self._ext_clip(track_index, clip_index)
+        if not hasattr(clip, "get_notes_extended"):
+            raise Exception("Extended note API needs Live 11 or newer")
+        span = clip.length - from_time if time_span is None or time_span < 0 else time_span
+        if pitch is None or pitch < 0:
+            notes = clip.get_notes_extended(0, 128, from_time, span)
+        else:
+            notes = clip.get_notes_extended(int(pitch), 1, from_time, span)
+        wanted = None
+        if start_times:
+            wanted = set(round(float(t), 4) for t in start_times)
+        changed = 0
+        for note in notes:
+            if wanted is not None and round(float(note.start_time), 4) not in wanted:
+                continue
+            note.probability = max(0.0, min(1.0, float(probability)))
+            if velocity_deviation is not None:
+                note.velocity_deviation = float(velocity_deviation)
+            changed += 1
+        clip.apply_note_modifications(notes)
+        return {"changed": changed}
+
+    # Clip properties (follow actions, launch settings…)
+
+    def _ext_clip_property_allowed(self, name):
+        return (not name.startswith("_")
+                and any(h in name for h in self._EXT_CLIP_PROPERTY_HINTS))
+
+    def _ext_get_clip_properties(self, track_index=0, clip_index=0, **_):
+        clip = self._ext_clip(track_index, clip_index)
+        props = {}
+        for name in dir(clip):
+            if not self._ext_clip_property_allowed(name):
+                continue
+            try:
+                value = getattr(clip, name)
+            except Exception:
+                continue
+            if callable(value):
+                continue
+            if isinstance(value, (bool, int, float, str)):
+                props[name] = value
+            else:
+                try:
+                    props[name] = int(value)
+                except Exception:
+                    props[name] = str(value)
+        return {"name": clip.name, "properties": props}
+
+    def _ext_set_clip_property(self, track_index=0, clip_index=0, name="",
+                               value=None, **_):
+        if not self._ext_clip_property_allowed(name):
+            raise ValueError("Property '{0}' is not in the allowed list".format(name))
+        clip = self._ext_clip(track_index, clip_index)
+        if not hasattr(clip, name):
+            raise AttributeError("Clip has no property '{0}' in this Live version".format(name))
+        current = getattr(clip, name)
+        if isinstance(current, bool):
+            value = bool(value)
+        elif isinstance(current, int):
+            value = int(value)
+        elif isinstance(current, float):
+            value = float(value)
+        setattr(clip, name, value)
+        return {"name": name, "value": getattr(clip, name) if isinstance(
+            getattr(clip, name), (bool, int, float, str)) else str(getattr(clip, name))}
+
+    # Input routing and monitoring
+
+    _EXT_MONITORING = {"in": 0, "auto": 1, "off": 2}
+
+    def _ext_get_track_routing(self, track_kind="track", track_index=0, **_):
+        track = self._ext_track(track_kind, track_index)
+        info = {"track": track.name}
+        try:
+            info["input_type"] = track.input_routing_type.display_name
+            info["available_input_types"] = [
+                r.display_name for r in track.available_input_routing_types]
+            info["input_channel"] = track.input_routing_channel.display_name
+            info["available_input_channels"] = [
+                c.display_name for c in track.available_input_routing_channels]
+        except Exception as e:
+            info["input_error"] = str(e)
+        try:
+            info["monitoring"] = int(track.current_monitoring_state)
+        except Exception:
+            pass
+        return info
+
+    def _ext_set_track_input(self, track_index=0, input_type="",
+                             input_channel="", monitoring="", **_):
+        track = self._ext_track("track", track_index)
+        if input_type:
+            match = [r for r in track.available_input_routing_types
+                     if r.display_name == input_type]
+            if not match:
+                raise ValueError("Unknown input type '{0}'".format(input_type))
+            track.input_routing_type = match[0]
+        if input_channel:
+            match = [c for c in track.available_input_routing_channels
+                     if c.display_name == input_channel]
+            if not match:
+                raise ValueError("Unknown input channel '{0}'".format(input_channel))
+            track.input_routing_channel = match[0]
+        if monitoring:
+            key = str(monitoring).lower()
+            if key not in self._EXT_MONITORING:
+                raise ValueError("monitoring must be 'in', 'auto' or 'off'")
+            track.current_monitoring_state = self._EXT_MONITORING[key]
+        return self._ext_get_track_routing("track", track_index)
+
     # Command implementations
 
     def _get_script_info(self):

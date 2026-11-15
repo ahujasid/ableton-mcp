@@ -139,7 +139,12 @@ class AbletonConnection:
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
-            "create_locator"
+            "create_locator",
+            # Live-set extension commands
+            "create_scene", "set_scene_name", "create_return_track",
+            "load_device", "set_device_parameter_ex", "set_device_name",
+            "set_send", "add_notes_extended", "set_notes_probability",
+            "set_clip_property", "set_track_input",
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
@@ -1555,6 +1560,12 @@ def record_audition(
         logger.error(f"Error recording audition: {str(e)}")
         return f"Error recording audition: {str(e)}"
 
+
+
+# Live-set extension tools (fork: feat/live-set-tools)
+from .live_set_tools import register as _register_live_set_tools
+
+_register_live_set_tools(mcp, get_ableton_connection)
 
 
 # Main execution
