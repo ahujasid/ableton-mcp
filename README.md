@@ -229,6 +229,25 @@ The MCP server and Remote Script share a version handshake (`get_remote_script_i
 
 ---
 
+## Live-set extension tools (fork)
+
+This fork adds tools aimed at building a live set in Session View:
+
+| Tool | What it does |
+| --- | --- |
+| `create_scene`, `set_scene_name` | Add scenes (several at once) and name them |
+| `create_return_track` | Add a return track |
+| `get_mixer_overview` | Scenes, tracks, returns and master with devices and send levels |
+| `load_device` | Load an instrument or effect on a track, a return or the master |
+| `get_device_parameters_ex`, `set_device_parameter_ex` | Read and set device parameters on any track kind |
+| `set_device_name` | Rename a device |
+| `set_send` | Set a send level, including return-to-return |
+| `add_notes_extended`, `set_notes_probability` | Notes with probability and velocity deviation (Live 11+) |
+| `get_clip_properties`, `set_clip_property` | Follow actions, launch quantization, legato and other launch settings, by the names Live exposes |
+| `get_track_routing`, `set_track_input` | Audio input routing and monitoring |
+
+Remote Script version `1.8.0`. After pulling, run `uv run ableton-mcp-install-script` and restart Live.
+
 ## Usage
 
 ### Starting the Connection
