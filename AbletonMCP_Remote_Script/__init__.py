@@ -556,6 +556,10 @@ class AbletonMCP(ControlSurface):
                 "loop":              self._safe_song_property("loop",              bool,  False),
                 "loop_start":        self._safe_song_property("loop_start",        float, 0.0),
                 "loop_length":       self._safe_song_property("loop_length",       float, 0.0),
+                # Project name and key signature
+                "root_note":   self._safe_song_property("root_note",   int,   None),
+                "scale_name":  self._safe_song_property("scale_name",  str,   None),
+                "name":        self._safe_song_property("name",        str,   "Untitled"),
             }
             return result
         except Exception as e:
