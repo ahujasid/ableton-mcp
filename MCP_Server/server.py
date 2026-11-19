@@ -487,6 +487,28 @@ def get_track_info(ctx: Context, track_index: int, user_prompt: str = "") -> str
         return f"Error getting track info: {str(e)}"
 
 
+def _note_params(track_index: int, clip_index: int, location: str) -> Dict[str, Any]:
+    """Command params; location is only sent for the Arrangement, so calls
+    on Session clips stay exactly what older Remote Scripts expect."""
+    params: Dict[str, Any] = {"track_index": track_index, "clip_index": clip_index}
+    location = (location or "session").lower()
+    if location not in ("session", "arrangement"):
+        raise ValueError("location must be 'session' or 'arrangement'")
+    if location == "arrangement":
+        params["location"] = "arrangement"
+    return params
+
+
+def _arrangement_notes_missing(location: str) -> Union[str, None]:
+    """An older Remote Script would ignore location and edit the Session clip
+    instead, so refuse unless it advertises arrangement_notes."""
+    if (location or "session").lower() != "arrangement":
+        return None
+    from .script_handshake import require_capability
+
+    return require_capability("arrangement_notes")
+
+
 @mcp.tool()
 @telemetry_tool("get_clip_notes")
 @trajectory_tool("get_clip_notes")
@@ -494,28 +516,33 @@ def get_clip_notes(
     ctx: Context,
     track_index: int,
     clip_index: int,
+    location: str = "session",
     user_prompt: str = "",
 ) -> str:
     """
-    Read all MIDI notes from a Session-view clip.
+    Read all MIDI notes from a Session clip or an Arrangement clip.
 
     Returns pitch, start_time, duration, velocity, mute (and extended fields when available).
+    Note times are in clip beats (0 = clip start). For an Arrangement clip the
+    reply also gives arrangement_start / arrangement_end (song beats) and
+    start_marker: a note plays at arrangement_start + (start_time - start_marker)
+    when the clip isn't looping.
 
     Parameters:
     - track_index: Track that owns the clip
-    - clip_index: Session clip slot index
+    - clip_index: Session slot index, or Arrangement clip index (get_arrangement_clips)
+    - location: "session" (default) or "arrangement"
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         from .script_handshake import require_capability
 
-        missing = require_capability("get_clip_notes")
+        missing = require_capability("get_clip_notes") or _arrangement_notes_missing(location)
         if missing:
             return missing
         ableton = get_ableton_connection()
         result = ableton.send_command(
-            "get_clip_notes",
-            {"track_index": track_index, "clip_index": clip_index},
+            "get_clip_notes", _note_params(track_index, clip_index, location),
         )
         return json.dumps(result, indent=2)
     except Exception as e:
@@ -762,24 +789,31 @@ def add_notes_to_clip(
     track_index: int,
     clip_index: int,
     notes: List[Dict[str, Union[int, float, bool]]],
+    location: str = "session",
     user_prompt: str = ""
 ) -> str:
     """
-    Add MIDI notes to a clip.
+    Add MIDI notes to a Session clip or an Arrangement clip. Notes are added
+    to the existing ones; to replace, clear_notes_from_clip or remove_notes first.
 
     Parameters:
     - track_index: The index of the track containing the clip
-    - clip_index: The index of the clip slot containing the clip
-    - notes: List of note dictionaries, each with pitch, start_time, duration, velocity, and mute
+    - clip_index: Session slot index, or Arrangement clip index (get_arrangement_clips)
+    - notes: List of note dictionaries, each with pitch, start_time (clip
+      beats, 0 = clip start), duration, velocity, and mute
+    - location: "session" (default) or "arrangement"
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        missing = _arrangement_notes_missing(location)
+        if missing:
+            return missing
+        params = _note_params(track_index, clip_index, location)
+        params["notes"] = notes
         ableton = get_ableton_connection()
-        result = ableton.send_command("add_notes_to_clip", {
-            "track_index": track_index,
-            "clip_index": clip_index,
-            "notes": notes
-        })
+        result = ableton.send_command("add_notes_to_clip", params)
+        if "location" in params:
+            return f"Added {len(notes)} notes to arrangement clip {clip_index} on track {track_index}"
         return f"Added {len(notes)} notes to clip at track {track_index}, slot {clip_index}"
     except Exception as e:
         logger.error(f"Error adding notes to clip: {str(e)}")
@@ -791,10 +825,11 @@ def clear_notes_from_clip(
     ctx: Context,
     track_index: int,
     clip_index: int,
+    location: str = "session",
     user_prompt: str = ""
 ) -> str:
     """
-    Remove all MIDI notes from a Session clip.
+    Remove all MIDI notes from a Session clip or an Arrangement clip.
 
     Writes are additive (add_notes_to_clip only appends), so to truly *modify*
     a clip you clear it first, then add the new notes. Use this with
@@ -802,31 +837,72 @@ def clear_notes_from_clip(
     loop: read the notes, edit the list, clear_notes_from_clip, then
     add_notes_to_clip the edited notes.
 
+    To change only part of a clip, use remove_notes instead.
+
     Parameters:
     - track_index: The index of the track containing the clip
-    - clip_index: The index of the clip slot containing the clip
+    - clip_index: Session slot index, or Arrangement clip index (get_arrangement_clips)
+    - location: "session" (default) or "arrangement"
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         from .script_handshake import require_capability
 
-        missing = require_capability("clear_notes_from_clip")
+        missing = require_capability("clear_notes_from_clip") or _arrangement_notes_missing(location)
         if missing:
             return missing
         ableton = get_ableton_connection()
-        result = ableton.send_command("clear_notes_from_clip", {
-            "track_index": track_index,
-            "clip_index": clip_index
-        })
-        return "Cleared {n} note(s) from clip '{name}' (track {t}, slot {c})".format(
+        result = ableton.send_command(
+            "clear_notes_from_clip", _note_params(track_index, clip_index, location))
+        return "Cleared {n} note(s) from clip '{name}' (track {t}, {where} {c})".format(
             n=result.get("cleared_count", "?"),
             name=result.get("clip_name", "clip"),
             t=track_index,
+            where="arrangement clip" if (location or "").lower() == "arrangement" else "slot",
             c=clip_index,
         )
     except Exception as e:
         logger.error(f"Error clearing notes from clip: {str(e)}")
         return f"Error clearing notes from clip: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("remove_notes")
+def remove_notes(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    from_time: float = 0.0,
+    time_span: Union[float, None] = None,
+    from_pitch: int = 0,
+    pitch_span: int = 128,
+    location: str = "session",
+    user_prompt: str = "",
+) -> str:
+    """
+    Remove the notes that start inside a time range and a pitch range, leaving
+    the others. Use it to rewrite one bar or one drum lane: remove that range,
+    then add_notes_to_clip the new notes.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: Session slot index, or Arrangement clip index (get_arrangement_clips)
+    - from_time: Start of the range, in clip beats (0 = clip start)
+    - time_span: Length of the range in beats (default: to the end of the clip)
+    - from_pitch: Lowest MIDI pitch of the range (0-127, default 0)
+    - pitch_span: Number of pitches from from_pitch (default 128 = all; 1 = a single pitch)
+    - location: "session" (default) or "arrangement"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = _note_params(track_index, clip_index, location)
+    except ValueError as e:
+        return f"Error removing notes: {e}"
+    params.update(_without_none({
+        "from_time": from_time, "time_span": time_span,
+        "from_pitch": from_pitch, "pitch_span": pitch_span,
+    }))
+    return _send_with_capability("remove_notes", params, "removing notes")
 
 @mcp.tool()
 @rich_telemetry_tool("set_clip_name")
@@ -1276,6 +1352,264 @@ def delete_arrangement_clip(ctx: Context, track_index: int, clip_index: int, use
     return _send_with_capability("delete_arrangement_clip", {
         "track_index": track_index, "clip_index": clip_index,
     }, "deleting arrangement clip")
+
+
+def _without_none(params: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in params.items() if v is not None}
+
+
+@mcp.tool()
+@telemetry_tool("get_clip_loop")
+def get_clip_loop(
+    ctx: Context, track_index: int, clip_index: int, location: str = "session", user_prompt: str = ""
+) -> str:
+    """
+    Read a clip's loop switch, loop brace (loop_start / loop_end) and start /
+    end markers. Units are beats, except for an unwarped audio clip, where
+    Live uses seconds of the file (see "units" in the reply). For an
+    Arrangement clip the reply also gives its place in the song.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Session slot index, or Arrangement clip index (get_arrangement_clips)
+    - location: "session" (default) or "arrangement"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _send_with_capability("get_clip_loop", {
+        "track_index": track_index, "clip_index": clip_index, "location": location,
+    }, "reading clip loop")
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_loop")
+def set_clip_loop(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    location: str = "session",
+    looping: Union[bool, None] = None,
+    loop_start: Union[float, None] = None,
+    loop_end: Union[float, None] = None,
+    loop_length: Union[float, None] = None,
+    start_marker: Union[float, None] = None,
+    end_marker: Union[float, None] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Change a clip's loop and markers. Arguments left out are untouched.
+
+    - The loop brace (loop_start → loop_end) is the part that repeats when
+      looping is on. Shorten a 4-bar loop to its first bar with
+      loop_start=0, loop_length=4.
+    - Looping on: playback starts at start_marker, then the brace repeats.
+      Looping off: Live plays loop_start -> loop_end once (start_marker
+      follows loop_start; end_marker is unused). Markers given for a clip
+      that doesn't loop are written to loop_start/loop_end for you.
+    - get_clip_loop's "playback" field says what actually plays.
+    - Turning warping off then on again resets an audio clip's warp markers.
+
+    Units are beats (seconds for an unwarped audio clip: check get_clip_loop).
+    The order of the writes is handled so the start never passes the end on
+    the way. The reply shows what Live applied; "adjusted" lists any value
+    it changed.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Session slot index, or Arrangement clip index (get_arrangement_clips)
+    - location: "session" (default) or "arrangement"
+    - looping: Loop switch on or off
+    - loop_start, loop_end: Loop brace
+    - loop_length: Sets loop_end = loop_start + loop_length (instead of loop_end)
+    - start_marker, end_marker: Playback start / end markers
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _send_with_capability("set_clip_loop", _without_none({
+        "track_index": track_index, "clip_index": clip_index, "location": location,
+        "looping": looping, "loop_start": loop_start, "loop_end": loop_end,
+        "loop_length": loop_length, "start_marker": start_marker, "end_marker": end_marker,
+    }), "setting clip loop")
+
+
+@mcp.tool()
+@telemetry_tool("get_clip_warp")
+def get_clip_warp(
+    ctx: Context, track_index: int, clip_index: int, location: str = "session", user_prompt: str = ""
+) -> str:
+    """
+    Read an audio clip's warp settings: warping on/off, warp mode, available
+    modes, warp markers (beat_time ↔ sample_time in seconds), pitch, gain,
+    clip length and the sample's duration.
+
+    Parameters:
+    - track_index: Index of the track
+    - clip_index: Session slot index, or Arrangement clip index as listed by
+      get_arrangement_clips
+    - location: "session" (default) or "arrangement"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _send_with_capability("get_clip_warp", {
+        "track_index": track_index, "clip_index": clip_index, "location": location,
+    }, "reading clip warp")
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_warp")
+def set_clip_warp(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    location: str = "session",
+    warping: Union[bool, None] = None,
+    warp_mode: Union[str, None] = None,
+    original_bpm: Union[float, None] = None,
+    pitch_coarse: Union[int, None] = None,
+    pitch_fine: Union[float, None] = None,
+    gain: Union[float, None] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Change an audio clip's warp settings. Arguments left out are untouched.
+
+    To make a loop follow the song tempo, pass its original tempo as
+    original_bpm (sample packs usually put it in the file name, e.g.
+    "..._131_..."): warping is turned on and the warp markers are rebuilt so
+    the file is read at that tempo.
+
+    Parameters:
+    - track_index: Index of the audio track
+    - clip_index: Session slot index, or Arrangement clip index (get_arrangement_clips)
+    - location: "session" (default) or "arrangement"
+    - warping: Turn warping on or off
+    - warp_mode: "beats", "tones", "texture", "re_pitch", "complex",
+      "complex_pro" (or Live's index 0–6). Beats suits drums, Complex/Complex
+      Pro full mixes, Tones monophonic parts, Re-Pitch vinyl-style speed changes.
+    - original_bpm: The loop's own tempo; conforms it to the song tempo
+    - pitch_coarse: Transpose in semitones (-48 to 48)
+    - pitch_fine: Detune in cents (-50 to 50)
+    - gain: Clip gain, normalized 0.0–1.0 (see gain_display in the reply)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _send_with_capability("set_clip_warp", _without_none({
+        "track_index": track_index, "clip_index": clip_index, "location": location,
+        "warping": warping, "warp_mode": warp_mode, "original_bpm": original_bpm,
+        "pitch_coarse": pitch_coarse, "pitch_fine": pitch_fine, "gain": gain,
+    }), "setting clip warp")
+
+
+@mcp.tool()
+@telemetry_tool("edit_warp_markers")
+def edit_warp_markers(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    location: str = "session",
+    add: Union[List[Dict[str, float]], None] = None,
+    move: Union[List[Dict[str, float]], None] = None,
+    remove: Union[List[float], None] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Edit an audio clip's warp markers (Live 11+; warping must be on).
+    Applied in this order: remove, move, add. Use get_clip_warp to see the
+    current markers.
+
+    Parameters:
+    - track_index: Index of the audio track
+    - clip_index: Session slot index, or Arrangement clip index (get_arrangement_clips)
+    - location: "session" (default) or "arrangement"
+    - add: [{"beat_time": 8.0, "sample_time": 3.66}] — pin a point of the
+      file (sample_time, seconds) to a beat; both are required
+    - move: [{"beat_time": 8.0, "beat_time_distance": 0.25}] — shift the
+      marker at beat_time by that many beats
+    - remove: [8.0, 16.0] — beat times of the markers to remove
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _send_with_capability("edit_warp_markers", _without_none({
+        "track_index": track_index, "clip_index": clip_index, "location": location,
+        "add": add, "move": move, "remove": remove,
+    }), "editing warp markers")
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_automation")
+def set_clip_automation(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    points: List[Dict[str, float]],
+    location: str = "session",
+    device_index: int = -1,
+    parameter_index: int = 0,
+    mixer_parameter: str = "",
+    interpolation: str = "linear",
+    resolution: float = 0.25,
+    clear_first: bool = True,
+    user_prompt: str = "",
+) -> str:
+    """
+    Write a clip automation envelope for one parameter on a Session clip; the
+    envelope plays whenever the clip plays. Live's API refuses clip automation
+    on Arrangement clips, and Arrangement automation lanes aren't reachable.
+
+    Target either a device parameter (device_index + parameter_index, see
+    get_device_parameters) or a track mixer control (mixer_parameter).
+
+    Parameters:
+    - track_index: Index of the track that owns the clip and the parameter
+    - clip_index: Session slot index
+    - points: [{"time": 0, "value": 0.2}, {"time": 16, "value": 0.9}] — time in
+      beats in clip time (0 = clip start, like MIDI note start_time), value in
+      the parameter's units (clamped to its min/max). The last point holds
+      until the clip's end. An empty list with clear_first=true removes the
+      envelope.
+    - location: "session" (the only location Live accepts for writing)
+    - device_index: Device in the track's chain (ignored when mixer_parameter is set)
+    - parameter_index: Index into the device's parameters
+    - mixer_parameter: "volume", "panning" or "send:N" (N = return track index)
+    - interpolation: "linear" ramps between points (drawn as steps of
+      `resolution` beats), "step" holds each value until the next point
+    - resolution: Step size in beats for linear ramps (default 0.25 = a 16th)
+    - clear_first: Remove the parameter's existing envelope in this clip first
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _send_with_capability("set_clip_automation", {
+        "track_index": track_index, "clip_index": clip_index, "location": location,
+        "device_index": device_index, "parameter_index": parameter_index,
+        "mixer_parameter": mixer_parameter, "points": points,
+        "interpolation": interpolation, "resolution": resolution,
+        "clear_first": clear_first,
+    }, "setting clip automation")
+
+
+@mcp.tool()
+@telemetry_tool("get_clip_automation")
+def get_clip_automation(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    location: str = "session",
+    device_index: int = -1,
+    parameter_index: int = 0,
+    mixer_parameter: str = "",
+    resolution: float = 1.0,
+    user_prompt: str = "",
+) -> str:
+    """
+    Read a clip's automation envelope for one parameter, sampled every
+    `resolution` beats across the clip. Reports has_envelope=false when the
+    parameter isn't automated in this clip.
+
+    Parameters:
+    - track_index, clip_index, location: as in set_clip_automation
+    - device_index, parameter_index, mixer_parameter: as in set_clip_automation
+    - resolution: Sampling step in beats (default 1.0)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _send_with_capability("get_clip_automation", {
+        "track_index": track_index, "clip_index": clip_index, "location": location,
+        "device_index": device_index, "parameter_index": parameter_index,
+        "mixer_parameter": mixer_parameter, "resolution": resolution,
+    }, "reading clip automation")
 
 
 @mcp.tool()

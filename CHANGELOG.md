@@ -4,6 +4,46 @@ Remote Script changes.
 
 The version numbers below are the **Remote Script** version (`SCRIPT_VERSION`), which the server checks through `get_remote_script_info`. After updating, reinstall the script with `ableton-mcp-install-script` and **restart Live** — re-selecting the control surface does not reload the code.
 
+## Remote Script 1.11.0
+
+### Added
+
+- **Clip loop and markers:** `get_clip_loop` and `set_clip_loop` read and change the loop switch, the loop brace (`loop_start`, `loop_end`, or `loop_length`) and the start/end markers, on Session and Arrangement clips. Live refuses a start at or past the end at any moment, so the writes are ordered by the direction of the move, and both ranges are checked before anything is written. The reply gives the applied values and an `adjusted` entry for any value Live changed. Units are reported: beats, or seconds for an unwarped audio clip.
+- A `playback` summary says what actually plays. Live 12.4.5 plays an unlooped clip from `loop_start` to `loop_end` and ignores a `start_marker` write on it, so start/end markers given for an unlooped clip are written to the loop brace (the reply says so).
+
+### Fixed
+
+- `set_clip_warp(original_bpm=…)` rounded the end marker down to a whole beat: a 16-beat drum loop 1 ms short at 140 BPM got its marker at beat 15. A file within 0.02 beat of a whole number of beats is now pinned to that beat (to the end of the file when it is a hair short, never past it), and the reply says so.
+
+## Remote Script 1.10.0
+
+### Added
+
+- **Notes in Arrangement clips:** `get_clip_notes`, `add_notes_to_clip` and `clear_notes_from_clip` take `location="arrangement"`, with the clip index listed by `get_arrangement_clips`. Note times stay in clip beats; Arrangement replies add `arrangement_start`, `arrangement_end` and `start_marker` to place them in the song. Session calls are sent exactly as before.
+- **`remove_notes`:** removes the notes that start in a time range and a pitch range, leaving the others, to rewrite one bar or one drum lane without clearing the clip.
+
+### Safety
+
+- The server only sends `location="arrangement"` to a Remote Script that advertises `arrangement_notes`: an older script would ignore it and edit the Session clip in the same slot.
+
+### Fixed
+
+- `clear_notes_from_clip` also removes notes past the clip's `length` (after its end marker or loop end were moved).
+
+## Remote Script 1.9.0
+
+### Added
+
+New MCP tools and matching Remote Script commands. Each takes `location`: `session` (clip slot index) or `arrangement` (index as listed by `get_arrangement_clips`).
+
+- **Warp:** `get_clip_warp`, `set_clip_warp` (warping, warp mode, pitch, gain), `edit_warp_markers` (Live 11+). `set_clip_warp(original_bpm=…)` conforms a loop to the song tempo: it turns warping on, keeps the first warp marker and pins the last whole beat of the file to its time at that tempo.
+- **Clip automation:** `set_clip_automation` writes a clip envelope for a device parameter or a mixer control (volume, panning, sends), from points with linear ramps or held steps; an empty point list clears it. `get_clip_automation` samples an envelope back. Session clips only: Live 12 refuses clip automation on Arrangement clips from a script, and Arrangement automation lanes aren't reachable from its API.
+
+### Internal
+
+- `_resolve_clip()` resolves Session and Arrangement clips for the new commands.
+- New tests in `tests/test_warp_automation.py` (fake Clip / AutomationEnvelope).
+
 ## Remote Script 1.8.2
 
 ### Fixed

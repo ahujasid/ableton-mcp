@@ -96,6 +96,7 @@ That's it — ask Claude to build something. To check the setup, ask Claude to r
   - [Using with Claude](#using-with-claude)
   - [Capabilities](#capabilities)
   - [Mixer, track and scene tools](#mixer-track-and-scene-tools)
+  - [Warp, automation, note and loop tools](#warp-automation-note-and-loop-tools)
   - [Behavior worth knowing](#behavior-worth-knowing)
   - [Example Commands](#example-commands)
 - [Troubleshooting](#troubleshooting)
@@ -122,6 +123,8 @@ That's it — ask Claude to build something. To check the setup, ask Claude to r
 | **Session control** | Start and stop playback, fire clips, and control transport across Session View and Arrangement View |
 | **Mixer control** | Volume, panning, sends, mute, solo and arm on tracks, return tracks and the master |
 | **Scenes** | List, create, rename, duplicate, launch and delete Session View scenes |
+| **Audio warping** | Warp mode, warp markers, and conforming a loop to the song tempo from its original BPM |
+| **Clip editing** | Clip automation envelopes, notes in Arrangement clips, loop brace and start/end markers |
 | **Anonymous telemetry** | Usage tracking to help improve the tool (can be disabled) |
 
 ## Components
@@ -265,6 +268,10 @@ Once the config file has been set on Claude, and the remote script is running in
 - Duplicate and delete tracks
 - Manage scenes
 - Delete Arrangement clips
+- Warp audio clips: mode, warp markers, conform a loop to the song tempo
+- Clip automation envelopes for device and mixer parameters
+- Read and edit notes in Arrangement clips
+- Clip loop brace and start/end markers
 
 ### Mixer, track and scene tools
 
@@ -286,6 +293,22 @@ Once the config file has been set on Claude, and the remote script is running in
 | `delete_arrangement_clip` | Deletes an Arrangement clip, indexed as listed by `get_arrangement_clips` (Live 11+). |
 
 The mixer tools reply with Live's display value (e.g. `-6.0 dB`, `25L`), so you can check what actually changed.
+
+### Warp, automation, note and loop tools
+
+Every tool below takes `location`: `"session"` (clip slot index, the default) or `"arrangement"` (clip index as listed by `get_arrangement_clips`), except `set_clip_automation`, which Live only accepts on Session clips.
+
+| Tool | What it does |
+|---|---|
+| `get_clip_warp` | An audio clip's warp state: on/off, mode, available modes, warp markers (beat ↔ seconds), pitch, gain, sample duration. `location`: `session` (default) or `arrangement`. |
+| `set_clip_warp` | Warping on/off, `warp_mode` (`beats`, `tones`, `texture`, `re_pitch`, `complex`, `complex_pro`), `pitch_coarse`, `pitch_fine`, `gain`. `original_bpm` conforms a loop to the song tempo by rebuilding its warp markers. |
+| `edit_warp_markers` | Removes, moves, then adds warp markers (Live 11+, warping must be on). A new marker needs both `beat_time` and `sample_time` (seconds into the file). |
+| `set_clip_automation` | Writes a clip envelope for a device parameter (`device_index` + `parameter_index`) or a mixer control (`mixer_parameter`: `volume`, `panning`, `send:N`). `points` in clip beats; `linear` ramps or `step` holds. Session clips only: Live's API refuses clip automation on Arrangement clips. |
+| `get_clip_automation` | Samples a clip envelope every `resolution` beats. |
+| `get_clip_notes` / `add_notes_to_clip` / `clear_notes_from_clip` | Take `location="arrangement"` (clip index as listed by `get_arrangement_clips`). Times are clip beats; Arrangement replies add `arrangement_start`, `arrangement_end` and `start_marker`. |
+| `remove_notes` | Removes the notes starting in a time range and a pitch range (e.g. one bar, or one drum lane), leaving the rest. Session or Arrangement. |
+| `get_clip_loop` | Loop switch, loop brace and start/end markers of a clip, with their units (beats, or seconds for an unwarped audio clip). |
+| `set_clip_loop` | Changes them (`loop_length` as a shortcut for the loop end). Writes are ordered so the start never passes the end; the reply lists any value Live adjusted. Session or Arrangement. |
 
 ### Behavior worth knowing
 
@@ -313,6 +336,9 @@ Here are some examples of what you can ask Claude to do:
 | *"Turn the bass down 3 dB, pan it slightly left and send some reverb"* | |
 | *"Duplicate scene 1, name the copy 'Chorus' and launch it"* | |
 | *"Solo the drums"* | |
+| *"This loop is 131 BPM: make it follow the song tempo"* | |
+| *"Rewrite bar 2 of the verse clip in the arrangement"* | |
+| *"Shorten the loop to its first bar"* | |
 
 ---
 

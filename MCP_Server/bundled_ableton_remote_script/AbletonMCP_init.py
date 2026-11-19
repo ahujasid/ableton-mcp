@@ -15,6 +15,11 @@ try:
 except ImportError:
     import queue  # Python 3
 
+try:
+    import Live  # only importable inside Ableton Live
+except ImportError:
+    Live = None
+
 # Constants for socket communication
 DEFAULT_PORT = 9877
 # Loopback, not 0.0.0.0. This socket takes unauthenticated commands that import
@@ -34,7 +39,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.8.2"
+SCRIPT_VERSION = "1.11.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -72,7 +77,40 @@ SCRIPT_CAPABILITIES = [
     "fire_scene",
     "set_scene_name",
     "delete_arrangement_clip",
+    "get_clip_warp",
+    "set_clip_warp",
+    "edit_warp_markers",
+    "get_clip_automation",
+    "set_clip_automation",
+    # get/add/clear notes accept location="arrangement"; remove_notes is new.
+    "arrangement_notes",
+    "remove_notes",
+    "get_clip_loop",
+    "set_clip_loop",
 ]
+
+# Live's Clip.warp_mode values.
+WARP_MODE_NAMES = {
+    0: "beats",
+    1: "tones",
+    2: "texture",
+    3: "re_pitch",
+    4: "complex",
+    5: "rex",
+    6: "complex_pro",
+}
+WARP_MODES_BY_NAME = dict((name, mode) for mode, name in WARP_MODE_NAMES.items())
+WARP_MODES_BY_NAME["repitch"] = 3
+
+# Upper bound on envelope steps written or sampled in one command.
+MAX_AUTOMATION_STEPS = 4096
+# Live keeps a "shadow" warp marker this many beats after the last one.
+SHADOW_MARKER_GAP = 1.0 / 32
+# original_bpm: a file within this many beats of a whole number of beats
+# is pinned to that beat instead of being rounded down.
+CONFORM_SNAP_BEATS = 0.02
+# How far after a sample time get_clip_automation reads (see there).
+ENVELOPE_PROBE_OFFSET = 1e-4
 
 # Live applies some writes (song.current_song_time, browser.load_item,
 # song.set_or_delete_cue) asynchronously: reading the state back in the same
@@ -348,7 +386,11 @@ class AbletonMCP(ControlSurface):
                                  "create_scene", "delete_scene",
                                  "duplicate_scene", "fire_scene",
                                  "set_scene_name",
-                                 "delete_arrangement_clip"]:
+                                 "delete_arrangement_clip",
+                                 # Warp / clip automation
+                                 "set_clip_warp", "edit_warp_markers",
+                                 "set_clip_automation",
+                                 "remove_notes", "set_clip_loop"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -380,11 +422,14 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             notes = params.get("notes", [])
-                            result = self._add_notes_to_clip(track_index, clip_index, notes)
+                            result = self._add_notes_to_clip(
+                                track_index, clip_index, notes,
+                                params.get("location", "session"))
                         elif command_type == "clear_notes_from_clip":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
-                            result = self._clear_notes_from_clip(track_index, clip_index)
+                            result = self._clear_notes_from_clip(
+                                track_index, clip_index, params.get("location", "session"))
                         elif command_type == "set_clip_name":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
@@ -490,6 +535,51 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "delete_arrangement_clip":
                             result = self._delete_arrangement_clip(
                                 params.get("track_index", 0), params.get("clip_index", 0))
+                        elif command_type == "set_clip_warp":
+                            result = self._set_clip_warp(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("location", "session"),
+                                warping=params.get("warping"),
+                                warp_mode=params.get("warp_mode"),
+                                pitch_coarse=params.get("pitch_coarse"),
+                                pitch_fine=params.get("pitch_fine"),
+                                gain=params.get("gain"),
+                                original_bpm=params.get("original_bpm"))
+                        elif command_type == "edit_warp_markers":
+                            result = self._edit_warp_markers(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("location", "session"),
+                                add=params.get("add"), move=params.get("move"),
+                                remove=params.get("remove"))
+                        elif command_type == "set_clip_loop":
+                            result = self._set_clip_loop(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("location", "session"),
+                                looping=params.get("looping"),
+                                loop_start=params.get("loop_start"),
+                                loop_end=params.get("loop_end"),
+                                start_marker=params.get("start_marker"),
+                                end_marker=params.get("end_marker"),
+                                loop_length=params.get("loop_length"))
+                        elif command_type == "remove_notes":
+                            result = self._remove_notes(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("location", "session"),
+                                from_time=params.get("from_time", 0.0),
+                                time_span=params.get("time_span"),
+                                from_pitch=params.get("from_pitch", 0),
+                                pitch_span=params.get("pitch_span", 128))
+                        elif command_type == "set_clip_automation":
+                            result = self._set_clip_automation(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("location", "session"),
+                                device_index=params.get("device_index", -1),
+                                parameter_index=params.get("parameter_index", 0),
+                                mixer_parameter=params.get("mixer_parameter", ""),
+                                points=params.get("points"),
+                                interpolation=params.get("interpolation", "linear"),
+                                resolution=params.get("resolution", 0.25),
+                                clear_first=params.get("clear_first", True))
 
                         if isinstance(result, _Deferred):
                             # Finishes on a later tick; it fills the queue itself.
@@ -553,7 +643,8 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_clip_notes":
                 track_index = params.get("track_index", 0)
                 clip_index = params.get("clip_index", 0)
-                response["result"] = self._get_clip_notes(track_index, clip_index)
+                response["result"] = self._get_clip_notes(
+                    track_index, clip_index, params.get("location", "session"))
             elif command_type == "get_device_parameters":
                 track_index = params.get("track_index", 0)
                 device_index = params.get("device_index", 0)
@@ -567,6 +658,22 @@ class AbletonMCP(ControlSurface):
                 )
             elif command_type == "get_scenes":
                 response["result"] = self._get_scenes()
+            elif command_type == "get_clip_loop":
+                response["result"] = self._get_clip_loop(
+                    params.get("track_index", 0), params.get("clip_index", 0),
+                    params.get("location", "session"))
+            elif command_type == "get_clip_warp":
+                response["result"] = self._get_clip_warp(
+                    params.get("track_index", 0), params.get("clip_index", 0),
+                    params.get("location", "session"))
+            elif command_type == "get_clip_automation":
+                response["result"] = self._get_clip_automation(
+                    params.get("track_index", 0), params.get("clip_index", 0),
+                    params.get("location", "session"),
+                    device_index=params.get("device_index", -1),
+                    parameter_index=params.get("parameter_index", 0),
+                    mixer_parameter=params.get("mixer_parameter", ""),
+                    resolution=params.get("resolution", 1.0))
             elif command_type == "drain_passive_events":
                 response["result"] = self._drain_passive_events()
             elif command_type == "set_device_parameter":
@@ -872,46 +979,43 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error creating audio clip: " + str(e))
             raise
 
-    def _add_notes_to_clip(self, track_index, clip_index, notes):
-        """Add MIDI notes to a clip"""
+    def _midi_clip(self, track_index, clip_index, location="session"):
+        clip, label = self._resolve_clip(track_index, clip_index, location)
+        if not getattr(clip, "is_midi_clip", False):
+            raise ValueError("%s is not a MIDI clip" % label.capitalize())
+        return clip, label
+
+    def _clip_location_info(self, clip, location):
+        """Where a clip sits, so its notes (in clip time) can be placed in the song."""
+        info = {"location": (location or "session").lower()}
+        if info["location"] == "arrangement":
+            info["arrangement_start"] = float(clip.start_time)
+            info["arrangement_end"] = float(clip.end_time)
+            info["start_marker"] = float(getattr(clip, "start_marker", 0.0) or 0.0)
+            info["looping"] = bool(getattr(clip, "looping", False))
+        return info
+
+    def _add_notes_to_clip(self, track_index, clip_index, notes, location="session"):
+        """Add MIDI notes to a Session or Arrangement clip (times in clip beats)."""
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            
-            track = self._song.tracks[track_index]
-            
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-            
-            clip_slot = track.clip_slots[clip_index]
-            
-            if not clip_slot.has_clip:
-                raise Exception("No clip in slot")
-            
-            clip = clip_slot.clip
-            
-            # Convert note data to Live's format
+            clip, _ = self._midi_clip(track_index, clip_index, location)
             live_notes = []
             for note in notes:
-                pitch = note.get("pitch", 60)
-                start_time = note.get("start_time", 0.0)
-                duration = note.get("duration", 0.25)
-                velocity = note.get("velocity", 100)
-                mute = note.get("mute", False)
-                
-                live_notes.append((pitch, start_time, duration, velocity, mute))
-            
-            # Add the notes
+                live_notes.append((
+                    note.get("pitch", 60),
+                    note.get("start_time", 0.0),
+                    note.get("duration", 0.25),
+                    note.get("velocity", 100),
+                    note.get("mute", False),
+                ))
             clip.set_notes(tuple(live_notes))
-            
-            result = {
-                "note_count": len(notes)
-            }
+            result = {"note_count": len(notes), "clip_name": clip.name}
+            result.update(self._clip_location_info(clip, location))
             return result
         except Exception as e:
             self.log_message("Error adding notes to clip: " + str(e))
             raise
-    
+
     def _set_clip_name(self, track_index, clip_index, name):
         """Set the name of a clip"""
         try:
@@ -1195,6 +1299,515 @@ class AbletonMCP(ControlSurface):
         info["deleted"] = True
         return info
 
+    # ------------------------------------------------------------ clips
+    def _resolve_clip(self, track_index, clip_index, location="session"):
+        """Return (clip, label) for a Session slot or an Arrangement clip.
+
+        For the Arrangement, clip_index is the index listed by
+        get_arrangement_clips.
+        """
+        location = (location or "session").lower()
+        track, _ = self._resolve_track(track_index, "track")
+        if location == "session":
+            slots = track.clip_slots
+            if clip_index < 0 or clip_index >= len(slots):
+                raise IndexError("Clip slot index out of range (%d slots)" % len(slots))
+            if not slots[clip_index].has_clip:
+                raise ValueError("No clip in slot %d of track %d" % (clip_index, track_index))
+            return slots[clip_index].clip, "session clip %d/%d" % (track_index, clip_index)
+        if location == "arrangement":
+            clips = list(track.arrangement_clips)
+            if clip_index < 0 or clip_index >= len(clips):
+                raise IndexError("Arrangement clip index out of range (%d clips)" % len(clips))
+            return clips[clip_index], "arrangement clip %d/%d" % (track_index, clip_index)
+        raise ValueError("location must be 'session' or 'arrangement'")
+
+    def _clip_time_range(self, clip):
+        """(start, end) of the clip's content in clip time (beats)."""
+        start = float(getattr(clip, "start_marker", 0.0) or 0.0)
+        end = getattr(clip, "end_marker", None)
+        end = float(end) if end is not None else start + float(clip.length)
+        if end <= start:
+            end = start + float(clip.length)
+        return start, end
+
+    # ------------------------------------------------------- loop / markers
+    def _clip_loop_info(self, clip, label):
+        audio = bool(getattr(clip, "is_audio_clip", False))
+        unwarped = audio and not bool(getattr(clip, "warping", True))
+        info = {
+            "clip": label,
+            "name": clip.name,
+            "looping": bool(clip.looping),
+            "loop_start": float(clip.loop_start),
+            "loop_end": float(clip.loop_end),
+            "start_marker": float(clip.start_marker),
+            "end_marker": float(clip.end_marker),
+            "length": float(clip.length),
+            # Live measures an unwarped audio clip's loop and markers in
+            # seconds of the file, every other clip in beats.
+            "units": "seconds" if unwarped else "beats",
+        }
+        # What actually plays (Live 12.4.5). Looping: from the start marker,
+        # then the brace repeats. Not looping: Live plays loop_start ->
+        # loop_end; start_marker mirrors loop_start and end_marker is unused.
+        if info["looping"]:
+            info["playback"] = {"starts_at": info["start_marker"],
+                                "repeats": [info["loop_start"], info["loop_end"]]}
+        else:
+            info["playback"] = {"plays_once": [info["loop_start"], info["loop_end"]]}
+        return info
+
+    def _get_clip_loop(self, track_index, clip_index, location="session"):
+        clip, label = self._resolve_clip(track_index, clip_index, location)
+        info = self._clip_loop_info(clip, label)
+        if (location or "session").lower() == "arrangement":
+            info["arrangement_start"] = float(clip.start_time)
+            info["arrangement_end"] = float(clip.end_time)
+        return info
+
+    def _set_pair(self, clip, start_attr, end_attr, start, end):
+        """Set a start/end pair without ever making start >= end on the way.
+
+        Live refuses a start at or past the current end (and an end at or
+        before the current start), so the order depends on the move.
+        """
+        current_start = float(getattr(clip, start_attr))
+        current_end = float(getattr(clip, end_attr))
+        start = current_start if start is None else float(start)
+        end = current_end if end is None else float(end)
+        if start >= end:
+            raise ValueError("%s (%g) must be before %s (%g)" % (start_attr, start, end_attr, end))
+        if start >= current_end:
+            setattr(clip, end_attr, end)
+            setattr(clip, start_attr, start)
+        else:
+            setattr(clip, start_attr, start)
+            setattr(clip, end_attr, end)
+
+    def _set_clip_loop(self, track_index, clip_index, location="session", looping=None,
+                       loop_start=None, loop_end=None, start_marker=None, end_marker=None,
+                       loop_length=None):
+        """Change a clip's loop switch, loop brace and start/end markers.
+
+        Arguments left as None are untouched. loop_length sets loop_end to
+        loop_start + loop_length. Units are beats (seconds for an unwarped
+        audio clip, see get_clip_loop). The reply reports what Live applied;
+        `adjusted` lists any value Live changed (it snaps or clamps some).
+        """
+        clip, label = self._resolve_clip(track_index, clip_index, location)
+        notes = []
+        final_looping = bool(clip.looping) if looping is None else bool(looping)
+        if not final_looping and (start_marker is not None or end_marker is not None):
+            # Unlooped, Live plays loop_start -> loop_end and ignores a
+            # start_marker write (end_marker is accepted but unused).
+            if loop_start is not None or loop_end is not None or loop_length is not None:
+                raise ValueError("This clip doesn't loop: Live plays it from loop_start to "
+                                 "loop_end. Give either start/end markers or loop values")
+            loop_start, loop_end = start_marker, end_marker
+            start_marker = end_marker = None
+            notes.append("Clip not looping: start/end written to loop_start/loop_end, "
+                         "which is what Live plays")
+        if loop_length is not None:
+            if float(loop_length) <= 0:
+                raise ValueError("loop_length must be positive")
+            base = float(clip.loop_start) if loop_start is None else float(loop_start)
+            if loop_end is not None and abs(float(loop_end) - (base + float(loop_length))) > 1e-9:
+                raise ValueError("Give loop_end or loop_length, not both")
+            loop_end = base + float(loop_length)
+        # Check both pairs before writing anything.
+        for start_attr, end_attr, start, end in (
+                ("loop_start", "loop_end", loop_start, loop_end),
+                ("start_marker", "end_marker", start_marker, end_marker)):
+            s_val = float(getattr(clip, start_attr)) if start is None else float(start)
+            e_val = float(getattr(clip, end_attr)) if end is None else float(end)
+            if s_val >= e_val:
+                raise ValueError("%s (%g) must be before %s (%g)"
+                                 % (start_attr, s_val, end_attr, e_val))
+        if looping is not None:
+            clip.looping = bool(looping)
+        if loop_start is not None or loop_end is not None:
+            self._set_pair(clip, "loop_start", "loop_end", loop_start, loop_end)
+        if start_marker is not None or end_marker is not None:
+            self._set_pair(clip, "start_marker", "end_marker", start_marker, end_marker)
+        info = self._get_clip_loop(track_index, clip_index, location)
+        if notes:
+            info["notes"] = notes
+        requested = {"looping": looping, "loop_start": loop_start, "loop_end": loop_end,
+                     "start_marker": start_marker, "end_marker": end_marker}
+        adjusted = {}
+        for key, wanted in requested.items():
+            if wanted is None:
+                continue
+            got = info[key]
+            if (bool(got) != bool(wanted)) if key == "looping" else abs(float(got) - float(wanted)) > 1e-6:
+                adjusted[key] = {"requested": wanted, "applied": got}
+        if adjusted:
+            info["adjusted"] = adjusted
+        return info
+
+    # ------------------------------------------------------------- warp
+    def _require_audio_clip(self, clip):
+        if not getattr(clip, "is_audio_clip", False):
+            raise ValueError("Warp settings only apply to audio clips")
+
+    def _warp_mode_name(self, mode):
+        try:
+            return WARP_MODE_NAMES[int(mode)]
+        except (KeyError, TypeError, ValueError):
+            return "unknown (%s)" % mode
+
+    def _parse_warp_mode(self, clip, warp_mode):
+        """Accept a Live warp mode index or a name such as 'complex_pro'."""
+        if isinstance(warp_mode, (int, float)) and not isinstance(warp_mode, bool):
+            mode = int(warp_mode)
+        else:
+            key = str(warp_mode).strip().lower().replace("-", "_").replace(" ", "_")
+            if key.isdigit():
+                mode = int(key)
+            elif key in WARP_MODES_BY_NAME:
+                mode = WARP_MODES_BY_NAME[key]
+            else:
+                raise ValueError("Unknown warp mode '%s' (use one of: %s)"
+                                 % (warp_mode, ", ".join(sorted(WARP_MODES_BY_NAME))))
+        available = [int(m) for m in list(getattr(clip, "available_warp_modes", []) or [])]
+        if available and mode not in available:
+            raise ValueError("Warp mode '%s' is not available for this clip (available: %s)"
+                             % (self._warp_mode_name(mode),
+                                ", ".join(self._warp_mode_name(m) for m in available)))
+        return mode
+
+    def _warp_markers(self, clip):
+        return [{"beat_time": float(m.beat_time), "sample_time": float(m.sample_time)}
+                for m in list(getattr(clip, "warp_markers", []) or [])]
+
+    def _clip_warp_info(self, clip, label):
+        self._require_audio_clip(clip)
+        info = {
+            "clip": label,
+            "name": clip.name,
+            "warping": bool(clip.warping),
+            "warp_mode": self._warp_mode_name(clip.warp_mode),
+            "available_warp_modes": [self._warp_mode_name(m) for m in
+                                     list(getattr(clip, "available_warp_modes", []) or [])],
+            "warp_markers": self._warp_markers(clip),
+            "pitch_coarse": int(clip.pitch_coarse),
+            "pitch_fine": float(clip.pitch_fine),
+            "gain": float(clip.gain),
+            "gain_display": getattr(clip, "gain_display_string", None),
+            "length_beats": float(clip.length),
+            "song_tempo": float(self._song.tempo),
+        }
+        sample_rate = getattr(clip, "sample_rate", None)
+        sample_length = getattr(clip, "sample_length", None)
+        if sample_rate and sample_length:
+            info["sample_seconds"] = float(sample_length) / float(sample_rate)
+        return info
+
+    def _get_clip_warp(self, track_index, clip_index, location="session"):
+        clip, label = self._resolve_clip(track_index, clip_index, location)
+        return self._clip_warp_info(clip, label)
+
+    def _set_clip_warp(self, track_index, clip_index, location="session", warping=None,
+                       warp_mode=None, pitch_coarse=None, pitch_fine=None, gain=None,
+                       original_bpm=None):
+        """Change a clip's warp settings; any argument left as None is untouched.
+
+        original_bpm conforms the clip to the song tempo: warping is turned on
+        and the warp markers are rebuilt so the audio is read at that tempo
+        (first marker kept, one marker at the last whole beat of the file).
+        Everything that can be checked is checked before the clip is touched.
+        """
+        clip, label = self._resolve_clip(track_index, clip_index, location)
+        self._require_audio_clip(clip)
+        mode = self._parse_warp_mode(clip, warp_mode) if warp_mode is not None else None
+        plan = None
+        if original_bpm is not None:
+            plan = self._plan_conform(clip, float(original_bpm))
+            warping = True
+        notes = []
+        if mode is not None:
+            clip.warp_mode = mode
+        if warping is not None:
+            clip.warping = bool(warping)
+        if pitch_coarse is not None:
+            clip.pitch_coarse = int(max(-48, min(48, int(round(pitch_coarse)))))
+        if pitch_fine is not None:
+            clip.pitch_fine = float(max(-50.0, min(50.0, float(pitch_fine))))
+        if gain is not None:
+            clip.gain = float(max(0.0, min(1.0, float(gain))))
+        if plan is not None:
+            notes.extend(self._apply_conform(clip, plan))
+        info = self._clip_warp_info(clip, label)
+        if notes:
+            info["notes"] = notes
+        return info
+
+    def _new_warp_marker(self, beat_time, sample_time):
+        """Build what Clip.add_warp_marker accepts.
+
+        Live's Python API wants a Live.Clip.WarpMarker, whose constructor is
+        WarpMarker(sample_time, beat_time) with both required (Live 12.4.5);
+        a dict, which Max for Live accepts, is refused. The object's own
+        properties are checked so the two times can't end up swapped.
+        Outside Live (tests) a dict is used.
+        """
+        if sample_time is None:
+            raise ValueError("A warp marker needs a sample_time (seconds into the file) as "
+                             "well as a beat_time: Live can't create one from a beat alone")
+        beat_time, sample_time = float(beat_time), float(sample_time)
+        cls = getattr(getattr(Live, "Clip", None), "WarpMarker", None) if Live else None
+        if cls is None:
+            return {"beat_time": beat_time, "sample_time": sample_time}
+        marker = cls(sample_time=sample_time, beat_time=beat_time)
+        if (abs(float(marker.beat_time) - beat_time) > 1e-6
+                or abs(float(marker.sample_time) - sample_time) > 1e-6):
+            raise RuntimeError("Live.Clip.WarpMarker swapped its times (got beat %s, sample %s)"
+                               % (marker.beat_time, marker.sample_time))
+        return marker
+
+    def _plan_conform(self, clip, bpm):
+        """Work out the marker that conforms the clip to bpm, without writing."""
+        if bpm <= 0:
+            raise ValueError("original_bpm must be positive")
+        sample_rate = getattr(clip, "sample_rate", None)
+        sample_length = getattr(clip, "sample_length", None)
+        if not sample_rate or not sample_length:
+            raise ValueError("Live did not report the sample's length; cannot conform to a BPM")
+        duration = float(sample_length) / float(sample_rate)
+        markers = self._warp_markers(clip)
+        if markers:
+            start_beat = markers[0]["beat_time"]
+            start_sec = markers[0]["sample_time"]
+        else:
+            start_beat, start_sec = 0.0, 0.0
+        seconds_per_beat = 60.0 / bpm
+        exact_beats = (duration - start_sec) / seconds_per_beat
+        notes = []
+        nearest = int(round(exact_beats))
+        if nearest >= 1 and abs(exact_beats - nearest) <= CONFORM_SNAP_BEATS:
+            # Loops are often a few samples off a whole number of beats
+            # (a 16-beat loop at 140 BPM measured 1 ms short): pin the end
+            # to that beat rather than rounding down and losing one.
+            whole_beats = nearest
+        else:
+            whole_beats = int(exact_beats + 1e-6)
+        if whole_beats < 1:
+            raise ValueError("The sample is shorter than one beat at %.2f BPM" % bpm)
+        end_beat = start_beat + whole_beats
+        end_sec = start_sec + whole_beats * seconds_per_beat
+        if end_sec > duration:
+            # Never ask for a marker past the end of the file.
+            notes.append("The file ends %.1f ms before beat %g at %.2f BPM; that beat is "
+                         "pinned to the end of the file" % ((end_sec - duration) * 1000.0,
+                                                           end_beat, bpm))
+            end_sec = duration
+        return {"bpm": bpm, "old_markers": markers, "end_beat": end_beat,
+                "end_sec": end_sec, "notes": notes,
+                "end_marker": self._new_warp_marker(end_beat, end_sec)}
+
+    def _apply_conform(self, clip, plan):
+        """Keep the first marker, drop the others, pin the end; undo on failure.
+
+        Live's shadow marker (1/32 beat after the last one) is left alone.
+        """
+        notes = list(plan.get("notes", []))
+        removed = []
+        to_remove = plan["old_markers"][1:]
+        # The last marker is usually Live's "shadow marker", 1/32 beat after
+        # the real last one. Live refuses to delete it and moves it itself.
+        if (len(plan["old_markers"]) >= 2 and plan["old_markers"][-1]["beat_time"]
+                - plan["old_markers"][-2]["beat_time"] <= SHADOW_MARKER_GAP + 1e-9):
+            to_remove = to_remove[:-1]
+        for marker in reversed(to_remove):
+            try:
+                clip.remove_warp_marker(marker["beat_time"])
+                removed.append(marker)
+            except Exception as e:
+                notes.append("Live kept the warp marker at beat %.3f: %s"
+                             % (marker["beat_time"], e))
+        try:
+            clip.add_warp_marker(plan["end_marker"])
+        except Exception as e:
+            restored = 0
+            for marker in reversed(removed):
+                try:
+                    clip.add_warp_marker(self._new_warp_marker(
+                        marker["beat_time"], marker["sample_time"]))
+                    restored += 1
+                except Exception:
+                    pass
+            raise RuntimeError("Live refused the warp marker at beat %.3f (%s); restored %d of "
+                               "%d removed markers" % (plan["end_beat"], e, restored, len(removed)))
+        notes.append("Conformed to %.2f BPM: beat %.3f = %.3f s"
+                     % (plan["bpm"], plan["end_beat"], plan["end_sec"]))
+        return notes
+
+    def _edit_warp_markers(self, track_index, clip_index, location="session",
+                           add=None, move=None, remove=None):
+        """Remove, then move, then add warp markers (Live 11+)."""
+        clip, label = self._resolve_clip(track_index, clip_index, location)
+        self._require_audio_clip(clip)
+        if not clip.warping:
+            raise ValueError("Turn warping on (set_clip_warp) before editing warp markers")
+        new_markers = [self._new_warp_marker(item["beat_time"], item.get("sample_time"))
+                       for item in add or []]
+        for beat_time in remove or []:
+            clip.remove_warp_marker(float(beat_time))
+        for item in move or []:
+            clip.move_warp_marker(float(item["beat_time"]), float(item["beat_time_distance"]))
+        for marker in new_markers:
+            clip.add_warp_marker(marker)
+        return self._clip_warp_info(clip, label)
+
+    # ------------------------------------------------------- automation
+    def _resolve_automation_parameter(self, track_index, device_index=-1,
+                                      parameter_index=0, mixer_parameter=""):
+        """A device parameter, or a mixer one: 'volume', 'panning', 'send:N'."""
+        track, _ = self._resolve_track(track_index, "track")
+        mixer_parameter = (mixer_parameter or "").strip().lower()
+        if mixer_parameter:
+            mixer = track.mixer_device
+            if mixer_parameter == "volume":
+                return mixer.volume
+            if mixer_parameter in ("panning", "pan"):
+                return mixer.panning
+            if mixer_parameter.startswith("send:"):
+                sends = list(mixer.sends)
+                try:
+                    send_index = int(mixer_parameter.split(":", 1)[1])
+                except ValueError:
+                    raise ValueError("Send must be written 'send:N' (N = return index)")
+                if send_index < 0 or send_index >= len(sends):
+                    raise IndexError("Send index out of range (%d sends)" % len(sends))
+                return sends[send_index]
+            raise ValueError("mixer_parameter must be 'volume', 'panning' or 'send:N'")
+        devices = list(track.devices)
+        if device_index < 0 or device_index >= len(devices):
+            raise IndexError("Device index out of range (%d devices)" % len(devices))
+        params = list(devices[device_index].parameters)
+        if parameter_index < 0 or parameter_index >= len(params):
+            raise IndexError("Parameter index out of range (%d parameters)" % len(params))
+        return params[parameter_index]
+
+    def _automation_steps(self, points, interpolation, resolution, clip_end):
+        """Turn sorted (time, value) points into (start, duration, value) steps."""
+        steps = []
+        for i, (time, value) in enumerate(points):
+            next_time = points[i + 1][0] if i + 1 < len(points) else clip_end
+            if next_time <= time:
+                continue
+            if interpolation == "linear" and i + 1 < len(points):
+                next_value = points[i + 1][1]
+                t = time
+                while t < next_time - 1e-9:
+                    duration = min(resolution, next_time - t)
+                    ratio = (t - time) / (next_time - time)
+                    steps.append((t, duration, value + (next_value - value) * ratio))
+                    t += duration
+            else:
+                steps.append((time, next_time - time, value))
+        return steps
+
+    def _set_clip_automation(self, track_index, clip_index, location="session",
+                             device_index=-1, parameter_index=0, mixer_parameter="",
+                             points=None, interpolation="linear", resolution=0.25,
+                             clear_first=True):
+        """Write a clip envelope for one parameter.
+
+        points: [{"time": beats in clip time, "value": parameter units}].
+        Each point holds until the next one ("step") or ramps to it ("linear",
+        drawn as steps of `resolution` beats). The last point holds to the
+        clip's end. Values are clamped to the parameter's range.
+        """
+        if (location or "session").lower() == "arrangement":
+            # Live 12 refuses it ("Not a session clip or parameter belongs to
+            # another track"): scripts can only write Session clip envelopes.
+            raise ValueError("Live only lets scripts write clip automation on Session clips. "
+                             "Write it on a Session clip instead; Arrangement automation "
+                             "lanes aren't reachable from Live's API")
+        clip, label = self._resolve_clip(track_index, clip_index, location)
+        param = self._resolve_automation_parameter(
+            track_index, device_index, parameter_index, mixer_parameter)
+        interpolation = (interpolation or "linear").lower()
+        if interpolation not in ("linear", "step"):
+            raise ValueError("interpolation must be 'linear' or 'step'")
+        resolution = float(resolution)
+        if resolution <= 0:
+            raise ValueError("resolution must be positive")
+        clip_start, clip_end = self._clip_time_range(clip)
+        lo, hi = float(param.min), float(param.max)
+        parsed = []
+        clamped = False
+        for point in points or []:
+            time = float(point["time"])
+            value = float(point["value"])
+            if value < lo or value > hi:
+                clamped = True
+                value = max(lo, min(hi, value))
+            parsed.append((max(clip_start, time), value))
+        parsed.sort(key=lambda p: p[0])
+        steps = self._automation_steps(parsed, interpolation, resolution, clip_end)
+        if len(steps) > MAX_AUTOMATION_STEPS:
+            raise ValueError("Too many steps (%d > %d): raise resolution or use fewer points"
+                             % (len(steps), MAX_AUTOMATION_STEPS))
+
+        if clear_first:
+            clip.clear_envelope(param)
+        if not parsed:
+            return {"clip": label, "parameter": param.name, "cleared": bool(clear_first),
+                    "steps_written": 0}
+
+        envelope = clip.automation_envelope(param)
+        if envelope is None:
+            envelope = clip.create_automation_envelope(param)
+        if envelope is None:
+            raise RuntimeError("Live refused to create an envelope for '%s'" % param.name)
+        for start, duration, value in steps:
+            envelope.insert_step(start, duration, value)
+        result = {
+            "clip": label,
+            "parameter": param.name,
+            "min": lo,
+            "max": hi,
+            "interpolation": interpolation,
+            "points": len(parsed),
+            "steps_written": len(steps),
+            "clip_start": clip_start,
+            "clip_end": clip_end,
+        }
+        if clamped:
+            result["note"] = "Some values were outside [%g, %g] and were clamped" % (lo, hi)
+        return result
+
+    def _get_clip_automation(self, track_index, clip_index, location="session",
+                             device_index=-1, parameter_index=0, mixer_parameter="",
+                             resolution=1.0):
+        """Sample a clip envelope every `resolution` beats."""
+        clip, label = self._resolve_clip(track_index, clip_index, location)
+        param = self._resolve_automation_parameter(
+            track_index, device_index, parameter_index, mixer_parameter)
+        resolution = float(resolution)
+        if resolution <= 0:
+            raise ValueError("resolution must be positive")
+        envelope = clip.automation_envelope(param)
+        result = {"clip": label, "parameter": param.name,
+                  "min": float(param.min), "max": float(param.max),
+                  "has_envelope": envelope is not None, "samples": []}
+        if envelope is None:
+            return result
+        clip_start, clip_end = self._clip_time_range(clip)
+        count = min(int((clip_end - clip_start) / resolution + 1e-9) + 1, MAX_AUTOMATION_STEPS)
+        # Live's value_at_time() is left-continuous: exactly on a step boundary
+        # it returns the previous step (at the clip start, the value the
+        # parameter had before automation). Read just after each time so the
+        # sample is the value in effect from that time on.
+        for i in range(count):
+            t = clip_start + i * resolution
+            probe = min(t + ENVELOPE_PROBE_OFFSET, clip_end)
+            result["samples"].append({"time": t, "value": float(envelope.value_at_time(probe))})
+        return result
+
 
     def _start_playback(self):
         """Start playing the session"""
@@ -1331,65 +1944,90 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting arrangement clips: " + str(e))
             raise
 
-    def _clear_notes_from_clip(self, track_index, clip_index):
-        """Remove all MIDI notes from a Session clip.
+    def _note_time_span(self, clip):
+        """A time range that covers every note of the clip, wherever its markers are."""
+        ends = [float(clip.length)]
+        for attr in ("end_marker", "loop_end"):
+            value = getattr(clip, attr, None)
+            if value is not None:
+                ends.append(float(value))
+        return 0.0, max(ends) + 1.0
+
+    def _count_notes(self, clip, from_pitch, pitch_span, from_time, time_span):
+        try:
+            getter = getattr(clip, "get_notes_extended", None)
+            if getter is not None:
+                return len(list(getter(from_pitch, pitch_span, from_time, time_span)))
+            return len(list(clip.get_notes(from_time, from_pitch, time_span, pitch_span)))
+        except Exception:
+            return None
+
+    def _remove_note_range(self, clip, from_pitch, pitch_span, from_time, time_span):
+        # remove_notes_extended(from_pitch, pitch_span, from_time, time_span)
+        # (Live 11+) vs the legacy remove_notes(from_time, from_pitch,
+        # time_span, pitch_span).
+        remover = getattr(clip, "remove_notes_extended", None)
+        if remover is not None:
+            remover(from_pitch, pitch_span, from_time, time_span)
+        else:
+            clip.remove_notes(from_time, from_pitch, time_span, pitch_span)
+
+    def _clear_notes_from_clip(self, track_index, clip_index, location="session"):
+        """Remove all MIDI notes from a Session or Arrangement clip.
 
         Pairs with _add_notes_to_clip to make a real replace (clear, then add),
         which the write-only API otherwise can't do. Counts notes first so the
         result can report how many were removed.
         """
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track = self._song.tracks[track_index]
-
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-
-            clip_slot = track.clip_slots[clip_index]
-
-            if not clip_slot.has_clip:
-                raise Exception("No clip in slot")
-
-            clip = clip_slot.clip
-
-            if not clip.is_midi_clip:
-                raise Exception("Clip is not a MIDI clip; no notes to clear")
-
-            length = clip.length
-
-            # Count existing notes for the report (best-effort; never fatal).
-            cleared = 0
-            try:
-                getter = getattr(clip, "get_notes_extended", None)
-                if getter is not None:
-                    cleared = len(list(getter(0, 128, 0.0, length)))
-                else:
-                    cleared = len(list(clip.get_notes(0.0, 0, length, 128)))
-            except Exception:
-                cleared = 0
-
-            # Remove every note across the full pitch/time range. Prefer the
-            # modern API (Live 11+); fall back to the legacy signature. Argument
-            # order mirrors the get/remove _extended family:
-            #   remove_notes_extended(from_pitch, pitch_span, from_time, time_span)
-            # vs the legacy remove_notes(from_time, from_pitch, time_span, pitch_span).
-            remover = getattr(clip, "remove_notes_extended", None)
-            if remover is not None:
-                remover(0, 128, 0.0, length)
-            else:
-                clip.remove_notes(0.0, 0, length, 128)
-
-            return {
+            clip, _ = self._midi_clip(track_index, clip_index, location)
+            from_time, time_span = self._note_time_span(clip)
+            cleared = self._count_notes(clip, 0, 128, from_time, time_span) or 0
+            self._remove_note_range(clip, 0, 128, from_time, time_span)
+            result = {
                 "track_index": track_index,
                 "clip_index": clip_index,
                 "clip_name": clip.name,
                 "cleared_count": cleared,
             }
+            result.update(self._clip_location_info(clip, location))
+            return result
         except Exception as e:
             self.log_message("Error clearing notes from clip: " + str(e))
             raise
+
+    def _remove_notes(self, track_index, clip_index, location="session", from_time=0.0,
+                      time_span=None, from_pitch=0, pitch_span=128):
+        """Remove the notes that start in a time range and pitch range.
+
+        Times are in clip beats; time_span None means to the end of the clip.
+        """
+        clip, label = self._midi_clip(track_index, clip_index, location)
+        from_time = float(from_time)
+        if time_span is None:
+            _, full_span = self._note_time_span(clip)
+            time_span = max(0.0, full_span - from_time)
+        time_span = float(time_span)
+        from_pitch, pitch_span = int(from_pitch), int(pitch_span)
+        if time_span <= 0 or pitch_span <= 0:
+            raise ValueError("time_span and pitch_span must be positive")
+        if from_pitch < 0 or from_pitch > 127:
+            raise ValueError("from_pitch must be 0-127")
+        pitch_span = min(pitch_span, 128 - from_pitch)
+        removed = self._count_notes(clip, from_pitch, pitch_span, from_time, time_span)
+        self._remove_note_range(clip, from_pitch, pitch_span, from_time, time_span)
+        result = {
+            "clip": label,
+            "clip_name": clip.name,
+            "removed_count": removed,
+            "from_time": from_time,
+            "time_span": time_span,
+            "from_pitch": from_pitch,
+            "pitch_span": pitch_span,
+            "remaining_count": self._count_notes(clip, 0, 128, *self._note_time_span(clip)),
+        }
+        result.update(self._clip_location_info(clip, location))
+        return result
 
     def _duplicate_session_clip_to_arrangement(self, track_index, clip_index, destination_time):
         """Copy a Session-view clip into the Arrangement timeline.
@@ -2556,21 +3194,11 @@ class AbletonMCP(ControlSurface):
             self.log_message("master_track serialize failed: " + str(e))
             return None
 
-    def _get_clip_notes(self, track_index, clip_index):
+    def _get_clip_notes(self, track_index, clip_index, location="session"):
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-            slot = track.clip_slots[clip_index]
-            if not slot.has_clip:
-                raise Exception("No clip in slot")
-            clip = slot.clip
-            if not getattr(clip, "is_midi_clip", False):
-                raise Exception("Clip is not a MIDI clip")
+            clip, _ = self._midi_clip(track_index, clip_index, location)
             notes = self._notes_from_clip(clip)
-            return {
+            result = {
                 "track_index": track_index,
                 "clip_index": clip_index,
                 "clip_name": clip.name,
@@ -2578,6 +3206,8 @@ class AbletonMCP(ControlSurface):
                 "note_count": len(notes),
                 "notes": notes,
             }
+            result.update(self._clip_location_info(clip, location))
+            return result
         except Exception as e:
             self.log_message("Error getting clip notes: " + str(e))
             raise
