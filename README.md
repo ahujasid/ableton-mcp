@@ -71,12 +71,12 @@ uvx --from ableton-mcp ableton-mcp-install-script --list-targets   # preview tar
 
 **4. Connect**
 
-1. Launch Ableton Live
+1. Launch (or **restart**) Ableton Live
 2. Go to **Settings/Preferences → Link, Tempo & MIDI**
 3. In the **Control Surface** dropdown, select **AbletonMCP**
 4. Set **Input** and **Output** to **None**
 
-That's it — ask Claude to build something.
+That's it — ask Claude to build something. To check the setup, ask Claude to run `get_remote_script_info`: it should report `up_to_date: true`.
 
 ---
 
@@ -89,13 +89,18 @@ That's it — ask Claude to build something.
   - [Prerequisites](#prerequisites)
   - [Claude for Desktop Integration](#claude-for-desktop-integration)
   - [Cursor Integration](#cursor-integration)
+  - [Claude Code Integration](#claude-code-integration)
   - [Installing the Ableton Remote Script](#installing-the-ableton-remote-script)
 - [Usage](#usage)
   - [Starting the Connection](#starting-the-connection)
   - [Using with Claude](#using-with-claude)
   - [Capabilities](#capabilities)
+  - [Mixer, track and scene tools](#mixer-track-and-scene-tools)
+  - [Behavior worth knowing](#behavior-worth-knowing)
   - [Example Commands](#example-commands)
 - [Troubleshooting](#troubleshooting)
+  - [Known limitations](#known-limitations)
+- [Changelog](CHANGELOG.md)
 - [Technical Details](#technical-details)
 - [Limitations & Security Considerations](#limitations--security-considerations)
 - [Telemetry](#telemetry)
@@ -115,6 +120,8 @@ That's it — ask Claude to build something.
 | **Clip creation** | Create and edit MIDI clips with notes |
 | **Arrangement view composition** | Build full songs autonomously in Arrangement View, including sections like intro, buildup, drop, breakdown, and outro |
 | **Session control** | Start and stop playback, fire clips, and control transport across Session View and Arrangement View |
+| **Mixer control** | Volume, panning, sends, mute, solo and arm on tracks, return tracks and the master |
+| **Scenes** | List, create, rename, duplicate, launch and delete Session View scenes |
 | **Anonymous telemetry** | Usage tracking to help improve the tool (can be disabled) |
 
 ## Components
@@ -204,7 +211,9 @@ uvx --from ableton-mcp ableton-mcp-install-script --target "/path/to/User Librar
 
 > The legacy `Preferences/User Remote Scripts` folder (used for instant-mapping configs, not Python control surfaces) is no longer targeted by default; pass `--legacy` if you need it for an old Live version.
 
-Then **restart Ableton** (or re-select the AbletonMCP control surface) so Live loads it. Re-run the command after upgrading the package — the server logs a warning when the loaded script version doesn't match what it expects.
+Then **restart Ableton** so Live loads it. Re-run the command after upgrading the package — the server logs a warning when the loaded script version doesn't match what it expects.
+
+> **Restart Live, don't just re-select the control surface.** Switching the Control Surface to *None* and back re-creates the script from the Python module Live already imported, so a new `__init__.py` is **not** picked up. Only a restart of Live reloads the code.
 
 > **Note:** The server does **not** install the script on startup. Writing into Ableton's preferences directory is an explicit action, not a side effect of launching a server.
 
@@ -251,6 +260,38 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Read and set device parameters
+- Mix: volume, panning, sends, mute, solo, arm
+- Duplicate and delete tracks
+- Manage scenes
+- Delete Arrangement clips
+
+### Mixer, track and scene tools
+
+| Tool | What it does |
+|---|---|
+| `set_track_volume` | Fader, normalized 0.0–1.0 (0.85 ≈ 0 dB). `track_type`: `track` (default), `return` or `master`. Values above 1.0 are clamped to 1.0 (+6 dB). |
+| `set_track_panning` | −1.0 (left) … 0.0 (center) … 1.0 (right). Same `track_type` values. |
+| `set_track_send` | Send level 0.0–1.0; `send_index` 0 = first return track (Send A). |
+| `set_track_mute` / `set_track_solo` | Mute / solo a track or return track. |
+| `set_track_arm` | Arm or disarm a track for recording. |
+| `duplicate_track` | Copies a track with its clips and devices, inserted right after it. |
+| `delete_track` | Deletes a track; later track indexes shift down by one. Destructive. |
+| `get_scenes` | Lists scenes (index, name, tempo; `null` when a scene has no tempo). |
+| `create_scene` | Adds a scene (`index` −1 = at the end). |
+| `set_scene_name` | Renames a scene. |
+| `duplicate_scene` | Copies a scene with its clips, inserted right after it. |
+| `fire_scene` | Launches every clip in a scene's row. |
+| `delete_scene` | Deletes a scene and every clip in its row. Destructive. |
+| `delete_arrangement_clip` | Deletes an Arrangement clip, indexed as listed by `get_arrangement_clips` (Live 11+). |
+
+The mixer tools reply with Live's display value (e.g. `-6.0 dB`, `25L`), so you can check what actually changed.
+
+### Behavior worth knowing
+
+- **`create_locator`** moves the playhead to the target beat, waits for Live to get there, creates the cue, then puts the playhead back. If a locator already exists at that beat it is renamed. It refuses while the transport is playing, since Live would place the cue at the moving playhead.
+- **`set_arrangement_time`** replies only once Live reports the playhead at the new position.
+- **`load_instrument_or_effect`** replies once the device has appeared on the track and lists the new device(s). Loading the **same** device that is already on the track (e.g. Drift over Drift) doesn't replace it: Live keeps it and resets its parameters to their defaults. The reply says so ("reloaded in place"). If the parameters were already at their defaults, there is nothing to observe and the reply says it couldn't confirm the load.
 
 ### Example Commands
 
@@ -269,6 +310,9 @@ Here are some examples of what you can ask Claude to do:
 | *"Add a jazz chord progression to the clip in track 1"* | |
 | *"Set the tempo to 120 BPM"* | |
 | *"Play the clip in track 2"* | |
+| *"Turn the bass down 3 dB, pan it slightly left and send some reverb"* | |
+| *"Duplicate scene 1, name the copy 'Chorus' and launch it"* | |
+| *"Solo the drums"* | |
 
 ---
 
@@ -279,6 +323,15 @@ Here are some examples of what you can ask Claude to do:
 | **Connection issues** | Make sure the Ableton Remote Script is loaded, and the MCP server is configured on Claude |
 | **Timeout errors** | Try simplifying your requests or breaking them into smaller steps |
 | **Have you tried turning it off and on again?** | If you're still having connection errors, try restarting both Claude and Ableton Live |
+| **`up_to_date: false` in `get_remote_script_info`** | The script loaded in Live doesn't match the server. Re-run `ableton-mcp-install-script` from the same source as the server, then **restart Live** (re-selecting the control surface is not enough) |
+| **"missing capability" errors on the new tools** | Live is running the original (or an older) Remote Script. Same fix as above |
+| **Server still runs old code after an update** | Restart your MCP client. If it persists, clear uv's cache: `uv cache clean ableton-mcp` (close the MCP client first, it holds a lock on the cache) |
+
+### Known limitations
+
+- There is no tool to **delete a locator** yet; remove it by hand in the Arrangement view.
+- Device `type` is reported as `unknown` for Live's native instruments and effects.
+- The capability list returned by `get_remote_script_info` doesn't include every command the script supports (e.g. `set_tempo`, `fire_clip`), but they work.
 
 ## Technical Details
 
