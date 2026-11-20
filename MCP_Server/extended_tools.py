@@ -1226,7 +1226,9 @@ def register(mcp: FastMCP, get_connection: Callable[[], Any]) -> None:
         mute: Optional[bool] = None, solo: Optional[bool] = None, track_type: str = "track",
         user_prompt: str = "",
     ) -> str:
-        """Rename, mute or solo one Drum Rack pad.
+        """Rename, mute or solo one loaded Drum Rack pad (empty pads are refused:
+        Live ignores them). Renaming renames the pad's first chain, which is
+        what the pad shows.
 
         Parameters:
         - track_index, track_type, device (the Drum Rack)

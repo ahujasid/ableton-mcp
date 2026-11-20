@@ -32,11 +32,11 @@ Status: built in 1.8.0 (with `undo`, `redo`, `get_undo_state`, `delete_track`), 
 | 1.8.0 | Tier 1 + undo/redo/delete_track | yes | live_test.py 16/17 (undo merged rename+delete: fixed in 1.9.0 with one undo step per call), live_test_mixer.py not yet |
 | 1.9.0 | safety switches; Tier 2 (all but presets); device display values; signal path; clip info/properties; scenes | yes | live_test_devices.py not yet |
 | 1.10.0 | Tier 4 (transport, settings, locators, CPU); Tier 3 notes by id, quantize, duplicate_loop, crop | yes | 2026-11-19 (on 1.10.0): live_test.py 17/17, live_test_mixer.py 39/43, live_test_transport.py 27/31, live_test_devices.py crashed (Utility's "Gain" is "Output" in Live 12) |
-| 1.11.0 | insert_device by name, plugin presets, racks (macros, variations, chains), drum pads, Simpler, arrangement clip create/delete, note edits (quantize_pitch, duplicate_region/notes), warp markers, session clip envelopes; `Later` (next-tick readback) fixing the 1.10.0 live failures; create_locator replaced | yes | live_test_racks.py + reruns not yet |
+| 1.11.0 | insert_device by name, plugin presets, racks (macros, variations, chains), drum pads, Simpler, arrangement clip create/delete, note edits (quantize_pitch, duplicate_region/notes), warp markers, session clip envelopes; `Later` (next-tick readback) fixing the 1.10.0 live failures; create_locator replaced | yes | 2026-11-20 all green: live_test.py 17/17, mixer 43/43, devices 47/47, transport 29/29, racks 21/21 (pad mute/rename on a loaded pad and copy_drum_pad not live-tested: no API to load a pad) |
 
 The 1.10.0 live failures were all one cause, except the test assumptions: writes apply when Live's tick
 ends, so same-tick readbacks (loop, solo) were stale and upstream's create_locator put the cue at the
-old playhead. Fixed in 1.11.0; to be confirmed by a live rerun.
+old playhead. Fixed in 1.11.0 and confirmed live 2026-11-20, along with five more Live facts (see AGENT-GUIDE).
 
 Still open: Tier 5 device-specific tools beyond Simpler (Wavetable, Drift, EQ Eight specifics),
 `map_rack_magnitude` tool, arrangement envelopes (not in the API), take lanes.

@@ -2629,8 +2629,48 @@ class AbletonMCP(ControlSurface):
             else:
                 out["master"] = st
         out["soloed"] = [t["name"] for t in out["tracks"] + out["returns"] if t.get("solo")]
-        out["silenced_by_solo"] = [t["name"] for t in out["tracks"] + out["returns"] if t.get("muted_via_solo")]
+        silenced = self._solo_silenced()
+        for t in out["tracks"]:
+            t["silenced_by_solo"] = t["index"] in silenced
+        out["silenced_by_solo"] = [t["name"] for t in out["tracks"] if t["silenced_by_solo"]]
         return out
+
+    def _solo_silenced(self):
+        """Indices of regular tracks that solo silences, worked out from the solo
+        states. Track.muted_via_solo can't be trusted through the API: it stayed
+        False 2 s after a solo (2026-11-20, screen locked; it was True the day
+        before), so it is reported raw but not used for this."""
+        tracks = list(self._song.tracks)
+        any_track = [i for i, t in enumerate(tracks) if t.solo]
+        any_return = any(r.solo for r in self._song.return_tracks)
+        if not any_track and not any_return:
+            return set()
+
+        def ancestors(t):
+            names = []
+            for _ in range(32):
+                try:
+                    g = t.group_track if t.is_grouped else None
+                except Exception:
+                    g = None
+                if g is None:
+                    break
+                names.append(g.name)
+                t = g
+            return names
+
+        soloed_names = set(tracks[i].name for i in any_track)
+        soloed_ancestors = set(n for i in any_track for n in ancestors(tracks[i]))
+        silenced = set()
+        for i, t in enumerate(tracks):
+            if t.solo:
+                continue
+            if soloed_names.intersection(ancestors(t)):
+                continue  # inside a soloed group
+            if t.name in soloed_ancestors:
+                continue  # a group that holds a soloed track
+            silenced.add(i)
+        return silenced
 
     def _cmd_get_track_routing(self, params):
         track, track_type, index = self._resolve_track(params)
@@ -2775,7 +2815,8 @@ class AbletonMCP(ControlSurface):
             changed.append(k)
         if params.get("solo") and params.get("exclusive_solo"):
             for other, ot, oi in self._all_tracks():
-                if ot != "master" and other is not track and other.solo:
+                # Live hands out a new wrapper per read: compare positions, not identity.
+                if ot != "master" and (ot, oi) != (track_type, index) and other.solo:
                     other.solo = False
                     notes.append("unsoloed %s" % other.name)
         elif params.get("solo"):
@@ -3204,7 +3245,7 @@ class AbletonMCP(ControlSurface):
         problems = []
         if st.get("mute"):
             problems.append("track is muted")
-        if st.get("muted_via_solo"):
+        if st.get("silenced_by_solo"):
             problems.append("track is silenced because another track is soloed")
         vol = st.get("volume") or {}
         if vol and "-inf" in str(vol.get("display", "")):
@@ -3236,6 +3277,7 @@ class AbletonMCP(ControlSurface):
         call, plus plain-language problems and optional meter readings."""
         track, track_type, index = self._resolve_track(params)
         st = self._track_state(track, track_type, index, include_routing=True)
+        st["silenced_by_solo"] = track_type == "track" and index in self._solo_silenced()
         devices = []
         for i, d in enumerate(track.devices):
             ds = self._device_state(d, str(i), 0, False, 0)
@@ -3934,27 +3976,37 @@ class AbletonMCP(ControlSurface):
         track, tindex, clip, where = self._audio_clip(params)
         st = {"track": track.name, "where": where}
         self._read(st, "warping", lambda: bool(clip.warping))
-        self._read(st, "sample_length", lambda: float(clip.sample_length))
+        self._read(st, "sample_length_seconds", lambda: float(clip.sample_length) / float(clip.sample_rate))
         self._read(st, "warp_markers", lambda: self._warp_markers(clip))
         return st
 
     @staticmethod
+    def _sample_time_at(markers, beat):
+        """Where the audio is at `beat` under the current warping: linear between
+        the surrounding markers, the nearest segment extended past the ends."""
+        pts = sorted((m["beat_time"], m["sample_time"]) for m in markers)
+        if len(pts) < 2:
+            raise ValueError("Give sample_time: the clip has fewer than two warp markers to interpolate from")
+        for (b0, s0), (b1, s1) in zip(pts, pts[1:]):
+            if beat <= b1 or (b1, s1) == pts[-1]:
+                if b1 == b0:
+                    return s0
+                return s0 + (s1 - s0) * (beat - b0) / (b1 - b0)
+        return pts[-1][1]
+
+    @staticmethod
     def _make_warp_marker(beat_time, sample_time):
-        """The Python API takes a Live.Clip.WarpMarker; fall back to the
-        dict form the Max API documents."""
+        """Live.Clip.WarpMarker(sample_time, beat_time): positional, both
+        required (measured 2026-11-20). Falls back to the Max-style dict
+        outside Live."""
         try:
             import Live  # only inside Live
             cls = Live.Clip.WarpMarker
         except Exception:
             cls = None
         if cls is not None:
-            if sample_time is None:
-                return cls(beat_time=beat_time)
-            return cls(beat_time=beat_time, sample_time=sample_time)
-        spec = {"beat_time": beat_time}
-        if sample_time is not None:
-            spec["sample_time"] = sample_time
-        return spec
+            return cls(float(sample_time), float(beat_time))
+        return {"beat_time": beat_time, "sample_time": sample_time}
 
     def _cmd_edit_warp_markers(self, params):
         """add (beat_time, optional sample_time), move (beat_time + distance)
@@ -3972,11 +4024,13 @@ class AbletonMCP(ControlSurface):
             if any(abs(b - beat) < 1e-6 for b in beats):
                 raise ValueError("There is already a warp marker at beat %g" % beat)
             sample_time = params.get("sample_time")
-            if sample_time is not None:
-                sample_time = float(sample_time)
-                length = float(getattr(clip, "sample_length", 0) or 0)
-                if sample_time < 0 or (length and sample_time > length):
-                    raise ValueError("sample_time %.3f is outside the sample (0..%.3f)" % (sample_time, length))
+            if sample_time is None:
+                sample_time = self._sample_time_at(before, beat)  # keep the current timing
+            sample_time = float(sample_time)
+            # sample_length is in samples; warp marker sample_time is in seconds.
+            length = float(clip.sample_length) / float(clip.sample_rate)
+            if sample_time < 0 or sample_time > length:
+                raise ValueError("sample_time %.3f is outside the sample (0..%.3f)" % (sample_time, length))
             clip.add_warp_marker(self._make_warp_marker(beat, sample_time))
         elif action in ("move", "remove"):
             match = [b for b in beats if abs(b - beat) < 1e-6]
@@ -4169,6 +4223,15 @@ class AbletonMCP(ControlSurface):
             raise ValueError("%r is not a rack" % device.name)
         return track, device, path
 
+    @staticmethod
+    def _is_drum_rack(rack):
+        """Live raises (not False) when has_drum_pads is read on a non-drum rack
+        (measured 2026-11-20: "Only drum racks can have pads!")."""
+        try:
+            return bool(rack.has_drum_pads)
+        except Exception:
+            return False
+
     def _chain_state(self, chain, index, drum=False):
         c = {"index": index}
         self._read(c, "name", lambda: chain.name)
@@ -4205,7 +4268,7 @@ class AbletonMCP(ControlSurface):
             m["mapped"] = not str(m.get("name", "")).startswith("Macro ")
             macros.append(m)
         out["macros"] = macros
-        drum = bool(getattr(rack, "has_drum_pads", False))
+        drum = self._is_drum_rack(rack)
         out["is_drum_rack"] = drum
         out["chains"] = [self._chain_state(c, i, drum) for i, c in enumerate(rack.chains)]
         out["return_chains"] = [self._chain_state(c, i) for i, c in enumerate(getattr(rack, "return_chains", []) or [])]
@@ -4274,7 +4337,7 @@ class AbletonMCP(ControlSurface):
     def _cmd_insert_rack_chain(self, params):
         """Add an empty chain to a rack at index (default: the end). Live 12.3+."""
         track, rack, path = self._rack(params)
-        if getattr(rack, "has_drum_pads", False):
+        if self._is_drum_rack(rack):
             raise ValueError("Drum Rack chains belong to pads; use copy_drum_pad or load onto a pad")
         count = len(list(rack.chains))
         index = params.get("index")
@@ -4305,7 +4368,7 @@ class AbletonMCP(ControlSurface):
         if c < 0 or c >= len(chains):
             raise IndexError("chain %d out of range (%d chains)" % (c, len(chains)))
         chain = chains[c]
-        drum = bool(getattr(rack, "has_drum_pads", False))
+        drum = self._is_drum_rack(rack)
         before = self._chain_state(chain, c, drum)
         writes = []
         if params.get("name") is not None:
@@ -4349,7 +4412,7 @@ class AbletonMCP(ControlSurface):
 
     def _drum_rack(self, params):
         track, rack, path = self._rack(params)
-        if not getattr(rack, "has_drum_pads", False):
+        if not self._is_drum_rack(rack):
             raise ValueError("%r is not a Drum Rack" % rack.name)
         return track, rack, path
 
@@ -4377,16 +4440,31 @@ class AbletonMCP(ControlSurface):
         pad = list(rack.drum_pads)[n]
         writes = []
         if params.get("name") is not None:
-            writes.append(("name", str(params["name"])))
+            # DrumPad.name has no setter (measured 2026-11-20); a pad shows its
+            # first chain's name, so rename that.
+            chains = list(pad.chains)
+            if not chains:
+                raise ValueError("pad %d is empty; an empty pad has no name to set" % n)
+            writes.append((chains[0], "name", str(params["name"])))
         for key in ("mute", "solo"):
             if params.get(key) is not None:
-                writes.append((key, bool(params[key])))
+                if not list(pad.chains):
+                    # Live ignores mute/solo on an empty pad (measured 2026-11-20).
+                    raise ValueError("pad %d is empty; there is nothing to %s" % (n, key))
+                writes.append((pad, key, bool(params[key])))
         if not writes:
             raise ValueError("Nothing to set: give name, mute or solo")
-        for key, v in writes:
-            setattr(pad, key, v)
-        return Later(lambda: {"track": track.name, "device": path, "pad": n, "name": pad.name,
-                              "mute": bool(pad.mute), "solo": bool(pad.solo)})
+        for obj, key, v in writes:
+            setattr(obj, key, v)
+
+        def report():
+            out = {"track": track.name, "device": path, "pad": n, "name": pad.name,
+                   "mute": bool(pad.mute), "solo": bool(pad.solo)}
+            off = [k for o, k, v in writes if o is pad and out[k] != v]
+            if off:
+                out["warning"] = "Live did not apply %s" % ", ".join(off)
+            return out
+        return Later(report)
 
     def _cmd_copy_drum_pad(self, params):
         """Copy everything on one Drum Rack pad to another. Refuses to

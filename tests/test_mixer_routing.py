@@ -197,6 +197,30 @@ def test_exclusive_solo_unsolos_the_others(script, song):
     assert sorted(r["notes"]) == ["unsoloed 2-MIDI", "unsoloed A-Reverb"]
 
 
+class Wrapper(object):
+    """Live returns a new Python wrapper for a track on every read; delegate to the real one."""
+
+    def __init__(self, target):
+        object.__setattr__(self, "_t", target)
+
+    def __getattr__(self, k):
+        return getattr(self._t, k)
+
+    def __setattr__(self, k, v):
+        setattr(self._t, k, v)
+
+
+def test_exclusive_solo_keeps_the_target_soloed_with_fresh_wrappers(script, song):
+    # 2026-11-20 live bug: an identity check unsoloed the track that was just soloed.
+    real = list(song.tracks)
+    type(song).tracks = property(lambda s: [Wrapper(t) for t in real], lambda s, v: None)
+    try:
+        r = ok(script, "set_track_mixer", track_index=0, solo=True, exclusive_solo=True)
+        assert real[0].solo is True and r["notes"] == []
+    finally:
+        del type(song).tracks
+
+
 def test_master_has_no_mute_or_sends(script, song):
     assert "no mute" in err(script, "set_track_mixer", track_type="master", mute=True)
     assert "no sends" in err(script, "set_track_mixer", track_type="master", sends={"A": 0.1})
@@ -296,3 +320,17 @@ def test_re_enable_automation_one_track(script, song):
     r = ok(script, "re_enable_automation", track_index=0)
     assert r["re_enabled"] == ["0:Auto Filter / Cutoff"]
     assert song.tracks[1].mixer_device.volume.automation_state == 2  # other track untouched
+
+
+def test_silenced_by_solo_is_derived_not_read(script_module):
+    # muted_via_solo stayed False through the API while another track was soloed (2026-11-20).
+    song = FakeSong(track_names=("Drums", "Kick", "Bass", "Gtr"))
+    drums, kick, bass, gtr = song.tracks
+    drums.is_foldable = True
+    kick.is_grouped, kick.group_track = True, drums
+    kick._solo = True
+    for t in song.tracks:
+        t.muted_via_solo = False  # what Live reported
+    st = make_script(script_module, song)._process_command({"type": "get_mixer_state", "params": {}})["result"]
+    assert st["silenced_by_solo"] == ["Bass", "Gtr"]  # the group holding the soloed track plays
+    assert [t["silenced_by_solo"] for t in st["tracks"]] == [False, False, True, True]

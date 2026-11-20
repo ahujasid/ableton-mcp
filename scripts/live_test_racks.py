@@ -51,8 +51,12 @@ def body(m, args):
     check("is a drum rack, no loaded pads", bool(rack) and rack["is_drum_rack"] and rack["drum_pads"] == [], rack)
     expect_error("empty source pad refused",
                  lambda: m.tool("copy_drum_pad", track_index=t, device="0", source="C1", destination="D1"), "empty")
-    r = step("rename pad C1", lambda: m.tool("set_drum_pad", track_index=t, device="0", pad="C1", name="mcp kick"))
-    check("pad 36 renamed", bool(r) and r["pad"] == 36, r)
+    # DrumPad.name is read-only; a pad shows its first chain's name, so an empty pad can't be named.
+    expect_error("naming an empty pad refused",
+                 lambda: m.tool("set_drum_pad", track_index=t, device="0", pad="C1", name="mcp kick"), "empty")
+    # Live ignores mute on an empty pad, so the tool refuses it.
+    expect_error("muting an empty pad refused",
+                 lambda: m.tool("set_drum_pad", track_index=t, device="0", pad="C1", mute=True), "empty")
     expect_error("unknown device name refused",
                  lambda: m.tool("insert_device", track_index=t, device_name="No Such Device"), "")
 
@@ -92,8 +96,8 @@ def body(m, args):
         r = step("add a macro", lambda: m.tool("rack_macros", track_index=a, device="0", action="add_macro"))
         step("store a variation", lambda: m.tool("rack_macros", track_index=a, device="0",
                                                  action="store_variation"))
-        rk = m.tool("get_rack", track_index=a, device="0")
-        check("one variation stored", rk["variation_count"] >= 1, rk)
+        rk = step("get_rack on the effect rack", lambda: m.tool("get_rack", track_index=a, device="0"))
+        check("one variation stored", bool(rk) and rk["variation_count"] >= 1, rk)
         step("delete it", lambda: m.tool("delete_rack_variation", track_index=a, device="0", variation=0))
 
         print("\n[arrangement audio clip + warp markers]")

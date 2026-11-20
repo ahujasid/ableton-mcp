@@ -219,7 +219,8 @@ def body(m, args):
     step("load External Audio Effect", lambda: m.text("load_instrument_or_effect", track_index=a,
                                                        uri="query:AudioFx#External%20Audio%20Effect"))
     ch = m.tool("get_device_chain", **T)["devices"]
-    ext = next((d for d in ch if "External" in d["name"]), None)
+    # Live names the loaded device "Ext. Audio Effect" (2026-11-20).
+    ext = next((d for d in ch if "External" in d["name"] or d["name"].startswith("Ext. Audio")), None)
     if check("External Audio Effect loaded", ext is not None, [d["name"] for d in ch]):
         print("    class %s, params %s" % (ext.get("class_name"), [p["name"] for p in ext["parameters"]]))
         er = m.tool("get_device_routing", device=ext["path"], **T)

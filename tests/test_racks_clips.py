@@ -41,7 +41,7 @@ class ToolClip(FakeClip):
         d["start_time"], d["end_time"] = start, start + 4.0
         d["_notes"] = [Note(1, 60, 0.0), Note(2, 64, 1.0)]
         d["_markers"] = [Marker(0.0, 0.0), Marker(4.0, 2.0)]
-        d["sample_length"] = 10.0
+        d["sample_length"] = 480000  # samples: 10 s at 48 kHz
         d["_envs"] = {}
 
     def get_all_notes_extended(self):
@@ -96,11 +96,16 @@ class ToolClip(FakeClip):
 
 
 class Pad(object):
-    def __init__(self, note, h, loaded=False, name=None):
+    """Like Live: name is read-only and shows the first chain's name."""
+
+    def __init__(self, note, h, loaded=False):
         self.note, self._h = note, h
-        self.name = name or ("Kick" if loaded else "")
         self.mute = self.solo = False
-        self.chains = [FakeChain(self.name, [FakeDevice("Simpler", [], h)], h)] if loaded else []
+        self.chains = [FakeChain("Kick", [FakeDevice("Simpler", [], h)], h)] if loaded else []
+
+    @property
+    def name(self):
+        return self.chains[0].name if self.chains else ""
 
     def delete_all_chains(self):
         self._h.log("pad.delete_all_chains", self.note)
@@ -130,10 +135,16 @@ class Rack(FakeDevice):
         self.variation_count = 2
         self.selected_variation_index = 0
         self.has_macro_mappings = True
-        self.has_drum_pads = drum
+        self._drum = drum
         self.return_chains = []
         if drum:
             self.drum_pads = [Pad(n, h, loaded=(n == 36)) for n in range(128)]
+
+    @property
+    def has_drum_pads(self):
+        if not self._drum:
+            raise RuntimeError("Only drum racks can have pads!")  # what Live does
+        return True
 
     def add_macro(self):
         self._history.log("add_macro")
@@ -168,7 +179,6 @@ class Rack(FakeDevice):
     def copy_pad(self, src, dst):
         self._history.log("copy_pad", src, dst)
         self.drum_pads[dst].chains = list(self.drum_pads[src].chains)
-        self.drum_pads[dst].name = self.drum_pads[src].name
 
 
 class Plugin(FakeDevice):
@@ -368,6 +378,8 @@ def test_warp_markers(script, song):
     assert r["warp_markers"] == [{"beat_time": 0.0, "sample_time": 0.0}, {"beat_time": 4.0, "sample_time": 2.0}]
     r = ok(script, "edit_warp_markers", track_index=0, clip_index=0, action="add", beat_time=2.0)
     assert len(r["after"]) == 3
+    assert script._sample_time_at(r["before"], 2.0) == 1.0  # halfway between (0, 0) and (4, 2)
+    assert script._sample_time_at(r["before"], 6.0) == 3.0  # last segment extended
     ok(script, "edit_warp_markers", track_index=0, clip_index=0, action="move", beat_time=2.0, distance=0.5)
     assert ("move_warp_marker", 2.0, 0.5) in song.history
     ok(script, "edit_warp_markers", track_index=0, clip_index=0, action="remove", beat_time=2.5)
@@ -376,7 +388,7 @@ def test_warp_markers(script, song):
 
 @pytest.mark.parametrize("kw, msg", [
     (dict(action="add", beat_time=4.0), "already a warp marker"),
-    (dict(action="add", beat_time=2.0, sample_time=99), "outside the sample"),
+    (dict(action="add", beat_time=2.0, sample_time=11), "outside the sample (0..10.000)"),
     (dict(action="remove", beat_time=3.0), "Markers at: 0, 4"),
     (dict(action="move", beat_time=4.0), "distance"),
 ])
@@ -531,6 +543,8 @@ def test_pad_names_and_numbers(script_module):
 def test_set_drum_pad(script, song):
     r = ok(script, "set_drum_pad", track_index=1, device="0", pad="C1", name="Big Kick", mute=True)
     assert r["name"] == "Big Kick" and r["mute"] is True
+    assert "empty" in err(script, "set_drum_pad", track_index=1, device="0", pad="D1", name="Snare")
+    assert "nothing to mute" in err(script, "set_drum_pad", track_index=1, device="0", pad="D1", mute=True)
     assert "not a Drum Rack" in err(script, "set_drum_pad", track_index=0, device="0", pad="C1", mute=True)
 
 

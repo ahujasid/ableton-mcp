@@ -85,4 +85,14 @@ They create `mcp-test-*` tracks, touch only those, and delete them (`--keep` lea
   replaced by a version that takes three ticks. A handler that needs the result returns `Later(fn)`
   (see `_run_extended`); the undo step spans the ticks.
 - Live 12's Utility calls its level parameter **Output** (Live 11: Gain).
+- Live returns a **new Python wrapper per read**: `song.tracks[0] is song.tracks[0]` is False. Compare
+  positions, never identity (exclusive solo unsoloed its own target until 2026-11-20).
+- `Track.muted_via_solo` stayed False 2 s after a solo (2026-11-20, screen locked); `silenced_by_solo`
+  is worked out from the solo states instead.
+- Reading `RackDevice.has_drum_pads` on a non-drum rack raises ("Only drum racks can have pads!");
+  use `_is_drum_rack`. `DrumPad.name` has no setter (a pad shows its first chain's name); Live ignores
+  mute on an empty pad.
+- `Live.Clip.WarpMarker(sample_time, beat_time)`: positional, both required; `sample_time` is seconds,
+  `Clip.sample_length` is samples.
+- Live names External Audio Effect "Ext. Audio Effect" in a device chain.
 - Not in the LOM: Track Delay, arrangement automation envelopes, Live's audio I/O preferences.
