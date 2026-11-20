@@ -6,7 +6,7 @@ set -u
 cd "$(dirname "$0")/.."
 mkdir -p /tmp/claude
 status=0
-for t in live_test.py live_test_mixer.py live_test_devices.py live_test_transport.py; do
+for t in live_test.py live_test_mixer.py live_test_devices.py live_test_transport.py live_test_racks.py; do
   log="/tmp/claude/ableton-${t%.py}.log"
   echo "##### $t (log: $log)"
   timeout 600 python3 "scripts/$t" > "$log" 2>&1

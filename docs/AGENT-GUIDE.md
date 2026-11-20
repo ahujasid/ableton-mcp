@@ -23,7 +23,8 @@ reshaping upstream's files, so upstream releases still merge cleanly.
    `True` if it writes (it then runs on Live's main thread). Resolve tracks with
    `self._resolve_track(params)` (`track_type` track/return/master). Read with `self._read(...)` so a
    property Live refuses becomes `null` + an `unavailable` reason, never a fake 0/False.
-2. Validate everything before the first write, so a refused call changes nothing.
+2. Validate everything before the first write, so a refused call changes nothing. Build the reply
+   (anything read back after the write) inside `return Later(lambda: ...)`, or it shows the old state.
 3. Tool in `extended_tools.register()`; writers also go in `MODIFYING_COMMANDS`.
 4. Tests: script side against `FakeSong` (assert `song.history == []` on refusals), tool side for the
    params forwarded. `test_every_remote_command_has_a_tool` keeps the two lists in step.
@@ -76,5 +77,12 @@ They create `mcp-test-*` tracks, touch only those, and delete them (`--keep` lea
 - Several clients may connect to port 9877 at once (one thread each).
 - `Track.solo` set through the API doesn't unsolo other tracks; `set_track_mixer(exclusive_solo=true)` does.
 - Volume is 0..1 (0.85 = 0 dB, 1.0 = +6 dB); `volume_db` bisects `str_for_value` to find the value.
-- Return and master tracks have no input routing or input meters; the master has no mute/solo/sends.
+- Return tracks DO have input routing in Live 12 (measured 2026-11-19: Ext. In 1/2, choices incl.
+  Resampling); the master has no mute/solo/sends.
+- **Writes land when the main-thread tick ends.** Reading a property back in the same tick returns the
+  old value: `Song.loop`, `Track.solo`, `current_song_time` (2026-11-19). Upstream's `create_locator`
+  moved the playhead and toggled the cue in one tick, so the cue landed at the old position; it is
+  replaced by a version that takes three ticks. A handler that needs the result returns `Later(fn)`
+  (see `_run_extended`); the undo step spans the ticks.
+- Live 12's Utility calls its level parameter **Output** (Live 11: Gain).
 - Not in the LOM: Track Delay, arrangement automation envelopes, Live's audio I/O preferences.

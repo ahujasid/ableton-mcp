@@ -37,25 +37,29 @@ DEFAULT_PATH = os.path.join(os.path.expanduser("~"), ".config", "ableton-mcp", "
 
 # What each category means, shown by get_safety_config and the CLI.
 CATEGORY_HELP = {
-    "delete": "delete tracks, return tracks, clips, devices, scenes and notes; clear a clip's notes",
+    "delete": "delete tracks, return tracks, clips, devices, scenes, notes, clip envelopes, rack variations, "
+              "drum pad contents; clear a clip's notes",
     "playback": "start/stop the transport, launch or stop clips and scenes (makes sound), jump to locators",
-    "mixer": "volume, pan, sends, mute, solo, arm; re-enable automation",
+    "mixer": "volume, pan, sends, mute, solo, arm; rack chain mixer and names; re-enable automation",
     "routing": "track and device (sidechain) input/output routing, monitoring",
-    "structure": "create, duplicate or move tracks, scenes and devices; load instruments/effects",
+    "structure": "create, duplicate or move tracks, scenes and devices; load or insert instruments/effects; "
+                 "add rack chains; copy drum pads",
     "edit": "everything else that changes the set: names, notes, clips, tempo, device parameters, colours",
     "undo": "undo and redo",
 }
 
 CATEGORIES = {
     "delete": {"delete_track", "delete_clip", "clear_notes_from_clip", "delete_device", "delete_scene",
-               "remove_notes"},
+               "remove_notes", "delete_arrangement_clip", "clear_clip_envelope", "delete_rack_variation",
+               "clear_drum_pad"},
     "playback": {"start_playback", "stop_playback", "fire_clip", "stop_clip", "fire_scene", "stop_all_clips",
                  "jump_to_cue"},
-    "mixer": {"set_track_mixer", "re_enable_automation"},
+    "mixer": {"set_track_mixer", "re_enable_automation", "set_rack_chain"},
     "routing": {"set_track_routing", "set_track_monitoring", "set_device_routing"},
     "structure": {"create_midi_track", "create_audio_track", "duplicate_track", "create_return_track",
                   "create_scene", "duplicate_scene", "move_device", "load_browser_item",
-                  "load_instrument_or_effect", "map_rack_magnitude", "duplicate_session_clip_to_arrangement"},
+                  "load_instrument_or_effect", "map_rack_magnitude", "duplicate_session_clip_to_arrangement",
+                  "insert_device", "insert_rack_chain", "copy_drum_pad"},
     "undo": {"undo", "redo"},
 }
 

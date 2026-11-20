@@ -114,8 +114,9 @@ def body(m, args):
     rr = step("return track routing", lambda: m.tool("get_track_routing", track_type="return", track_index=0))
     if rr:
         check("return output readable", rr.get("output_type") is not None, rr)
-        check("return input is null with a reason, not a value",
-              rr.get("input_type") is None and "input_type" in rr.get("unavailable", {}), rr)
+        # Live 12 gives return tracks input routing (measured 2026-11-19: Ext. In 1/2).
+        check("return input is a value or null with a reason",
+              rr.get("input_type") is not None or "input_type" in rr.get("unavailable", {}), rr)
     rm = step("master routing", lambda: m.tool("get_track_routing", track_type="master"))
     check("master output readable", bool(rm) and rm.get("output_type") is not None, rm)
 

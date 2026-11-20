@@ -88,7 +88,7 @@ def test_set_info_saved_set(script, song):
 def test_device_chain_lists_devices_with_display_and_automation(script):
     chain = ok(script, "get_device_chain", track_index=0)["devices"]
     assert [d["name"] for d in chain] == ["Utility", "Compressor", "FX Rack"]
-    gain = next(p for p in chain[0]["parameters"] if p["name"] == "Gain")
+    gain = next(p for p in chain[0]["parameters"] if p["name"] == "Output")
     assert gain["display"] == "-30.0 dB" and gain["automation"] == "playing"
     assert chain[0]["device_on"] is True and chain[0]["type"] == "audio_effect"
     on = chain[0]["parameters"][0]
@@ -117,14 +117,14 @@ def test_max_parameters_truncates(script):
 # ------------------------------------------------------------------ set parameter
 
 def test_set_parameter_by_display_value(script, song):
-    r = ok(script, "set_device_parameter_value", track_index=0, device="0", parameter="Gain",
+    r = ok(script, "set_device_parameter_value", track_index=0, device="0", parameter="Output",
            display_value="+15 dB")
     assert abs(song.tracks[0].devices[0].parameters[1].value - 15.0) < 0.06
     assert r["after"]["display"] == "15.0 dB" and r["before"]["display"] == "-30.0 dB"
 
 
 def test_setting_an_automated_parameter_says_it_overrides_automation(script):
-    r = ok(script, "set_device_parameter_value", track_index=0, device="0", parameter="gain", value=10.0)
+    r = ok(script, "set_device_parameter_value", track_index=0, device="0", parameter="output", value=10.0)
     assert r["notes"] and "overrides its automation" in r["notes"][0]
 
 
@@ -140,12 +140,12 @@ def test_set_quantized_parameter_by_item_name(script, song):
 
 
 @pytest.mark.parametrize("kwargs, msg", [
-    (dict(parameter="Gain", display_value="+50 dB"), "outside"),
-    (dict(parameter="Gain", value=99.0), "outside"),
+    (dict(parameter="Output", display_value="+50 dB"), "outside"),
+    (dict(parameter="Output", value=99.0), "outside"),
     (dict(parameter="Nope", value=1.0), "No parameter"),
-    (dict(parameter="Gain"), "exactly one"),
-    (dict(parameter="Gain", value=1.0, display_value="1 dB"), "exactly one"),
-    (dict(parameter="Gain", value=1.0, expected_device_name="EQ Eight"), "does not match"),
+    (dict(parameter="Output"), "exactly one"),
+    (dict(parameter="Output", value=1.0, display_value="1 dB"), "exactly one"),
+    (dict(parameter="Output", value=1.0, expected_device_name="EQ Eight"), "does not match"),
     (dict(parameter="Device On", display_value="Maybe"), "is not one of"),
 ])
 def test_bad_parameter_writes_change_nothing(script, song, kwargs, msg):
@@ -163,7 +163,7 @@ def test_bad_device_paths_are_refused(script, song, path, msg):
 def test_disabled_parameter_is_refused(script, song):
     song.tracks[0].devices[0].parameters[1].is_enabled = False
     assert "disabled" in err(script, "set_device_parameter_value", track_index=0, device="0",
-                             parameter="Gain", value=0.0)
+                             parameter="Output", value=0.0)
     assert song.history == []
 
 
@@ -227,7 +227,7 @@ def test_signal_path_reports_automated_gain_and_listeners(script, song):
     sp = ok(script, "get_signal_path", track_index=0)
     assert [d["name"] for d in sp["devices"]] == ["Utility", "Compressor", "FX Rack"]
     assert sp["devices"][0]["gain_parameters"][0]["display"] == "-30.0 dB"
-    assert any("Gain is automated" in p for p in sp["problems"])
+    assert any("Output is automated" in p for p in sp["problems"])
     assert sp["fed_to_tracks"] == [{"track_index": 2, "name": "3-Audio", "input_channel": "1/2"}]
     assert "Track Delay" in sp["not_visible_to_the_api"]
 

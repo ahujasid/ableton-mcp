@@ -61,12 +61,17 @@ EXTENDED_TOOLS = [
     "create_scene", "duplicate_scene", "delete_scene", "set_scene", "fire_scene", "set_track_look",
     "get_transport", "set_song_settings", "jump_to_cue", "stop_all_clips", "capture_midi", "get_notes",
     "modify_notes", "remove_notes", "edit_clip",
+    "create_arrangement_clip", "delete_arrangement_clip", "edit_notes", "get_warp_markers", "edit_warp_markers",
+    "get_clip_envelope", "set_clip_envelope", "clear_clip_envelope", "insert_device", "set_plugin_preset",
+    "get_rack", "rack_macros", "delete_rack_variation", "insert_rack_chain", "set_rack_chain", "set_drum_pad",
+    "copy_drum_pad", "clear_drum_pad", "get_simpler", "edit_simpler",
 ]
 
 
 def test_every_remote_command_has_a_tool():
     from live_fakes import load_script_module
-    assert set(load_script_module().EXTENDED_COMMANDS) == set(EXTENDED_TOOLS)
+    # create_locator replaces an upstream command; upstream's tool sends it.
+    assert set(load_script_module().EXTENDED_COMMANDS) - {"create_locator"} == set(EXTENDED_TOOLS)
 
 
 @pytest.mark.parametrize("tool", EXTENDED_TOOLS)

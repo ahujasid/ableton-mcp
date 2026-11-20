@@ -29,7 +29,10 @@ MODIFYING_COMMANDS = frozenset({
     "move_device", "set_clip_properties", "duplicate_track", "create_return_track", "create_scene",
     "duplicate_scene", "delete_scene", "set_scene", "fire_scene", "set_track_look",
     "set_song_settings", "jump_to_cue", "stop_all_clips", "capture_midi", "modify_notes", "remove_notes",
-    "edit_clip",
+    "edit_clip", "create_arrangement_clip", "delete_arrangement_clip", "edit_notes", "edit_warp_markers",
+    "set_clip_envelope", "clear_clip_envelope", "insert_device", "set_plugin_preset", "rack_macros",
+    "delete_rack_variation", "insert_rack_chain", "set_rack_chain", "set_drum_pad", "copy_drum_pad",
+    "clear_drum_pad", "edit_simpler", "create_locator",
 })
 
 def _call(get_connection: Callable[[], Any], command: str, params: dict | None, label: str) -> str:
@@ -897,3 +900,414 @@ def register(mcp: FastMCP, get_connection: Callable[[], Any]) -> None:
         else:
             params["clip_index"] = clip_index or 0
         return _call(get_connection, "edit_clip", params, "editing clip")
+
+    # --- 1.11.0 -------------------------------------------------------------
+
+    def _clip_ref(params: Dict[str, Any], clip_index: Optional[int], arrangement_index: Optional[int]) -> None:
+        if arrangement_index is not None:
+            params["arrangement_index"] = arrangement_index
+        else:
+            params["clip_index"] = clip_index or 0
+
+    def _put(params: Dict[str, Any], **kw: Any) -> Dict[str, Any]:
+        params.update({k: v for k, v in kw.items() if v is not None})
+        return params
+
+    @mcp.tool()
+    @telemetry_tool("insert_device")
+    def insert_device(
+        ctx: Context, track_index: int, device_name: str, index: Optional[int] = None,
+        chain: Optional[str] = None, track_type: str = "track", user_prompt: str = "",
+    ) -> str:
+        """Insert a native Live device by the name Live shows (Utility, EQ Eight,
+        Compressor, Glue Compressor, Reverb, Delay, Auto Filter, Drift, Wavetable,
+        Simpler, Drum Rack, Instrument Rack, Audio Effect Rack...). No browser
+        lookup needed. Plugins and Max for Live devices can't be inserted this
+        way (use load_instrument_or_effect). Needs Live 12.3+.
+
+        Parameters:
+        - track_index, track_type: track | return | master
+        - device_name: the device's name in Live
+        - index: position in the chain (default: the end). Live refuses impossible
+          spots (e.g. an audio effect before an instrument)
+        - chain: insert inside a rack chain instead, as 'rack/chain' ('0/1' =
+          device 0, chain 1)
+        - user_prompt: leave empty
+        """
+        params = _put({"track_index": track_index, "track_type": track_type, "device_name": device_name},
+                      index=index, chain=chain)
+        return _call(get_connection, "insert_device", params, "inserting device")
+
+    @mcp.tool()
+    @telemetry_tool("create_arrangement_clip")
+    def create_arrangement_clip(
+        ctx: Context, track_index: int, start_time: float, length: float = 4.0,
+        file_path: Optional[str] = None, name: Optional[str] = None, user_prompt: str = "",
+    ) -> str:
+        """Create a clip in the Arrangement: an empty MIDI clip (MIDI track,
+        start_time + length in beats) or an audio clip from a file (audio track,
+        file_path). Add notes with add_notes_to_clip-style tools via
+        arrangement_index, or get_notes/modify_notes.
+
+        Parameters:
+        - track_index, start_time (beats), length (beats, MIDI only)
+        - file_path: absolute Windows path for audio (Live runs under Wine:
+          Z:\\home\\jeremy\\...)
+        - name: optional clip name
+        - user_prompt: leave empty
+        """
+        params = _put({"track_index": track_index, "start_time": start_time, "length": length},
+                      file_path=file_path, name=name)
+        return _call(get_connection, "create_arrangement_clip", params, "creating arrangement clip")
+
+    @mcp.tool()
+    @telemetry_tool("delete_arrangement_clip")
+    def delete_arrangement_clip(
+        ctx: Context, track_index: int, arrangement_index: int, expected_clip_name: str, user_prompt: str = "",
+    ) -> str:
+        """Delete one Arrangement clip. Safety category: delete.
+
+        Parameters:
+        - track_index, arrangement_index (from get_arrangement_clips)
+        - expected_clip_name: the clip's current name; a mismatch refuses
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "delete_arrangement_clip",
+                     {"track_index": track_index, "arrangement_index": arrangement_index,
+                      "expected_clip_name": expected_clip_name}, "deleting arrangement clip")
+
+    @mcp.tool()
+    @telemetry_tool("edit_notes")
+    def edit_notes(
+        ctx: Context, track_index: int, action: str, clip_index: Optional[int] = None,
+        arrangement_index: Optional[int] = None, pitch: Optional[int] = None, grid: str = "1/16",
+        amount: float = 1.0, region_start: float = 0.0, region_length: Optional[float] = None,
+        destination_time: Optional[float] = None, transpose: Optional[int] = None,
+        note_ids: Optional[List[int]] = None, user_prompt: str = "",
+    ) -> str:
+        """MIDI note edits Live does in one step:
+        - quantize_pitch: quantize only the notes of one pitch (pitch, grid, amount)
+        - duplicate_region: copy notes in region_start..+region_length to
+          destination_time (optional pitch filter, transpose in semitones)
+        - duplicate_notes: copy the notes note_ids (from get_notes), optionally
+          to destination_time and transposed
+
+        Parameters:
+        - track_index plus clip_index (Session) or arrangement_index
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index, "action": action, "grid": grid, "amount": amount,
+                                  "region_start": region_start}
+        _clip_ref(params, clip_index, arrangement_index)
+        _put(params, pitch=pitch, region_length=region_length, destination_time=destination_time,
+             transpose=transpose, note_ids=note_ids)
+        return _call(get_connection, "edit_notes", params, "editing notes")
+
+    @mcp.tool()
+    @telemetry_tool("get_warp_markers")
+    def get_warp_markers(
+        ctx: Context, track_index: int, clip_index: Optional[int] = None, arrangement_index: Optional[int] = None,
+        user_prompt: str = "",
+    ) -> str:
+        """Warp markers of an audio clip (beat_time in beats, sample_time in
+        seconds into the file), plus warping and sample length.
+
+        Parameters:
+        - track_index plus clip_index (Session) or arrangement_index
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index}
+        _clip_ref(params, clip_index, arrangement_index)
+        return _call(get_connection, "get_warp_markers", params, "getting warp markers")
+
+    @mcp.tool()
+    @telemetry_tool("edit_warp_markers")
+    def edit_warp_markers(
+        ctx: Context, track_index: int, action: str, beat_time: float, clip_index: Optional[int] = None,
+        arrangement_index: Optional[int] = None, sample_time: Optional[float] = None,
+        distance: Optional[float] = None, user_prompt: str = "",
+    ) -> str:
+        """Add, move or remove one warp marker on a warped audio clip.
+        - add: at beat_time; with sample_time (seconds) pins that point of the
+          audio to the beat, without it keeps the current timing
+        - move: the marker at beat_time by distance beats
+        - remove: the marker at beat_time
+
+        Parameters:
+        - track_index plus clip_index (Session) or arrangement_index
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index, "action": action, "beat_time": beat_time}
+        _clip_ref(params, clip_index, arrangement_index)
+        _put(params, sample_time=sample_time, distance=distance)
+        return _call(get_connection, "edit_warp_markers", params, "editing warp markers")
+
+    @mcp.tool()
+    @telemetry_tool("get_clip_envelope")
+    def get_clip_envelope(
+        ctx: Context, track_index: int, clip_index: Optional[int] = None, arrangement_index: Optional[int] = None,
+        mixer: Optional[str] = None, device: Optional[str] = None, parameter: Optional[str] = None,
+        points: int = 17, user_prompt: str = "",
+    ) -> str:
+        """Read a clip's automation envelope for one parameter, sampled at
+        `points` evenly spaced times across the loop, with the displayed value.
+
+        Parameters:
+        - track_index plus clip_index (Session) or arrangement_index
+        - mixer: volume, pan or 'send A'; or device (index or rack path) + parameter (name or index)
+        - points: 2..256
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index, "points": points}
+        _clip_ref(params, clip_index, arrangement_index)
+        _put(params, mixer=mixer, device=device, parameter=parameter)
+        return _call(get_connection, "get_clip_envelope", params, "reading clip envelope")
+
+    @mcp.tool()
+    @telemetry_tool("set_clip_envelope")
+    def set_clip_envelope(
+        ctx: Context, track_index: int, clip_index: int, points: List[Dict[str, Any]],
+        mixer: Optional[str] = None, device: Optional[str] = None, parameter: Optional[str] = None,
+        clear_first: bool = False, user_prompt: str = "",
+    ) -> str:
+        """Write automation steps into a Session clip's envelope (filter sweeps,
+        volume rides, send throws). Each point holds its value until the next
+        point (or for `length` beats).
+
+        Parameters:
+        - track_index, clip_index (Session clips only)
+        - mixer: volume, pan or 'send A'; or device + parameter
+        - points: [{"time": beats, "value": raw} or {"time": 0, "display": "-12 dB"}, optional "length"]
+        - clear_first: remove the existing envelope for this parameter first
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index, "clip_index": clip_index, "points": points,
+                                  "clear_first": clear_first}
+        _put(params, mixer=mixer, device=device, parameter=parameter)
+        return _call(get_connection, "set_clip_envelope", params, "writing clip envelope")
+
+    @mcp.tool()
+    @telemetry_tool("clear_clip_envelope")
+    def clear_clip_envelope(
+        ctx: Context, track_index: int, clip_index: Optional[int] = None, arrangement_index: Optional[int] = None,
+        mixer: Optional[str] = None, device: Optional[str] = None, parameter: Optional[str] = None,
+        all: bool = False, user_prompt: str = "",
+    ) -> str:
+        """Remove a clip's envelope for one parameter, or every envelope in the
+        clip with all=true. Safety category: delete.
+
+        Parameters:
+        - track_index plus clip_index (Session) or arrangement_index
+        - mixer: volume, pan or 'send A'; or device + parameter; or all=true
+        - user_prompt: leave empty
+        """
+        params: Dict[str, Any] = {"track_index": track_index, "all": all}
+        _clip_ref(params, clip_index, arrangement_index)
+        _put(params, mixer=mixer, device=device, parameter=parameter)
+        return _call(get_connection, "clear_clip_envelope", params, "clearing clip envelope")
+
+    @mcp.tool()
+    @telemetry_tool("set_plugin_preset")
+    def set_plugin_preset(
+        ctx: Context, track_index: int, device: str, preset: str, track_type: str = "track",
+        user_prompt: str = "",
+    ) -> str:
+        """Switch a VST/AU plugin to one of its own presets, by index or name.
+        get_device_chain shows each plugin's current preset and preset_count.
+
+        Parameters:
+        - track_index, track_type, device (index or rack path)
+        - preset: index or exact name (case-insensitive)
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "set_plugin_preset",
+                     {"track_index": track_index, "track_type": track_type, "device": device, "preset": preset},
+                     "setting plugin preset")
+
+    @mcp.tool()
+    @telemetry_tool("get_rack")
+    def get_rack(
+        ctx: Context, track_index: int, device: str, track_type: str = "track", include_empty_pads: bool = False,
+        user_prompt: str = "",
+    ) -> str:
+        """Inspect an Instrument/Audio/MIDI/Drum Rack: macros (name, displayed
+        value, mapped or not), stored variations, chains with volume/pan/mute/solo
+        and their devices, return chains, and for a Drum Rack its pads (note,
+        name, devices). Pad notes: C1 = 36.
+
+        Parameters:
+        - track_index, track_type, device (index or rack path such as '0/1/0')
+        - include_empty_pads: list all 128 pads, not just loaded ones
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "get_rack",
+                     {"track_index": track_index, "track_type": track_type, "device": device,
+                      "include_empty_pads": include_empty_pads}, "inspecting rack")
+
+    @mcp.tool()
+    @telemetry_tool("rack_macros")
+    def rack_macros(
+        ctx: Context, track_index: int, device: str, action: str, variation: Optional[int] = None,
+        track_type: str = "track", user_prompt: str = "",
+    ) -> str:
+        """Rack macro actions: add_macro, remove_macro (visible macro count),
+        randomize (macro values), store_variation (snapshot current macros),
+        recall_variation (variation index), recall_last_variation. Set a macro's
+        value with set_device_parameter_value (macros are the rack's parameters 1..16).
+
+        Parameters:
+        - track_index, track_type, device, action, variation (recall_variation)
+        - user_prompt: leave empty
+        """
+        params = _put({"track_index": track_index, "track_type": track_type, "device": device, "action": action},
+                      variation=variation)
+        return _call(get_connection, "rack_macros", params, "changing rack macros")
+
+    @mcp.tool()
+    @telemetry_tool("delete_rack_variation")
+    def delete_rack_variation(
+        ctx: Context, track_index: int, device: str, variation: int, track_type: str = "track",
+        user_prompt: str = "",
+    ) -> str:
+        """Delete one stored macro variation. Safety category: delete.
+
+        Parameters:
+        - track_index, track_type, device, variation (index)
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "delete_rack_variation",
+                     {"track_index": track_index, "track_type": track_type, "device": device,
+                      "variation": variation}, "deleting rack variation")
+
+    @mcp.tool()
+    @telemetry_tool("insert_rack_chain")
+    def insert_rack_chain(
+        ctx: Context, track_index: int, device: str, index: Optional[int] = None, name: Optional[str] = None,
+        track_type: str = "track", user_prompt: str = "",
+    ) -> str:
+        """Add an empty chain to an Instrument/Audio/MIDI Rack (not Drum Racks),
+        e.g. to build parallel processing. Then fill it with insert_device
+        chain='<rack>/<chain>'. Needs Live 12.3+.
+
+        Parameters:
+        - track_index, track_type, device, index (default: the end), name
+        - user_prompt: leave empty
+        """
+        params = _put({"track_index": track_index, "track_type": track_type, "device": device},
+                      index=index, name=name)
+        return _call(get_connection, "insert_rack_chain", params, "inserting rack chain")
+
+    @mcp.tool()
+    @telemetry_tool("set_rack_chain")
+    def set_rack_chain(
+        ctx: Context, track_index: int, device: str, chain: int, name: Optional[str] = None,
+        mute: Optional[bool] = None, solo: Optional[bool] = None, volume_db: Optional[float] = None,
+        pan: Optional[float] = None, color_index: Optional[int] = None, in_note: Optional[int] = None,
+        out_note: Optional[int] = None, choke_group: Optional[int] = None, track_type: str = "track",
+        user_prompt: str = "",
+    ) -> str:
+        """Set a rack chain's name, mute, solo, volume (dB), pan (-1..1), color;
+        on Drum Rack chains also in_note/out_note (0..127) and choke_group (0..16).
+        Safety category: mixer.
+
+        Parameters:
+        - track_index, track_type, device, chain (index), then any fields to change
+        - user_prompt: leave empty
+        """
+        params = _put({"track_index": track_index, "track_type": track_type, "device": device, "chain": chain},
+                      name=name, mute=mute, solo=solo, volume_db=volume_db, pan=pan, color_index=color_index,
+                      in_note=in_note, out_note=out_note, choke_group=choke_group)
+        return _call(get_connection, "set_rack_chain", params, "setting rack chain")
+
+    @mcp.tool()
+    @telemetry_tool("set_drum_pad")
+    def set_drum_pad(
+        ctx: Context, track_index: int, device: str, pad: str, name: Optional[str] = None,
+        mute: Optional[bool] = None, solo: Optional[bool] = None, track_type: str = "track",
+        user_prompt: str = "",
+    ) -> str:
+        """Rename, mute or solo one Drum Rack pad.
+
+        Parameters:
+        - track_index, track_type, device (the Drum Rack)
+        - pad: MIDI note (36) or name (C1; Live's C1 = 36)
+        - user_prompt: leave empty
+        """
+        params = _put({"track_index": track_index, "track_type": track_type, "device": device, "pad": pad},
+                      name=name, mute=mute, solo=solo)
+        return _call(get_connection, "set_drum_pad", params, "setting drum pad")
+
+    @mcp.tool()
+    @telemetry_tool("copy_drum_pad")
+    def copy_drum_pad(
+        ctx: Context, track_index: int, device: str, source: str, destination: str, overwrite: bool = False,
+        track_type: str = "track", user_prompt: str = "",
+    ) -> str:
+        """Copy a Drum Rack pad (sample, devices, settings) to another pad, e.g.
+        to layer or make a variation of a kick. Refuses to replace a loaded pad
+        unless overwrite=true.
+
+        Parameters:
+        - track_index, track_type, device, source and destination (note 36 or name C1)
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "copy_drum_pad",
+                     {"track_index": track_index, "track_type": track_type, "device": device, "source": source,
+                      "destination": destination, "overwrite": overwrite}, "copying drum pad")
+
+    @mcp.tool()
+    @telemetry_tool("clear_drum_pad")
+    def clear_drum_pad(
+        ctx: Context, track_index: int, device: str, pad: str, expected_pad_name: str, track_type: str = "track",
+        user_prompt: str = "",
+    ) -> str:
+        """Delete everything on one Drum Rack pad. Safety category: delete.
+
+        Parameters:
+        - track_index, track_type, device, pad (note or name)
+        - expected_pad_name: the pad's current name; a mismatch refuses
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "clear_drum_pad",
+                     {"track_index": track_index, "track_type": track_type, "device": device, "pad": pad,
+                      "expected_pad_name": expected_pad_name}, "clearing drum pad")
+
+    @mcp.tool()
+    @telemetry_tool("get_simpler")
+    def get_simpler(ctx: Context, track_index: int, device: str, track_type: str = "track",
+                    user_prompt: str = "") -> str:
+        """Simpler's playback mode (Classic/One-Shot/Slicing), voices and its
+        sample: file, start/end markers and slices (in samples), warping,
+        slicing style.
+
+        Parameters:
+        - track_index, track_type, device (index or rack path)
+        - user_prompt: leave empty
+        """
+        return _call(get_connection, "get_simpler",
+                     {"track_index": track_index, "track_type": track_type, "device": device}, "reading Simpler")
+
+    @mcp.tool()
+    @telemetry_tool("edit_simpler")
+    def edit_simpler(
+        ctx: Context, track_index: int, device: str, action: str, playback_mode: Optional[str] = None,
+        slicing_style: Optional[str] = None, voices: Optional[int] = None, retrigger: Optional[bool] = None,
+        beats: Optional[int] = None, file_path: Optional[str] = None, time: Optional[int] = None,
+        track_type: str = "track", user_prompt: str = "",
+    ) -> str:
+        """Simpler actions:
+        - set: playback_mode (Classic, One-Shot, Slicing), slicing_style
+          (Transient, Beat, Region, Manual), voices (1..32), retrigger
+        - crop, reverse: the sample between the markers
+        - warp_as (beats), warp_double, warp_half
+        - replace_sample: file_path (Windows path under Wine, Z:\\home\\...)
+        - insert_slice / remove_slice: time in samples; clear_slices, reset_slices
+
+        Parameters:
+        - track_index, track_type, device, action, then that action's fields
+        - user_prompt: leave empty
+        """
+        params = _put({"track_index": track_index, "track_type": track_type, "device": device, "action": action},
+                      playback_mode=playback_mode, slicing_style=slicing_style, voices=voices, retrigger=retrigger,
+                      beats=beats, file_path=file_path, time=time)
+        return _call(get_connection, "edit_simpler", params, "editing Simpler")

@@ -88,23 +88,23 @@ def body(m, args):
     if chain and len(chain["devices"]) >= 2:
         u = chain["devices"][0]
         check("device_on read", u.get("device_on") is True, u)
-        g = param(u, "Gain")
-        print("    Utility Gain: %s (raw %s, %s..%s)" % (g["display"], g["value"], g["min"], g["max"]))
-        check("Gain has dB display text", "dB" in g["display"], g)
+        g = param(u, "Output")
+        print("    Utility Output: %s (raw %s, %s..%s)" % (g["display"], g["value"], g["min"], g["max"]))
+        check("Output has dB display text", "dB" in g["display"], g)
         check("automation state read", g.get("automation") == "none", g)
         on = u["parameters"][0]
         check("parameter 0 is Device On with items", on["name"] == "Device On" and on.get("value_items"), on)
 
-    r = step("Gain to +15 dB by display", lambda: m.tool("set_device_parameter_value", device="0",
-                                                          parameter="Gain", display_value="+15 dB", **T))
-    check("Gain shows 15.0 dB", bool(r) and r["after"]["display"].startswith("15.0"), r and r["after"])
-    r = step("Gain to -6 dB", lambda: m.tool("set_device_parameter_value", device="0", parameter="Gain",
+    r = step("Output to +15 dB by display", lambda: m.tool("set_device_parameter_value", device="0",
+                                                          parameter="Output", display_value="+15 dB", **T))
+    check("Output shows 15.0 dB", bool(r) and r["after"]["display"].startswith("15.0"), r and r["after"])
+    r = step("Output to -6 dB", lambda: m.tool("set_device_parameter_value", device="0", parameter="Output",
                                                display_value="-6 dB", expected_device_name="Utility", **T))
-    check("Gain shows -6.0 dB", bool(r) and r["after"]["display"].startswith("-6.0"), r and r["after"])
+    check("Output shows -6.0 dB", bool(r) and r["after"]["display"].startswith("-6.0"), r and r["after"])
     step("undo the -6 dB", lambda: m.tool("undo"))
     u = m.tool("get_device_chain", **T)["devices"][0]
-    check("undo put Gain back to 15.0 dB", param(u, "Gain")["display"].startswith("15.0"), param(u, "Gain"))
-    expect_error("+99 dB refused", lambda: m.tool("set_device_parameter_value", device="0", parameter="Gain",
+    check("undo put Output back to 15.0 dB", param(u, "Output")["display"].startswith("15.0"), param(u, "Output"))
+    expect_error("+99 dB refused", lambda: m.tool("set_device_parameter_value", device="0", parameter="Output",
                                                   display_value="+99 dB", **T), "outside")
     expect_error("unknown parameter lists names", lambda: m.tool("set_device_parameter_value", device="0",
                                                                  parameter="Nope", value=0, **T), "Parameters:")
@@ -115,7 +115,7 @@ def body(m, args):
     if sp:
         check("problem: Utility switched off", any("'Utility' is switched off" in p for p in sp["problems"]),
               sp["problems"])
-        check("gain parameters listed", any(p["name"] == "Gain" for p in sp["devices"][0]["gain_parameters"]))
+        check("gain parameters listed", any(p["name"] == "Output" for p in sp["devices"][0]["gain_parameters"]))
         check("meters sampled", sp.get("meters", {}).get("samples", 0) >= 2, sp.get("meters"))
         print("    problems: %s" % sp["problems"])
     step("Utility on", lambda: m.tool("set_device_active", device="0", active=True, **T))

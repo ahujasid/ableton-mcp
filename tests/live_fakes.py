@@ -309,8 +309,8 @@ class FakeChain(object):
 
 
 def utility(history, gain=0.0, automated=0):
-    """Live's Utility: Gain shown in dB over a -35..35 range (raw = dB here)."""
-    g = FakeParameter("Gain", gain, -35.0, 35.0, history=history, kind="db_linear")
+    """Live 12 Utility: Output (Live 11: Gain) shown in dB over a -35..35 range (raw = dB here)."""
+    g = FakeParameter("Output", gain, -35.0, 35.0, history=history, kind="db_linear")
     g.automation_state = automated
     return FakeDevice("Utility", [g, FakeParameter("Mono", 0.0, 0.0, 1.0, history=history)],
                       history, class_name="StereoGain")
