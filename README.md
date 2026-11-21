@@ -294,6 +294,17 @@ The system uses a simple JSON-based protocol over TCP sockets:
 - Creating complex musical arrangements might need to be broken down into smaller steps
 - The tool is designed to work with Ableton's default devices and browser items
 - Always save your work before extensive experimentation
+- **Live 13 Step Sequencer clips are not supported.** The Live API accepts notes written into a Step Sequencer clip but never shows or plays them, and it does not expose the clip's steps. `add_notes_to_clip` and `clear_notes_from_clip` therefore refuse any clip whose `midi_clip_type` is not 0 (convert the clip to MIDI first). `get_clip_notes`, `get_track_info` and session snapshots report `midi_clip_type`; for such clips `notes_may_not_match_ui` is `true`.
+
+### Changelog
+
+**Remote Script 1.8.0** (update the Remote Script together with the server)
+
+- `add_notes_to_clip` writes through `clip.add_new_notes()` (Live 11+), so `probability`, `velocity_deviation` and `release_velocity` are stored instead of being dropped. Defaults: `probability` 1.0, `velocity_deviation` 0.0, `release_velocity` 64. Older Live versions fall back to `set_notes()`; the result reports `api_used` and lists any fields that could not be stored.
+- Notes are validated before anything is written (pitch 0–127, velocity 1–127, probability 0–1, velocity_deviation −127–127, release_velocity 0–127, duration > 0). Invalid values fail the call; nothing is clamped.
+- Writing to or clearing a Live 13 Step Sequencer clip (`midi_clip_type != 0`) fails with an error and leaves the clip unchanged. The check fails closed: only a missing `midi_clip_type` property (Live ≤ 12) counts as a normal clip; if the property exists but cannot be read or holds an unexpected value, writes are refused and readers report `midi_clip_type_error` with `notes_may_not_match_ui: true`.
+- Readers return `midi_clip_type` and `notes_may_not_match_ui`.
+- `add_notes_to_clip` and `clear_notes_from_clip` report failures as tool errors instead of success text, and an error reply from the Remote Script no longer drops the connection.
 
 ---
 
