@@ -175,11 +175,14 @@ def test_clear_output_reports_count_and_name(fake_conn):
     assert "Fred Pattern" in out
 
 
-def test_clear_connection_error_is_reported(fake_conn):
+def test_clear_connection_error_is_a_tool_error(fake_conn):
+    """Failures surface as real tool errors (isError), not as success text."""
+    from mcp.server.fastmcp.exceptions import ToolError
     fake_conn(raise_exc=Exception("boom"))
-    out = call(server.clear_notes_from_clip, None, 0, 0)
-    assert out.startswith("Error clearing notes from clip:")
-    assert "boom" in out
+    with pytest.raises(ToolError) as exc:
+        call(server.clear_notes_from_clip, None, 0, 0)
+    assert str(exc.value).startswith("Error clearing notes from clip:")
+    assert "boom" in str(exc.value)
 
 
 def test_true_replace_loop_read_clear_add(fake_conn):
