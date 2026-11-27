@@ -1,5 +1,6 @@
 # ableton_mcp_server.py
 from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.fastmcp.exceptions import ToolError
 import socket
 import json
 import logging
@@ -445,6 +446,14 @@ def get_track_info(ctx: Context, track_index: int, user_prompt: str = "") -> str
     """
     Get detailed information about a specific track in Ableton.
 
+    Each clip slot's clip includes midi_clip_type (Live 13+): 0 = normal MIDI
+    clip (piano roll), 1 = Step Sequencer clip, null = not a MIDI clip or a
+    Live version without the attribute. Check it before writing notes:
+    add_notes_to_clip and clear_notes_from_clip refuse any clip whose
+    midi_clip_type is not 0/null. If the type exists but cannot be read,
+    midi_clip_type is null and midi_clip_type_error explains why; writes to
+    such a clip are refused too.
+
     Parameters:
     - track_index: The index of the track to get information about
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
@@ -456,6 +465,7 @@ def get_track_info(ctx: Context, track_index: int, user_prompt: str = "") -> str
     except Exception as e:
         logger.error(f"Error getting track info from Ableton: {str(e)}")
         return f"Error getting track info: {str(e)}"
+
 
 
 @mcp.tool()
@@ -470,7 +480,17 @@ def get_clip_notes(
     """
     Read all MIDI notes from a Session-view clip.
 
-    Returns pitch, start_time, duration, velocity, mute (and extended fields when available).
+    Returns pitch, start_time, duration, velocity, mute, plus probability,
+    velocity_deviation, release_velocity and note_id when Live provides them.
+    The note dicts can be passed straight back to add_notes_to_clip.
+
+    Also returns midi_clip_type (Live 13+; null on older Live) and
+    notes_may_not_match_ui. When notes_may_not_match_ui is true (e.g. a Live 13
+    Step Sequencer clip) the returned notes are NOT what the user sees or hears:
+    the API cannot read the clip's steps, and any notes listed were stored
+    invisibly. Do not reason about the clip's musical content from them.
+    It is also true, with midi_clip_type_error set, when the clip type could
+    not be determined.
 
     Parameters:
     - track_index: Track that owns the clip
@@ -492,6 +512,7 @@ def get_clip_notes(
     except Exception as e:
         logger.error(f"Error getting clip notes: {str(e)}")
         return f"Error getting clip notes: {str(e)}"
+
 
 
 @mcp.tool()
@@ -736,12 +757,34 @@ def add_notes_to_clip(
     user_prompt: str = ""
 ) -> str:
     """
-    Add MIDI notes to a clip.
+    Add MIDI notes to a Session clip. Writes are additive; use
+    clear_notes_from_clip first to replace the clip's contents.
+
+    Note fields (only pitch is required; defaults in brackets):
+    - pitch: integer 0..127
+    - start_time: beats from clip start [0.0]
+    - duration: beats, > 0 [0.25]
+    - velocity: 0..127 [100]
+    - mute: boolean [false]
+    - probability: 0.0..1.0 [1.0]
+    - velocity_deviation: -127..127 [0.0]
+    - release_velocity: 0..127 [64]
+    Other keys (e.g. note_id from get_clip_notes) are ignored. Out-of-range
+    values fail the whole call; nothing is clamped and nothing is written.
+
+    Fails with an error (and leaves the clip unchanged) when the clip is a
+    Live 13 Step Sequencer clip (midi_clip_type != 0), or when its type cannot
+    be determined: Live accepts such notes but never shows or plays them. The user must convert the clip to MIDI
+    first. get_track_info shows each clip's midi_clip_type.
+
+    The result reports api_used: "add_new_notes" (all fields stored) or
+    "set_notes" (old Live; probability/velocity_deviation/release_velocity
+    are dropped and listed as ignored).
 
     Parameters:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
-    - notes: List of note dictionaries, each with pitch, start_time, duration, velocity, and mute
+    - notes: List of note dictionaries as described above
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -751,10 +794,30 @@ def add_notes_to_clip(
             "clip_index": clip_index,
             "notes": notes
         })
-        return f"Added {len(notes)} notes to clip at track {track_index}, slot {clip_index}"
     except Exception as e:
         logger.error(f"Error adding notes to clip: {str(e)}")
-        return f"Error adding notes to clip: {str(e)}"
+        raise ToolError(f"Error adding notes to clip: {str(e)}") from e
+    return _format_add_notes_result(result, notes, track_index, clip_index)
+
+
+def _format_add_notes_result(result, notes, track_index: int, clip_index: int) -> str:
+    result = result if isinstance(result, dict) else {}
+    count = result.get("note_count", len(notes))
+    api_used = result.get("api_used", "unknown")
+    midi_clip_type = result.get("midi_clip_type")
+    text = (
+        f"Added {count} note(s) to clip at track {track_index}, slot {clip_index} "
+        f"(api_used={api_used}, midi_clip_type="
+        f"{'null' if midi_clip_type is None else midi_clip_type})"
+    )
+    ignored = result.get("ignored_fields")
+    if ignored:
+        text += (
+            ". Warning: this Live version only supports the legacy set_notes API; "
+            f"these fields were not stored: {', '.join(ignored)}"
+        )
+    return text
+
 
 @mcp.tool()
 @rich_telemetry_tool("clear_notes_from_clip")
@@ -772,6 +835,9 @@ def clear_notes_from_clip(
     get_clip_notes and add_notes_to_clip for a real read -> modify -> write
     loop: read the notes, edit the list, clear_notes_from_clip, then
     add_notes_to_clip the edited notes.
+
+    Fails with an error (and leaves the clip unchanged) for a Live 13 Step
+    Sequencer clip (midi_clip_type != 0) or a clip whose type cannot be read.
 
     Parameters:
     - track_index: The index of the track containing the clip
@@ -797,7 +863,8 @@ def clear_notes_from_clip(
         )
     except Exception as e:
         logger.error(f"Error clearing notes from clip: {str(e)}")
-        return f"Error clearing notes from clip: {str(e)}"
+        raise ToolError(f"Error clearing notes from clip: {str(e)}") from e
+
 
 @mcp.tool()
 @rich_telemetry_tool("set_clip_name")
