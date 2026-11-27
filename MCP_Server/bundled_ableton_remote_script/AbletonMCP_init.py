@@ -89,6 +89,7 @@ ROUTING_FIELDS = (("input_type", "input_routing_type"), ("input_channel", "input
                   ("output_type", "output_routing_type"), ("output_channel", "output_routing_channel"))
 
 INTEGRATION_COMMANDS = {
+    "search_browser": ("_cmd_search_browser", False),
     "get_notes": ("_cmd_get_notes", False),
     "modify_notes": ("_cmd_modify_notes", True),
     "get_device_chain": ("_cmd_get_device_chain", False),
@@ -699,6 +700,7 @@ class AbletonMCP(ControlSurface):
         self._command_requests = set()
         self._command_stopped = False
         self._active_deferred = None
+        self._background_deferred = []
         self._clients = set()
 
     def update_display(self):
@@ -706,20 +708,18 @@ class AbletonMCP(ControlSurface):
         ControlSurface.update_display(self)
         self._drain_commands()
 
-    def _advance_deferred(self):
-        request, operation = self._active_deferred
+    def _advance_operation(self, request, operation):
         if request.completed.is_set() or self._command_stopped or self._client_disconnected(request.client) or _command_clock() >= request.deadline:
             request.cancel("Deferred operation cancelled")
             try:
                 operation.close(failed=True)
             except Exception as error:
                 self._log_command_error("Deferred cancellation cleanup failed", error)
-            self._active_deferred = None
-            return
+            return True
         try:
             result = operation.poll()
             if result is _WAIT_FOR_TICK:
-                return
+                return False
             operation.close()
             request.complete({"status": "success", "result": result})
         except Exception as error:
@@ -730,13 +730,17 @@ class AbletonMCP(ControlSurface):
                 response["error"]["details"]["cleanup_error"] = str(cleanup_error)
                 response["error"]["details"]["rollback_complete"] = False
             request.complete(response)
-        self._active_deferred = None
+        return True
 
     def _drain_commands(self):
         if threading.current_thread().ident != self._command_thread:
             raise RuntimeError("Command queue must be drained on Live's main thread")
+        # Read-only background jobs yield to normal requests and rotate fairly.
+        for _ in range(min(4, len(self._background_deferred))):
+            pair = self._background_deferred.pop(0)
+            if not self._advance_operation(*pair): self._background_deferred.append(pair)
         if self._active_deferred is not None:
-            self._advance_deferred()
+            if self._advance_operation(*self._active_deferred): self._active_deferred = None
             return
         for _ in range(MAX_COMMANDS_PER_TICK):
             try:
@@ -748,10 +752,12 @@ class AbletonMCP(ControlSurface):
             elif request.begin():
                 result = self._execute_command(request.command)
                 if isinstance(result, DeferredOperation):
-                    self._active_deferred = (request, result)
-                    break
-                request.complete(result)
-
+                    if result.exclusive:
+                        self._active_deferred = (request, result)
+                        break
+                    self._background_deferred.append((request, result))
+                else:
+                    request.complete(result)
 
 
     def _shutdown_commands(self):
@@ -768,6 +774,11 @@ class AbletonMCP(ControlSurface):
                 active[1].close(failed=True)
             except Exception as error:
                 self._log_command_error("Shutdown cleanup failed", error)
+        background = self._background_deferred
+        self._background_deferred = []
+        for request, operation in background:
+            try: operation.close(failed=True)
+            except Exception as error: self._log_command_error("Background cleanup failed", error)
         # Wake workers blocked in recv(), without joining them on Live's thread.
         for client in clients:
             try:
@@ -799,6 +810,8 @@ class AbletonMCP(ControlSurface):
         with self._command_lock:
             if self._command_stopped:
                 return {"status": "error", "message": "Remote Script disconnected"}
+            if len(self._command_requests) >= MAX_PENDING_COMMANDS:
+                return {"status": "error", "message": "Main-thread command queue is full; command not executed"}
             try:
                 self._command_queue.put_nowait(request)
             except queue.Full:
@@ -875,6 +888,7 @@ class AbletonMCP(ControlSurface):
             response = self._execute_command_body(command)
             operation = response.get("result") if response.get("status") == "success" else None
             if isinstance(operation, DeferredOperation):
+                operation.exclusive = self._is_mutating_command(command_type)
                 operation.end_undo = end if opened else None
                 deferred = True
                 return operation
@@ -1193,6 +1207,58 @@ class AbletonMCP(ControlSurface):
                 value = None
             result[name] = value
         return result
+
+    def _cmd_search_browser(self, params):
+        query = params.get("query")
+        if not isinstance(query, str) or not query.strip() or len(query) > 256: raise ValueError("query must be 1..256 characters")
+        max_results = strict_index(params.get("max_results", 20), "max_results")
+        max_nodes = strict_index(params.get("max_nodes", 1500), "max_nodes")
+        max_depth = strict_index(params.get("max_depth", 12), "max_depth")
+        max_ms = finite_number(params.get("max_ms", 2000), "max_ms", 10, 5000)
+        if not 1 <= max_results <= 100 or not 1 <= max_nodes <= 1500 or max_depth > 12: raise ValueError("Browser search limit out of range")
+        categories = ("instruments", "sounds", "drums", "audio_effects", "midi_effects", "plugins", "packs", "samples", "max_for_live", "user_library")
+        category = params.get("category")
+        if category is not None and category not in categories: raise ValueError("Unknown browser category")
+        browser = self.application().browser
+        roots, unavailable = [], []
+        for name in ((category,) if category else categories):
+            try: roots.append((getattr(browser, name), name, 0))
+            except (AttributeError, RuntimeError): unavailable.append(name)
+        stack = [iter(roots)]
+        state = {"visited": 0, "results": [], "truncated": False, "reason": None}
+        deadline = _command_clock() + max_ms / 1000.0
+        def result(reason=None):
+            return {"results": state["results"], "visited": state["visited"], "truncated": state["truncated"] or reason is not None,
+                    "reason": reason or state["reason"], "unavailable_categories": unavailable}
+        def step():
+            tick_deadline = _command_clock() + .005
+            for _ in range(32):
+                if _command_clock() >= deadline: return result("time_limit")
+                if _command_clock() >= tick_deadline: return _WAIT_FOR_TICK
+                if state["visited"] >= max_nodes: return result("node_limit")
+                if len(state["results"]) >= max_results: return result("result_limit")
+                if not stack: return result()
+                try: item, path, depth = next(stack[-1])
+                except StopIteration:
+                    stack.pop(); continue
+                state["visited"] += 1
+                try:
+                    name = str(item.name)
+                    if query.lower() in name.lower():
+                        state["results"].append({"name": name[:256], "path": path[:1024], "uri": str(getattr(item, "uri", ""))[:2048], "is_loadable": bool(getattr(item, "is_loadable", False))})
+                    if depth >= max_depth:
+                        state["truncated"] = True; state["reason"] = "depth_limit"
+                    else:
+                        # Capture parent path/depth now; do not close over mutable loop variables.
+                        def children(source, parent_path, parent_depth):
+                            for child in source:
+                                yield child, parent_path + "/" + str(child.name)[:256], parent_depth + 1
+                        stack.append(iter(children(getattr(item, "children", ()), path, depth)))
+                except (AttributeError, RuntimeError):
+                    state["truncated"] = True; state["reason"] = "unavailable_node"
+            return _WAIT_FOR_TICK
+        return DeferredOperation(step, max_ticks=100)
+
 
     def _addressed_clip(self, params, writing=False):
         track, kind, index = self._resolve_track(params, writing)
