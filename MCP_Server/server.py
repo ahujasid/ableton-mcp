@@ -341,6 +341,16 @@ def get_ableton_connection():
 # Core Tool endpoints
 
 @mcp.tool()
+@rich_telemetry_tool("get_target_identity")
+def get_target_identity(ctx: Context, track_index: int = 0, track_type: str = "track", clip_index: int = None, user_prompt: str = "") -> str:
+    """Read opaque target IDs before guarded edits; re-read after a stale-target error."""
+    params = {"track_index": track_index, "track_type": track_type}
+    if clip_index is not None:
+        params["clip_index"] = clip_index
+    return json.dumps(get_ableton_connection().send_command("get_target_identity", params))
+
+
+@mcp.tool()
 def set_dataset_consent(ctx: Context, consent: bool, user_said: str = "") -> str:
     """Record the user's answer to the dataset consent question.
 

@@ -3,6 +3,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 from _Framework.ControlSurface import ControlSurface
 import os
+import uuid
 import math
 import select
 import socket
@@ -42,6 +43,7 @@ SCRIPT_VERSION = "1.8.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
+    "get_target_identity",
     "get_script_info",
     "get_session_info",
     "get_track_info",
@@ -87,6 +89,95 @@ MAX_COMMANDS_PER_TICK = 8
 COMMAND_TIMEOUT = 10.0
 LONG_COMMAND_TIMEOUT = 60.0
 _command_clock = getattr(time, "monotonic", time.time)
+
+
+# Focused mutation primitives informed by PR #119; no generic setter command.
+MAX_TARGET_IDENTITIES = 4096
+MAX_MUTATION_FIELDS = 128
+
+
+class CommandFailure(ValueError):
+    def __init__(self, code, message, details=None):
+        ValueError.__init__(self, message)
+        self.code = code
+        self.details = details or {}
+
+
+def finite_number(value, label, minimum=None, maximum=None):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(label + " must be a number")
+    try:
+        result = float(value)
+    except OverflowError:
+        raise ValueError(label + " must be finite")
+    if math.isnan(result) or math.isinf(result):
+        raise ValueError(label + " must be finite")
+    if minimum is not None and result < minimum or maximum is not None and result > maximum:
+        raise ValueError(label + " is outside the supported range")
+    return result
+
+
+def strict_index(value, label, count=None):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(label + " must be a nonnegative integer")
+    if count is not None and value >= count:
+        raise IndexError(label + " out of range")
+    return value
+
+
+def same_live_object(left, right):
+    if left is right:
+        return True
+    try:
+        return bool(left == right)
+    except Exception:
+        return False
+
+
+def values_equal(left, right):
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is type(right) and left == right
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        a, b = finite_number(left, "readback"), finite_number(right, "expected")
+        return abs(a - b) <= max(1e-6, 1e-5 * max(abs(a), abs(b)))
+    return same_live_object(left, right)
+
+
+def apply_changes(changes):
+    """Preflight all snapshots before writing; restore even a setter that raises."""
+    if not isinstance(changes, (list, tuple)) or len(changes) > MAX_MUTATION_FIELDS:
+        raise ValueError("Mutation has too many fields")
+    snapshots = []
+    seen = set()
+    for owner, attr, value in changes:
+        key = (id(owner), attr)
+        if key in seen:
+            raise ValueError("Duplicate mutation field")
+        seen.add(key)
+        old = getattr(owner, attr)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            finite_number(value, attr)
+        snapshots.append((owner, attr, old, value))
+    attempted = []
+    try:
+        for owner, attr, old, value in snapshots:
+            attempted.append((owner, attr, old))
+            setattr(owner, attr, value)
+            if not values_equal(getattr(owner, attr), value):
+                raise ValueError("Readback mismatch for " + attr)
+    except Exception as error:
+        failures = []
+        for owner, attr, old in reversed(attempted):
+            try:
+                setattr(owner, attr, old)
+                if not values_equal(getattr(owner, attr), old):
+                    raise ValueError("restore readback mismatch")
+            except Exception as restore_error:
+                failures.append({"field": attr, "message": str(restore_error)})
+        raise CommandFailure("mutation_failed", str(error), {
+            "rollback_complete": not failures, "rollback_failures": failures,
+            "attempted_fields": len(attempted)})
+    return {"changed_fields": len(snapshots), "verified": True}
 
 
 class _CommandRequest(object):
@@ -519,6 +610,7 @@ class AbletonMCP(ControlSurface):
     def _shutdown_commands(self):
         with self._command_lock:
             self._command_stopped = True
+            self._target_identities = []
             for request in self._command_requests:
                 request.cancel("Remote Script disconnected")
             clients = list(self._clients)
@@ -593,7 +685,9 @@ class AbletonMCP(ControlSurface):
         
         try:
             # Route the command to the appropriate handler
-            if command_type == "get_script_info":
+            if command_type == "get_target_identity":
+                response["result"] = self._get_target_identity(params)
+            elif command_type == "get_script_info":
                 response["result"] = self._get_script_info()
             elif command_type == "get_session_info":
                 response["result"] = self._get_session_info()
@@ -877,6 +971,58 @@ class AbletonMCP(ControlSurface):
                 value = None
             result[name] = value
         return result
+
+    def _identity_for(self, obj):
+        # Equality matters: Live may return distinct Python wrappers for one LOM object.
+        if not hasattr(self, "_target_identities"):
+            self._target_identities = []
+        for token, known in self._target_identities:
+            if same_live_object(known, obj):
+                return token
+        token = uuid.uuid4().hex
+        self._target_identities.append((token, obj))
+        if len(self._target_identities) > MAX_TARGET_IDENTITIES:
+            self._target_identities.pop(0)
+        return token
+
+    def _check_identity(self, obj, token, required=False):
+        if token is None and not required:
+            return
+        if not isinstance(token, str) or not token:
+            raise CommandFailure("identity_required", "Read the target identity before this operation")
+        known = next((known for key, known in getattr(self, "_target_identities", []) if key == token), None)
+        if known is None or not same_live_object(known, obj):
+            raise CommandFailure("stale_target", "Target identity changed; read the target again")
+
+    def _resolve_track(self, params, require_identity=False):
+        kind = params.get("track_type", "track")
+        if kind not in ("track", "return", "master"):
+            raise ValueError("track_type must be track, return or master")
+        tracks = ((self._song.master_track,) if kind == "master" else
+                  self._song.return_tracks if kind == "return" else self._song.tracks)
+        index = strict_index(params.get("track_index", 0), "track_index", len(tracks))
+        track = tracks[index]
+        expected = params.get("expected_track_name")
+        if expected is not None and track.name != expected:
+            raise CommandFailure("stale_target", "Track name changed")
+        self._check_identity(track, params.get("target_id"), require_identity)
+        return track, kind, index
+
+    def _target_record(self, obj, **fields):
+        fields.update({"target_id": self._identity_for(obj), "name": str(getattr(obj, "name", ""))})
+        return fields
+
+    def _get_target_identity(self, params):
+        track, kind, index = self._resolve_track(params)
+        record = self._target_record(track, track_type=kind, track_index=index)
+        if "clip_index" in params:
+            slots = getattr(track, "clip_slots", ())
+            clip_index = strict_index(params["clip_index"], "clip_index", len(slots))
+            slot = slots[clip_index]
+            record["slot_id"] = self._identity_for(slot)
+            record["clip"] = self._target_record(slot.clip, clip_index=clip_index) if slot.has_clip else None
+        return record
+
 
     def _safe_arm(self, track):
         """Read track.arm, returning False for tracks that have no arm state.
