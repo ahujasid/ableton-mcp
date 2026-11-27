@@ -89,6 +89,8 @@ ROUTING_FIELDS = (("input_type", "input_routing_type"), ("input_channel", "input
                   ("output_type", "output_routing_type"), ("output_channel", "output_routing_channel"))
 
 INTEGRATION_COMMANDS = {
+    "get_structure": ("_cmd_get_structure", False),
+    "edit_structure": ("_cmd_edit_structure", True),
     "get_track_routing": ("_cmd_get_track_routing", False),
     "set_track_routing": ("_cmd_set_track_routing", True),
     "get_mixer_state": ("_cmd_get_mixer_state", False),
@@ -813,8 +815,8 @@ class AbletonMCP(ControlSurface):
         if not isinstance(error, EXPECTED_COMMAND_ERRORS):
             self.log_message(traceback.format_exc())
 
-    def _check_safety(self, command_type):
-        mutating = self._is_mutating_command(command_type)
+    def _check_safety(self, command_type, category=None):
+        mutating = self._is_mutating_command(command_type) or category is not None
         try:
             cfg = load_safety_config()
         except Exception as error:
@@ -825,7 +827,7 @@ class AbletonMCP(ControlSurface):
             raise CommandFailure("safety_refused", "Command is denied by safety configuration")
         if not mutating:
             return
-        category = next((c for c, names in SAFETY_COMMANDS.items() if command_type in names), "edit")
+        category = category or next((c for c, names in SAFETY_COMMANDS.items() if command_type in names), "edit")
         if cfg["read_only"] or not cfg["allow"][category]:
             raise CommandFailure("safety_refused", "Safety policy refuses " + category)
         if cfg["saved_set_allow"].get(category) is False:
@@ -1182,6 +1184,140 @@ class AbletonMCP(ControlSurface):
                 value = None
             result[name] = value
         return result
+
+    def _cmd_get_structure(self, params):
+        limit = strict_index(params.get("limit", 128), "limit")
+        if not 1 <= limit <= 128:
+            raise ValueError("limit must be 1..128")
+        tracks, scenes = list(self._song.tracks), list(self._song.scenes)
+        return {"tracks": [self._target_record(t, track_index=i, track_type="track") for i, t in enumerate(tracks[:limit])],
+                "scenes": [self._target_record(s, scene_index=i) for i, s in enumerate(scenes[:limit])],
+                "truncated": len(tracks) > limit or len(scenes) > limit}
+
+    def _resolve_scene(self, params):
+        scenes = self._song.scenes
+        index = strict_index(params.get("scene_index"), "scene_index", len(scenes))
+        scene = scenes[index]
+        self._check_identity(scene, params.get("scene_id"), True)
+        return scene, index
+
+    def _owned_track_cleanup(self, track):
+        matches = [i for i, current in enumerate(self._song.tracks) if same_live_object(current, track)]
+        if len(matches) == 1:
+            self._song.delete_track(matches[0])
+        elif matches:
+            raise CommandFailure("cleanup_failed", "Owned track identity is ambiguous")
+
+    def _cmd_edit_structure(self, params):
+        action = params.get("action")
+        actions = {"create_track", "create_scene", "duplicate_track", "duplicate_scene", "duplicate_clip", "delete_track", "delete_scene", "delete_clip", "rename_track", "rename_scene", "rename_clip"}
+        if action not in actions:
+            raise ValueError("Unsupported structural action")
+        if set(params) - {"action", "track_index", "track_type", "target_id", "expected_track_name", "scene_index", "scene_id", "clip_index", "clip_id", "destination_index", "destination_slot_id", "kind", "name", "clip_length"}:
+            raise ValueError("Unknown structural field")
+        self._check_safety("edit_structure", category="delete" if action.startswith("delete_") else "structure" if action.startswith(("create_", "duplicate_")) else "edit")
+        name = params.get("name")
+        if name is not None and (not isinstance(name, str) or len(name) > 256):
+            raise ValueError("name must be a string of at most 256 characters")
+        if action.startswith("rename_") and name is None:
+            raise ValueError("name is required")
+        if action == "create_track":
+            kind = params.get("kind", "midi")
+            if kind not in ("midi", "audio"):
+                raise ValueError("kind must be midi or audio")
+            length = finite_number(params["clip_length"], "clip_length", .001, 65536) if "clip_length" in params else None
+            if length is not None and (kind != "midi" or not self._song.scenes):
+                raise ValueError("Compound clip creation needs a MIDI track and an existing scene")
+            before = list(self._song.tracks)
+            getattr(self._song, "create_" + kind + "_track")(-1)
+            created = [t for t in self._song.tracks if not any(same_live_object(t, old) for old in before)]
+            if len(created) != 1:
+                raise CommandFailure("ownership_unknown", "Cannot identify the newly created track; inspect the set before retrying")
+            track = created[0]
+            try:
+                if name is not None: track.name = name
+                if length is not None:
+                    if track.clip_slots[0].has_clip: raise ValueError("New track slot unexpectedly occupied")
+                    track.clip_slots[0].create_clip(length)
+            except Exception as error:
+                try:
+                    self._owned_track_cleanup(track)
+                except Exception as cleanup_error:
+                    raise CommandFailure("compound_create_failed", str(error), {"rollback_complete": False, "cleanup_error": str(cleanup_error)})
+                raise CommandFailure("compound_create_failed", str(error), {"rollback_requested": True})
+            def report():
+                index = next((i for i, current in enumerate(self._song.tracks) if same_live_object(current, track)), None)
+                if index is None: raise CommandFailure("stale_target", "Created track disappeared")
+                return self._target_record(track, track_index=index, track_type="track")
+            return DeferredOperation(report, lambda failed: self._owned_track_cleanup(track) if failed else None)
+        if action in ("create_scene", "duplicate_scene", "delete_scene", "rename_scene"):
+            if action != "create_scene": scene, index = self._resolve_scene(params)
+            if action == "rename_scene":
+                return self._transaction([(scene, "name", name)], lambda: self._target_record(scene, scene_index=index))
+            if action == "delete_scene":
+                self._song.delete_scene(index)
+                def deleted():
+                    if any(same_live_object(scene, current) for current in self._song.scenes):
+                        raise CommandFailure("delete_unverified", "Scene deletion not observed; do not automatically retry")
+                    return {"deleted": True}
+                return DeferredOperation(deleted)
+            before = list(self._song.scenes)
+            if action == "create_scene": self._song.create_scene(-1)
+            else: self._song.duplicate_scene(index)
+            created = [s for s in self._song.scenes if not any(same_live_object(s, old) for old in before)]
+            if len(created) != 1: raise CommandFailure("ownership_unknown", "Cannot identify created scene")
+            owned = created[0]
+            def cleanup(failed):
+                if failed:
+                    matches = [i for i, s in enumerate(self._song.scenes) if same_live_object(s, owned)]
+                    if len(matches) == 1: self._song.delete_scene(matches[0])
+            try:
+                if name is not None: owned.name = name
+            except Exception:
+                cleanup(True)
+                raise
+            return DeferredOperation(lambda: self._target_record(owned, scene_index=next(i for i, s in enumerate(self._song.scenes) if same_live_object(s, owned))), cleanup)
+        track, kind, index = self._resolve_track(params, True)
+        if kind != "track": raise ValueError("Structural edits require a regular track")
+        if action == "rename_track":
+            return self._transaction([(track, "name", name)], lambda: self._target_record(track, track_index=index))
+        if action == "delete_track":
+            self._song.delete_track(index)
+            def deleted():
+                if any(same_live_object(track, current) for current in self._song.tracks):
+                    raise CommandFailure("delete_unverified", "Track deletion not observed; do not automatically retry")
+                return {"deleted": True}
+            return DeferredOperation(deleted)
+        if action == "duplicate_track":
+            before = list(self._song.tracks)
+            self._song.duplicate_track(index)
+            new = [t for t in self._song.tracks if not any(same_live_object(t, old) for old in before)]
+            if len(new) != 1: raise CommandFailure("ownership_unknown", "Cannot identify duplicated track")
+            owned = new[0]
+            return DeferredOperation(lambda: self._target_record(owned, track_index=next(i for i, t in enumerate(self._song.tracks) if same_live_object(t, owned))), lambda failed: self._owned_track_cleanup(owned) if failed else None)
+        slots = track.clip_slots
+        slot = slots[strict_index(params.get("clip_index"), "clip_index", len(slots))]
+        if not slot.has_clip: raise ValueError("Source clip slot is empty")
+        clip = slot.clip
+        self._check_identity(clip, params.get("clip_id"), True)
+        if action == "rename_clip":
+            return self._transaction([(clip, "name", name)], lambda: self._target_record(clip))
+        if action == "delete_clip":
+            slot.delete_clip()
+            def deleted():
+                if slot.has_clip: raise CommandFailure("delete_unverified", "Clip slot is still occupied")
+                return {"deleted": True}
+            return DeferredOperation(deleted)
+        dest = slots[strict_index(params.get("destination_index"), "destination_index", len(slots))]
+        self._check_identity(dest, params.get("destination_slot_id"), True)
+        if dest.has_clip: raise ValueError("Destination clip slot is occupied")
+        slot.duplicate_clip_to(dest)
+        owned = dest.clip if dest.has_clip else None
+        if owned is None: raise CommandFailure("ownership_unknown", "Clip duplication not observed; do not retry automatically")
+        def cleanup(failed):
+            if failed and dest.has_clip and same_live_object(dest.clip, owned): dest.delete_clip()
+        return DeferredOperation(lambda: self._target_record(owned), cleanup)
+
 
     def _routing_record(self, track, kind, index):
         result = self._target_record(track, track_type=kind, track_index=index)
