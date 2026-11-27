@@ -7,6 +7,12 @@ from .telemetry_decorator import rich_telemetry_tool
 from .dataset.trajectory_decorator import trajectory_tool
 
 TOOL_DESCRIPTIONS = {
+    "get_device_chain": (False, "Read bounded nested devices/parameters/rack chains and identities. params: track_index, track_type. Paths alternate device/chain indices; use returned IDs for writes."),
+    "set_device_parameter_value": (True, "Guarded parameter write. params: track_index,track_type,target_id,device_path (list),device_id,parameter_index,parameter_id, and exactly one value or display_value (e.g. 1 kHz, 250 ms). Discovery/conversion never changes parameters; ambiguous display mappings fail."),
+    "get_rack": (False, "Read a rack and bounded nested chains/parameters. params: track_index,track_type,device_path."),
+    "set_rack_chain": (True, "Guarded rack chain controls. params: track_index,track_type,target_id,device_path,device_id,chain_index,chain_id and mute/solo booleans or volume/panning values."),
+    "get_simpler": (False, "Read supported Simpler controls. params: track_index,track_type,device_path. Other device classes are rejected."),
+    "edit_simpler": (True, "Guarded Simpler control edit. params: track_index,track_type,target_id,device_path,device_id and voices (1..32), retrigger (boolean), playback_mode (0..2). Sample replacement/warp editing is deferred."),
     "get_structure": (False, "Read bounded tracks/scenes with stable target IDs. params: limit (1..128). Read slot/clip identities using get_target_identity."),
     "edit_structure": (True, "Guarded structural edit. params.action: create_track/create_scene/duplicate_track/duplicate_scene/duplicate_clip/delete_track/delete_scene/delete_clip/rename_track/rename_scene/rename_clip. Track edits need track_index,target_id; scene edits scene_index,scene_id; clip edits also clip_index,clip_id. duplicate_clip also requires destination_index,destination_slot_id for an empty slot. Creation appends only; create_track accepts kind midi|audio, optional name and MIDI clip_length. Deletion is disabled by default. No arbitrary LOM properties."),
     "get_track_routing": (False, "Read current/available audio or MIDI routing names. params: track_index, track_type. Unsupported routes are reported explicitly."),

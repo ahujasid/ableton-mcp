@@ -89,6 +89,13 @@ ROUTING_FIELDS = (("input_type", "input_routing_type"), ("input_channel", "input
                   ("output_type", "output_routing_type"), ("output_channel", "output_routing_channel"))
 
 INTEGRATION_COMMANDS = {
+    "get_device_chain": ("_cmd_get_device_chain", False),
+    "set_device_parameter_value": ("_cmd_set_device_parameter_value", True),
+    "get_rack": ("_cmd_get_rack", False),
+    "set_rack_chain": ("_cmd_set_rack_chain", True),
+    "get_simpler": ("_cmd_get_simpler", False),
+    "edit_simpler": ("_cmd_edit_simpler", True),
+
     "get_structure": ("_cmd_get_structure", False),
     "edit_structure": ("_cmd_edit_structure", True),
     "get_track_routing": ("_cmd_get_track_routing", False),
@@ -1184,6 +1191,161 @@ class AbletonMCP(ControlSurface):
                 value = None
             result[name] = value
         return result
+
+    def _resolve_device(self, params, writing=False):
+        track, kind, index = self._resolve_track(params, writing)
+        path = params.get("device_path", [params.get("device_index", 0)])
+        if not isinstance(path, list) or not path or len(path) > 9 or len(path) % 2 == 0:
+            raise ValueError("device_path must be an odd-length list of device/chain indices, at most 9")
+        parent = track
+        device = None
+        for offset, value in enumerate(path):
+            if offset % 2 == 0:
+                devices = parent.devices
+                device = devices[strict_index(value, "device_index", len(devices))]
+            else:
+                if not getattr(device, "can_have_chains", False): raise ValueError("Device has no chains")
+                chains = device.chains
+                parent = chains[strict_index(value, "chain_index", len(chains))]
+        self._check_identity(device, params.get("device_id"), writing)
+        expected = params.get("expected_class")
+        if expected is not None and device.class_name != expected:
+            raise CommandFailure("stale_target", "Device class changed")
+        return track, device, path
+
+    def _device_record(self, device, path, budget, depth=0):
+        if budget[0] <= 0: return {"truncated": True}
+        budget[0] -= 1
+        result = self._target_record(device, device_path=path, class_name=str(device.class_name))
+        parameters = device.parameters
+        result["parameters"] = [dict(self._parameter_report(p), parameter_index=i, name=str(p.name),
+            parameter_id=self._identity_for(p), is_enabled=bool(getattr(p, "is_enabled", True))) for i, p in enumerate(parameters[:128])]
+        result["parameters_truncated"] = len(parameters) > 128
+        result["can_have_chains"] = bool(getattr(device, "can_have_chains", False))
+        if result["can_have_chains"]:
+            chains = device.chains
+            result["chains"] = []
+            if depth < 4:
+                for ci, chain in enumerate(chains[:32]):
+                    if budget[0] <= 0: break
+                    children = []
+                    for di, child in enumerate(chain.devices[:128]):
+                        if budget[0] <= 0: break
+                        children.append(self._device_record(child, path + [ci, di], budget, depth + 1))
+                    result["chains"].append(self._target_record(chain, chain_index=ci, devices=children))
+            result["chains_truncated"] = len(chains) > len(result["chains"]) or budget[0] <= 0
+        return result
+
+    def _cmd_get_device_chain(self, params):
+        track, kind, index = self._resolve_track(params)
+        budget = [128]
+        devices = []
+        for i, device in enumerate(track.devices[:128]):
+            if budget[0] <= 0: break
+            devices.append(self._device_record(device, [i], budget))
+        return self._target_record(track, track_index=index, track_type=kind, devices=devices,
+                                   truncated=budget[0] <= 0 or len(track.devices) > len(devices))
+
+    def _parse_display(self, text):
+        if not isinstance(text, str): raise ValueError("Display value must include explicit units")
+        match = re.fullmatch(r"\s*([-+]?(?:\d+(?:\.\d+)?|\.\d+))\s*(Hz|kHz|ms|s|dB|%|)\s*", text, re.I)
+        if not match: raise ValueError("Unsupported or ambiguous display unit")
+        number = finite_number(float(match.group(1)), "display")
+        unit = match.group(2).lower()
+        scale, canonical = {"khz": (1000, "hz"), "ms": (.001, "s")}.get(unit, (1, unit))
+        return number * scale, canonical
+
+    def _value_for_display(self, param, wanted):
+        if getattr(param, "is_quantized", False):
+            items = list(param.value_items)
+            matches = [i for i, item in enumerate(items) if str(item) == wanted]
+            if len(matches) != 1: raise ValueError("Quantized display value is missing or ambiguous")
+            return finite_number(param.min + matches[0], "parameter", param.min, param.max)
+        target, unit = self._parse_display(wanted)
+        def read(value):
+            number, found_unit = self._parse_display(str(param.str_for_value(value)))
+            if found_unit != unit: raise ValueError("Display units do not match")
+            return number
+        low, high = float(param.min), float(param.max)
+        samples = [read(low + (high - low) * i / 32.0) for i in range(33)]
+        increasing = samples[-1] > samples[0]
+        if samples[-1] == samples[0] or any((b < a if increasing else b > a) for a, b in zip(samples, samples[1:])):
+            raise ValueError("Nonmonotonic or ambiguous display mapping")
+        if not min(samples) <= target <= max(samples): raise ValueError("Display value outside supported range")
+        for _ in range(48):
+            middle = (low + high) / 2
+            if (read(middle) < target) == increasing: low = middle
+            else: high = middle
+        value = (low + high) / 2
+        if abs(read(value) - target) > max(1e-6, abs(target) * .001):
+            raise ValueError("Display value cannot be resolved without ambiguity")
+        return value
+
+    def _cmd_set_device_parameter_value(self, params):
+        track, device, path = self._resolve_device(params, True)
+        parameters = device.parameters
+        index = strict_index(params.get("parameter_index"), "parameter_index", len(parameters))
+        parameter = parameters[index]
+        self._check_identity(parameter, params.get("parameter_id"), True)
+        if not getattr(parameter, "is_enabled", True): raise ValueError("Parameter is disabled")
+        if ("value" in params) == ("display_value" in params): raise ValueError("Give exactly one of value or display_value")
+        value = (finite_number(params["value"], "parameter", parameter.min, parameter.max) if "value" in params
+                 else self._value_for_display(parameter, params["display_value"]))
+        if getattr(parameter, "is_quantized", False) and value != int(value): raise ValueError("Quantized value must be an integer")
+        return self._transaction([(parameter, "value", value)], lambda: self._parameter_report(parameter))
+
+    def _cmd_get_rack(self, params):
+        _, rack, path = self._resolve_device(params)
+        if not getattr(rack, "can_have_chains", False): raise ValueError("Selected device is not a rack")
+        return self._device_record(rack, path, [128])
+
+    def _cmd_set_rack_chain(self, params):
+        _, rack, path = self._resolve_device(params, True)
+        if not getattr(rack, "can_have_chains", False): raise ValueError("Selected device is not a rack")
+        index = strict_index(params.get("chain_index"), "chain_index", len(rack.chains))
+        chain = rack.chains[index]
+        self._check_identity(chain, params.get("chain_id"), True)
+        changes = []
+        for key in ("mute", "solo"):
+            if key in params:
+                if type(params[key]) is not bool: raise ValueError(key + " must be boolean")
+                changes.append((chain, key, params[key]))
+        for key in ("volume", "panning"):
+            if key in params:
+                p = getattr(chain.mixer_device, key)
+                changes.append((p, "value", finite_number(params[key], key, p.min, p.max)))
+        if not changes: raise ValueError("No rack chain change requested")
+        return self._transaction(changes, lambda: self._target_record(chain, chain_index=index))
+
+    def _cmd_get_simpler(self, params):
+        _, dev, path = self._resolve_device(params)
+        if getattr(dev, "class_name", "") != "OriginalSimpler": raise ValueError("Selected device is not Simpler")
+        out = self._target_record(dev, device_path=path)
+        for key in ("voices", "retrigger", "playback_mode"):
+            try: out[key] = getattr(dev, key)
+            except (AttributeError, RuntimeError): out[key] = None
+        sample = getattr(dev, "sample", None)
+        out["sample"] = None if sample is None else {"length": int(sample.length), "sample_rate": int(sample.sample_rate)}
+        return out
+
+    def _cmd_edit_simpler(self, params):
+        _, dev, path = self._resolve_device(params, True)
+        if getattr(dev, "class_name", "") != "OriginalSimpler": raise ValueError("Selected device is not Simpler")
+        selector_keys = {"track_index", "track_type", "target_id", "device_path", "device_index", "device_id", "expected_class"}
+        if set(params) - selector_keys - {"voices", "retrigger", "playback_mode"}: raise ValueError("Unsupported Simpler edit; sample/warp editing is deferred")
+        changes = []
+        for key, low, high in (("voices", 1, 32), ("playback_mode", 0, 2)):
+            if key in params:
+                value = strict_index(params[key], key)
+                if not low <= value <= high: raise ValueError(key + " out of range")
+                getattr(dev, key)
+                changes.append((dev, key, value))
+        if "retrigger" in params:
+            if type(params["retrigger"]) is not bool: raise ValueError("retrigger must be boolean")
+            changes.append((dev, "retrigger", params["retrigger"]))
+        if not changes: raise ValueError("No Simpler change requested")
+        return self._transaction(changes, lambda: self._cmd_get_simpler(params))
+
 
     def _cmd_get_structure(self, params):
         limit = strict_index(params.get("limit", 128), "limit")
