@@ -670,7 +670,35 @@ class AbletonMCP(ControlSurface):
         if not isinstance(error, EXPECTED_COMMAND_ERRORS):
             self.log_message(traceback.format_exc())
 
+    def _command_error_response(self, command_type, error):
+        self._log_command_error("Error processing " + str(command_type), error)
+        code = getattr(error, "code", "invalid_request" if isinstance(error, (ValueError, IndexError)) else "execution_failed")
+        return {"status": "error", "message": str(error), "error": {
+            "code": code, "command": command_type, "details": getattr(error, "details", {})}}
+
+    def _is_mutating_command(self, command_type):
+        return command_type in SCRIPT_CAPABILITIES and not (
+            command_type.startswith("get_") or command_type in ("inspect_rack", "drain_passive_events"))
+
     def _execute_command(self, command):
+        command_type = command.get("type") if isinstance(command, dict) else None
+        begin = end = None
+        if self._is_mutating_command(command_type) and command_type not in ("undo", "redo"):
+            song = getattr(self, "_song", None)
+            begin = getattr(song, "begin_undo_step", None)
+            end = getattr(song, "end_undo_step", None)
+        try:
+            if callable(begin) and callable(end):
+                begin()
+                try:
+                    return self._execute_command_body(command)
+                finally:
+                    end()
+            return self._execute_command_body(command)
+        except Exception as error:
+            return self._command_error_response(command_type, error)
+
+    def _execute_command_body(self, command):
         """Process a command from the client and return a response"""
         if not isinstance(command, dict) or not isinstance(command.get("type"), str) or not isinstance(command.get("params", {}), dict):
             return {"status": "error", "message": "Command requires a string type and object params"}
@@ -838,9 +866,7 @@ class AbletonMCP(ControlSurface):
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
         except Exception as e:
-            self._log_command_error("Error processing command", e)
-            response["status"] = "error"
-            response["message"] = str(e)
+            return self._command_error_response(command_type, e)
 
         return response
 

@@ -84,3 +84,37 @@ def test_equal_live_proxies_keep_identity(rs):
 @pytest.mark.parametrize('value', [True, -1, 0.5, '0'])
 def test_strict_target_indices(rs, value):
     with pytest.raises(ValueError): rs.strict_index(value, 'index')
+
+
+@pytest.mark.parametrize('failure', ['before', 'during', 'after', None])
+def test_undo_boundaries_and_structured_errors(rs, failure):
+    inst = make_instance(rs)
+    events = []
+    def begin():
+        events.append('begin')
+        if failure == 'before': raise RuntimeError('cannot begin')
+    def end():
+        events.append('end')
+        if failure == 'after': raise RuntimeError('cannot end')
+    def edit():
+        events.append('edit')
+        if failure == 'during': raise rs.CommandFailure('injected', 'failed', {'rollback_complete': True})
+        return {'ok': True}
+    inst._song = types.SimpleNamespace(begin_undo_step=begin, end_undo_step=end)
+    inst._start_playback = edit
+    result = inst._execute_command({'type': 'start_playback'})
+    assert events == (['begin'] if failure == 'before' else ['begin', 'edit', 'end'])
+    if failure:
+        assert result['status'] == 'error'
+        assert result['error']['command'] == 'start_playback'
+    else:
+        assert result['status'] == 'success'
+
+
+def test_reads_do_not_open_undo_group(rs):
+    inst = make_instance(rs)
+    events = []
+    inst._song = types.SimpleNamespace(begin_undo_step=lambda: events.append('begin'), end_undo_step=lambda: events.append('end'))
+    inst._get_session_info = lambda: {}
+    assert inst._execute_command({'type': 'get_session_info'})['status'] == 'success'
+    assert events == []

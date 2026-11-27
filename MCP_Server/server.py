@@ -26,6 +26,10 @@ logger = logging.getLogger("AbletonMCPServer")
 class AbletonCommandError(Exception):
     """A valid command error response; the socket remains usable."""
 
+    def __init__(self, message, error=None):
+        super().__init__(message)
+        self.error = error or {}
+
 
 @dataclass
 class AbletonConnection:
@@ -155,7 +159,7 @@ class AbletonConnection:
 
             if response.get("status") == "error":
                 logger.error(f"Ableton error: {response.get('message')}")
-                raise AbletonCommandError(response.get("message", "Unknown error from Ableton"))
+                raise AbletonCommandError(response.get("message", "Unknown error from Ableton"), response.get("error"))
             
             return response.get("result", {})
         except AbletonCommandError:

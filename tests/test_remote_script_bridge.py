@@ -494,7 +494,7 @@ def test_worker_cannot_drain_command_queue(script_module):
 
 def test_handshake_advertises_every_supported_command(script_module):
     inst = make_instance(script_module)
-    tree = ast.parse(textwrap.dedent(inspect.getsource(inst._execute_command)))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(inst._execute_command_body)))
     supported = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name) and node.left.id == "command_type":
