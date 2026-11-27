@@ -89,6 +89,8 @@ ROUTING_FIELDS = (("input_type", "input_routing_type"), ("input_channel", "input
                   ("output_type", "output_routing_type"), ("output_channel", "output_routing_channel"))
 
 INTEGRATION_COMMANDS = {
+    "get_tracks_overview": ("_cmd_get_tracks_overview", False),
+    "check_arrangement_sync": ("_cmd_check_arrangement_sync", False),
     "search_browser": ("_cmd_search_browser", False),
     "get_notes": ("_cmd_get_notes", False),
     "modify_notes": ("_cmd_modify_notes", True),
@@ -1207,6 +1209,60 @@ class AbletonMCP(ControlSurface):
                 value = None
             result[name] = value
         return result
+
+    def _cmd_get_tracks_overview(self, params):
+        limit = strict_index(params.get("limit", 128), "limit")
+        if not 1 <= limit <= 128: raise ValueError("limit must be 1..128")
+        tracks = self._song.tracks
+        result = []
+        for i, track in enumerate(tracks[:limit]):
+            slots = track.clip_slots
+            result.append(self._target_record(track, track_index=i,
+                type="audio" if track.has_audio_input else "midi" if track.has_midi_input else "other",
+                clips=sum(1 for slot in slots[:128] if slot.has_clip), clips_truncated=len(slots)>128,
+                devices=len(track.devices), mute=bool(track.mute), solo=bool(track.solo), arm=self._safe_arm(track)))
+        return {"tempo": float(self._song.tempo), "track_count": len(tracks), "tracks": result, "truncated": len(tracks)>limit}
+
+    def _cmd_check_arrangement_sync(self, params):
+        bar = finite_number(params.get("bar_beats", 4.0), "bar_beats", .001, 128)
+        tracks = self._song.tracks
+        state = {"bar_beats": bar, "tracks_with_clips": 0, "total_clips": 0, "off_grid": 0, "overlaps": 0, "gaps": 0,
+                 "problems": [], "truncated": len(tracks)>128, "unavailable_tracks": []}
+        iterator = iter(enumerate(tracks[:128]))
+        def finish():
+            state["in_sync"] = None if state["truncated"] or state["unavailable_tracks"] else state["off_grid"] == 0 and state["overlaps"] == 0
+            return state
+        def step():
+            try: index, track = next(iterator)
+            except StopIteration: return finish()
+            try: collection = track.arrangement_clips
+            except (AttributeError, RuntimeError):
+                state["unavailable_tracks"].append(index); return _WAIT_FOR_TICK
+            remaining = 1024 - state["total_clips"]
+            if remaining <= 0:
+                state["truncated"] = True; return finish()
+            limit = min(128, remaining)
+            if len(collection)>limit: state["truncated"] = True
+            clips = sorted(collection[:limit], key=lambda clip: clip.start_time)
+            if clips: state["tracks_with_clips"] += 1
+            previous_end = None
+            for clip in clips:
+                start = finite_number(clip.start_time, "clip start")
+                end = finite_number(clip.end_time, "clip end", start)
+                state["total_clips"] += 1
+                if abs(start/bar - round(start/bar)) > 1e-4:
+                    state["off_grid"] += 1
+                    if len(state["problems"])<20: state["problems"].append({"track_index":index,"clip":str(clip.name)[:256],"issue":"off_grid","start":start})
+                if previous_end is not None:
+                    delta=start-previous_end
+                    if delta>1e-4: state["gaps"]+=1
+                    elif delta < -1e-4:
+                        state["overlaps"]+=1
+                        if len(state["problems"])<20: state["problems"].append({"track_index":index,"clip":str(clip.name)[:256],"issue":"overlap","start":start})
+                previous_end = end if previous_end is None else max(previous_end,end)
+            return _WAIT_FOR_TICK
+        return DeferredOperation(step, max_ticks=130)
+
 
     def _cmd_search_browser(self, params):
         query = params.get("query")

@@ -7,6 +7,8 @@ from .telemetry_decorator import rich_telemetry_tool
 from .dataset.trajectory_decorator import trajectory_tool
 
 TOOL_DESCRIPTIONS = {
+    "get_tracks_overview": (False, "Compact bounded track summary preserving group-track arm safety. params: limit (1..128). Counts indicate truncation."),
+    "check_arrangement_sync": (False, "Read-only bounded beat-grid/gap/overlap check across Arrangement clips. params: bar_beats (finite >0, max128). Yields between tracks; in_sync is null if inspection is incomplete. Never moves notes or clips."),
     "search_browser": (False, "Bounded yielding browser search. params: query, optional category, max_results (1..100), max_nodes (1..1500), max_depth (0..12), max_ms (10..5000). Returns truncation reason and unavailable categories; does not load or batch mutations."),
     "get_notes": (False, "Read bounded notes and stable note IDs from an explicitly addressed MIDI clip. params: track_index, location (session|arrangement), clip_index. Returns clip target_id for guarded edits. Requires extended host API."),
     "modify_notes": (True, "Modify notes in place by note_id, preserving extended metadata. params: track_index,target_id (track),location (session|arrangement),clip_index,clip_id and notes [{note_id, changed fields}]. All edits preflight before apply; stale IDs and unsupported hosts fail closed. Never replaces clips or envelopes."),
