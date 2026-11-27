@@ -22,6 +22,10 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("AbletonMCPServer")
 
+class AbletonCommandError(Exception):
+    """A valid command error response; the socket remains usable."""
+
+
 @dataclass
 class AbletonConnection:
     host: str
@@ -150,9 +154,11 @@ class AbletonConnection:
 
             if response.get("status") == "error":
                 logger.error(f"Ableton error: {response.get('message')}")
-                raise Exception(response.get("message", "Unknown error from Ableton"))
+                raise AbletonCommandError(response.get("message", "Unknown error from Ableton"))
             
             return response.get("result", {})
+        except AbletonCommandError:
+            raise
         except socket.timeout:
             logger.error("Socket timeout while waiting for response from Ableton")
             self.disconnect()

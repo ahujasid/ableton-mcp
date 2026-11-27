@@ -140,3 +140,13 @@ def test_json_response_fragmented_byte_by_byte():
     connection = AbletonConnection("localhost", 9877, sock=sock)
     assert connection.send_command("get_session_info") == {"name": "café", "tempo": 120}
     assert len(sock.commands) == 1
+
+
+def test_command_error_keeps_socket_for_next_request():
+    from MCP_Server.server import AbletonCommandError
+    sock = ResponseSocket([b'{"status":"error","message":"Invalid value"}', response_bytes({"tempo": 120})])
+    connection = AbletonConnection("localhost", 9877, sock=sock)
+    with pytest.raises(AbletonCommandError, match="Invalid value"):
+        connection.send_command("set_tempo")
+    assert not sock.closed
+    assert connection.send_command("get_session_info") == {"tempo": 120}
