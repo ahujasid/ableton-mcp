@@ -381,3 +381,9 @@ Session metadata includes `root_note`, `scale_name`, and project `name`. Missing
 Install `ableton-mcp[audio]` for NumPy-based WAV analysis. Core startup does not require scientific libraries. Capture currently supports macOS avfoundation only and requires ffmpeg plus an explicitly configured loopback input such as BlackHole 2ch. Route Live's output to the loopback device using Audio MIDI Setup; capture does not start playback or change routing. Windows/Linux capture is unsupported.
 
 `record_audio` records at most 30 seconds. Analysis accepts temporary 16-bit WAVs up to 120 seconds, 8 channels and 4 million samples, whichever limit is reached first. Recording and analysis run off the event loop. Failed/cancelled captures clean their owned temporary output; successful recordings last until analysis or server shutdown. Existing output paths are never overwritten. Real capture support remains unverified until tested with the user's configured loopback device.
+
+### Offline analysis and MIDI previews
+
+Install `ableton-mcp[analysis]` to enable `analyze_audio_file` (NumPy, SciPy and soundfile). It reads an existing file without rendering or changing Live. Limits are 128 MiB per file, 120 seconds per selected segment, 6 million decoded samples and 8 channels. Loudness/spectrum measurements are reported separately from heuristic tempo, tonality and mix advice.
+
+`preview_midi_transform` needs no scientific extras and never accesses Live. It returns transformed copies of at most 10000 supplied notes, preserving extended metadata/IDs. Supported operations are transpose, scale, quantize, swing, offsets, velocity shaping, articulation and deterministic humanization. It does not clear, replace or write a clip.

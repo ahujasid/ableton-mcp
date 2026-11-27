@@ -1698,6 +1698,45 @@ async def analyze_audio(ctx: Context, path: str, user_prompt: str = "") -> str:
         audio.cleanup_recording(path)
 
 
+@mcp.tool()
+@telemetry_tool("analyze_audio_file")
+async def analyze_audio_file(ctx: Context, path: str, start_s: float = None, end_s: float = None, bpm: float = None, user_prompt: str = "") -> str:
+    """Offline file analysis: loudness, spectrum, stereo, estimated rhythm and tonality.
+
+    Requires optional analysis extras. Bounds: 128 MiB file, 120 seconds,
+    6 million decoded samples, 8 channels and 8..192 kHz. Does not render,
+    overwrite, install dependencies, or access Live. Interpret musical results
+    as heuristic estimates. Input file is never deleted.
+    """
+    try:
+        from .ears import analyze
+    except ImportError as error:
+        raise ToolError('Install ableton-mcp[analysis] to use offline audio analysis') from error
+    try:
+        result = await asyncio.to_thread(analyze, path, start_s=start_s, end_s=end_s, bpm=bpm)
+        return json.dumps(result, allow_nan=False)
+    except Exception as error:
+        raise ToolError(str(error)) from error
+
+
+@mcp.tool()
+@telemetry_tool("preview_midi_transform")
+async def preview_midi_transform(ctx: Context, notes: List[Dict[str, Any]], ops: Dict[str, Any], clip_length: float, user_prompt: str = "") -> str:
+    """Return a pure MIDI transformation preview without reading or writing Live.
+
+    At most 10000 notes. Supported ops: transpose, scale, quantize, swing,
+    offset, role_offsets, velocity, articulation and seeded humanize.
+    Preserves extended note metadata and IDs; returns new dictionaries.
+    Transformed timing wraps to the clip, pitch/velocity clamp to MIDI range.
+    """
+    from .midi_preview import transform_notes, describe_ops
+    try:
+        result = await asyncio.to_thread(transform_notes, notes, ops, clip_length)
+        return json.dumps({"preview_only": True, "notes": result, "description": describe_ops(ops)}, allow_nan=False)
+    except Exception as error:
+        raise ToolError(str(error)) from error
+
+
 # Main execution
 def main():
     """Run the MCP server"""
