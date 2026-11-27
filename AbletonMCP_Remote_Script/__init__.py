@@ -89,6 +89,11 @@ ROUTING_FIELDS = (("input_type", "input_routing_type"), ("input_channel", "input
                   ("output_type", "output_routing_type"), ("output_channel", "output_routing_channel"))
 
 INTEGRATION_COMMANDS = {
+    "get_transport": ("_cmd_get_transport", False),
+    "set_song_settings": ("_cmd_set_song_settings", True),
+    "jump_to_cue": ("_cmd_jump_to_cue", True),
+    "stop_all_clips": ("_cmd_stop_all_clips", True),
+
     "get_tracks_overview": ("_cmd_get_tracks_overview", False),
     "check_arrangement_sync": ("_cmd_check_arrangement_sync", False),
     "search_browser": ("_cmd_search_browser", False),
@@ -1210,6 +1215,73 @@ class AbletonMCP(ControlSurface):
             result[name] = value
         return result
 
+    def _cmd_get_transport(self, params):
+        song = self._song
+        result = {"supported_settings": []}
+        keys = ("tempo", "signature_numerator", "signature_denominator", "metronome", "overdub", "arrangement_overdub", "groove_amount", "swing_amount", "root_note", "scale_mode")
+        for key in keys + ("is_playing", "current_song_time", "loop", "loop_start", "loop_length"):
+            try:
+                value = getattr(song, key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool): finite_number(value, key)
+                result[key] = value
+                if key in keys: result["supported_settings"].append(key)
+            except (AttributeError, RuntimeError, ValueError) as error:
+                result[key] = None
+                result.setdefault("unavailable", {})[key] = str(error)
+        return result
+
+    def _cmd_set_song_settings(self, params):
+        bools = {"metronome", "overdub", "arrangement_overdub", "scale_mode"}
+        numbers = {"tempo": (20,999), "groove_amount": (0,1.31), "swing_amount": (0,1)}
+        integers = {"signature_numerator", "signature_denominator", "root_note"}
+        if not params or set(params) - bools - set(numbers) - integers:
+            raise ValueError("Unknown or empty song settings; loop/warp and recording writes are not supported here")
+        changes = []
+        for key, value in params.items():
+            try: getattr(self._song, key)
+            except (AttributeError, RuntimeError): raise ValueError(key + " is unsupported on this host")
+            if key in bools:
+                if type(value) is not bool: raise ValueError(key + " must be boolean")
+            elif key in numbers:
+                value = finite_number(value, key, *numbers[key])
+            else:
+                value = strict_index(value, key)
+                if key == "signature_numerator" and not 1 <= value <= 99: raise ValueError("Numerator must be 1..99")
+                if key == "signature_denominator" and value not in (1,2,4,8,16): raise ValueError("Denominator must be 1,2,4,8 or 16")
+                if key == "root_note" and value > 11: raise ValueError("root_note must be 0..11")
+            changes.append((self._song, key, value))
+        return self._transaction(changes, lambda: self._cmd_get_transport({}))
+
+    def _cmd_jump_to_cue(self, params):
+        cues = self._song.cue_points
+        index = strict_index(params.get("cue_index"), "cue_index", len(cues))
+        cue = cues[index]
+        self._check_identity(cue, params.get("cue_id"), True)
+        return self._set_current_song_time(cue.time)
+
+    def _cmd_stop_all_clips(self, params):
+        self._song.stop_all_clips()
+        return {"stop_requested": True}
+
+    def _set_current_song_time(self, time_val):
+        value = finite_number(time_val, "time", 0, 1e9)
+        if self._song.is_playing: raise ValueError("Stop playback before a verified playhead seek")
+        return self._transaction([(self._song, "current_song_time", value)],
+                                 lambda: {"time": float(self._song.current_song_time)})
+
+    def _set_tempo(self, tempo):
+        value = finite_number(tempo, "tempo", 20, 999)
+        return self._transaction([(self._song, "tempo", value)], lambda: {"tempo": float(self._song.tempo)})
+
+    def _start_playback(self):
+        self._song.start_playing()
+        return DeferredOperation(lambda: {"is_playing": True} if self._song.is_playing else _WAIT_FOR_TICK, max_ticks=20)
+
+    def _stop_playback(self):
+        self._song.stop_playing()
+        return DeferredOperation(lambda: {"is_playing": False} if not self._song.is_playing else _WAIT_FOR_TICK, max_ticks=20)
+
+
     def _cmd_get_tracks_overview(self, params):
         limit = strict_index(params.get("limit", 128), "limit")
         if not 1 <= limit <= 128: raise ValueError("limit must be 1..128")
@@ -1229,10 +1301,13 @@ class AbletonMCP(ControlSurface):
         state = {"bar_beats": bar, "tracks_with_clips": 0, "total_clips": 0, "off_grid": 0, "overlaps": 0, "gaps": 0,
                  "problems": [], "truncated": len(tracks)>128, "unavailable_tracks": []}
         iterator = iter(enumerate(tracks[:128]))
+        deadline = _command_clock() + 5.0
         def finish():
             state["in_sync"] = None if state["truncated"] or state["unavailable_tracks"] else state["off_grid"] == 0 and state["overlaps"] == 0
             return state
         def step():
+            if _command_clock() >= deadline:
+                state["truncated"] = True; return finish()
             try: index, track = next(iterator)
             except StopIteration: return finish()
             try: collection = track.arrangement_clips
@@ -2243,18 +2318,6 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error setting arrangement clip name: " + str(e))
             raise
 
-    def _set_tempo(self, tempo):
-        """Set the tempo of the session"""
-        try:
-            self._song.tempo = tempo
-            
-            result = {
-                "tempo": self._song.tempo
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error setting tempo: " + str(e))
-            raise
     
     def _fire_clip(self, track_index, clip_index):
         """Fire a clip"""
@@ -2329,31 +2392,7 @@ class AbletonMCP(ControlSurface):
             raise
 
 
-    def _start_playback(self):
-        """Start playing the session"""
-        try:
-            self._song.start_playing()
-            
-            result = {
-                "playing": self._song.is_playing
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error starting playback: " + str(e))
-            raise
     
-    def _stop_playback(self):
-        """Stop playing the session"""
-        try:
-            self._song.stop_playing()
-            
-            result = {
-                "playing": self._song.is_playing
-            }
-            return result
-        except Exception as e:
-            self.log_message("Error stopping playback: " + str(e))
-            raise
     
     # ── Arrangement view implementations ──────────────────────────────────────
 
@@ -2366,14 +2405,6 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error switching to arrangement view: " + str(e))
             raise
 
-    def _set_current_song_time(self, time_val):
-        """Move the arrangement playhead to a position in beats"""
-        try:
-            self._song.current_song_time = float(time_val)
-            return {"current_song_time": self._song.current_song_time}
-        except Exception as e:
-            self.log_message("Error setting current song time: " + str(e))
-            raise
 
     def _get_arrangement_clips(self, track_index):
         """Return all clips placed in the Arrangement timeline for a track.
@@ -2566,7 +2597,7 @@ class AbletonMCP(ControlSurface):
         return DeferredOperation(step, cleanup, max_ticks=20)
 
     def _get_locators(self, params):
-        return {"locators": [self._target_record(cue, time=float(cue.time)) for cue in list(self._song.cue_points)[:1024]]}
+        return {"locators": [self._target_record(cue, cue_index=i, time=float(cue.time)) for i, cue in enumerate(self._song.cue_points[:1024])]}
 
 
 

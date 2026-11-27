@@ -7,6 +7,10 @@ from .telemetry_decorator import rich_telemetry_tool
 from .dataset.trajectory_decorator import trajectory_tool
 
 TOOL_DESCRIPTIONS = {
+    "get_transport": (False, "Read transport and runtime-supported song settings. Unsupported properties return null with explanation. No version assumption."),
+    "set_song_settings": (True, "Validated song settings: tempo (20..999), signature_numerator (1..99), signature_denominator (1,2,4,8,16), metronome/overdub/arrangement_overdub/scale_mode booleans, groove_amount (0..1.31), swing_amount (0..1), root_note (0..11). Every property is preflighted. Loop/warp and recording writes are excluded."),
+    "jump_to_cue": (True, "Seek to an identified locator while stopped. params: cue_index,cue_id from get_locators. Refuses stale identities; verifies playhead after a tick."),
+    "stop_all_clips": (True, "Request stopping all clips. Returns stop_requested, without claiming quantized stops have completed."),
     "get_tracks_overview": (False, "Compact bounded track summary preserving group-track arm safety. params: limit (1..128). Counts indicate truncation."),
     "check_arrangement_sync": (False, "Read-only bounded beat-grid/gap/overlap check across Arrangement clips. params: bar_beats (finite >0, max128). Yields between tracks; in_sync is null if inspection is incomplete. Never moves notes or clips."),
     "search_browser": (False, "Bounded yielding browser search. params: query, optional category, max_results (1..100), max_nodes (1..1500), max_depth (0..12), max_ms (10..5000). Returns truncation reason and unavailable categories; does not load or batch mutations."),
