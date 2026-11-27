@@ -497,10 +497,10 @@ def test_handshake_advertises_every_supported_command(script_module):
     tree = ast.parse(textwrap.dedent(inspect.getsource(inst._execute_command_body)))
     supported = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name) and node.left.id == "command_type":
+        if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name) and node.left.id == "command_type" and isinstance(node.ops[0], ast.Eq):
             supported.add(node.comparators[0].value)
     info = inst._get_script_info()
-    assert set(info["capabilities"]) == supported
+    assert set(info["capabilities"]) == supported | set(script_module.INTEGRATION_COMMANDS)
     assert {"start_playback", "stop_playback", "set_current_song_time", "get_browser_tree"} <= supported
     from MCP_Server.remote_script_install import EXPECTED_REMOTE_SCRIPT_VERSION
     assert info["script_version"] == EXPECTED_REMOTE_SCRIPT_VERSION

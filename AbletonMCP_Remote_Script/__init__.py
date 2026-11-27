@@ -4,6 +4,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 from _Framework.ControlSurface import ControlSurface
 import os
 import uuid
+import re
 import math
 import select
 import socket
@@ -83,6 +84,12 @@ SCRIPT_CAPABILITIES = [
     "drain_passive_events",
     "set_device_parameter",
 ]
+
+INTEGRATION_COMMANDS = {
+    "get_mixer_state": ("_cmd_get_mixer_state", False),
+    "set_track_mixer": ("_cmd_set_track_mixer", True),
+}
+SCRIPT_CAPABILITIES += sorted(INTEGRATION_COMMANDS)
 
 # Queue bounds limit the work accepted and executed during one Live callback.
 MAX_PENDING_COMMANDS = 64
@@ -830,6 +837,8 @@ class AbletonMCP(ControlSurface):
             "code": code, "command": command_type, "details": getattr(error, "details", {})}}
 
     def _is_mutating_command(self, command_type):
+        if isinstance(command_type, str) and command_type in INTEGRATION_COMMANDS:
+            return INTEGRATION_COMMANDS[command_type][1]
         return command_type in SCRIPT_CAPABILITIES and not (
             command_type.startswith("get_") or command_type in ("inspect_rack", "drain_passive_events"))
 
@@ -880,7 +889,9 @@ class AbletonMCP(ControlSurface):
         
         try:
             # Route the command to the appropriate handler
-            if command_type == "get_locators":
+            if command_type in INTEGRATION_COMMANDS:
+                response["result"] = getattr(self, INTEGRATION_COMMANDS[command_type][0])(params)
+            elif command_type == "get_locators":
                 response["result"] = self._get_locators(params)
             elif command_type == "get_target_identity":
                 response["result"] = self._get_target_identity(params)
@@ -1166,6 +1177,105 @@ class AbletonMCP(ControlSurface):
                 value = None
             result[name] = value
         return result
+
+    def _parameter_report(self, param, unit=None):
+        value = finite_number(param.value, "parameter value")
+        display = str(param.str_for_value(value)) if callable(getattr(param, "str_for_value", None)) else str(param)
+        out = {"value": value, "min": float(param.min), "max": float(param.max), "display": display}
+        if unit == "dB":
+            match = re.fullmatch(r"\s*(-?inf|[-+]?\d+(?:\.\d+)?)\s*dB\s*", display, re.I)
+            if match:
+                db = float(match.group(1))
+                out.update({"db": db if math.isfinite(db) else None, "silence": db == float("-inf")})
+        elif unit == "pan":
+            match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([LR])\s*", display, re.I)
+            if match:
+                out["pan_percent"] = float(match.group(1)) * (-1 if match.group(2).upper() == "L" else 1)
+        return out
+
+    def _value_for_db(self, param, requested):
+        lo, hi = float(param.min), float(param.max)
+        if requested in ("-inf", "silence"):
+            return lo
+        wanted = finite_number(requested, "volume_db")
+        def read(value):
+            text = str(param.str_for_value(value))
+            match = re.fullmatch(r"\s*(-?inf|[-+]?\d+(?:\.\d+)?)\s*dB\s*", text, re.I)
+            if not match:
+                raise ValueError("Parameter does not expose an unambiguous dB display")
+            return float(match.group(1))
+        samples = [read(lo + (hi - lo) * i / 16.0) for i in range(17)]
+        if any(math.isnan(v) for v in samples) or any(a > b for a, b in zip(samples, samples[1:])):
+            raise ValueError("Nonmonotonic dB display mapping")
+        if wanted < samples[0] or wanted > samples[-1]:
+            raise ValueError("Requested dB is outside parameter range")
+        for _ in range(40):
+            mid = (lo + hi) / 2.0
+            if read(mid) < wanted:
+                lo = mid
+            else:
+                hi = mid
+        return hi
+
+    def _mixer_record(self, track, kind, index):
+        mixer = track.mixer_device
+        out = self._target_record(track, track_type=kind, track_index=index,
+            volume=self._parameter_report(mixer.volume, "dB"), panning=self._parameter_report(mixer.panning, "pan"))
+        out["sends"] = [dict(self._parameter_report(p, "dB"), send_index=i) for i, p in enumerate(getattr(mixer, "sends", ()))] if kind != "master" else []
+        if kind != "master":
+            out.update({"mute": bool(track.mute), "solo": bool(track.solo), "arm": self._safe_arm(track)})
+        return out
+
+    def _cmd_get_mixer_state(self, params):
+        track, kind, index = self._resolve_track(params)
+        return self._mixer_record(track, kind, index)
+
+    def _cmd_set_track_mixer(self, params):
+        allowed = {"track_index", "track_type", "target_id", "expected_track_name", "volume", "volume_db", "panning", "sends", "mute", "solo", "arm", "exclusive_solo"}
+        if set(params) - allowed:
+            raise ValueError("Unknown mixer fields")
+        track, kind, index = self._resolve_track(params, True)
+        mixer = track.mixer_device
+        changes = []
+        if "volume" in params and "volume_db" in params:
+            raise ValueError("Specify volume or volume_db, not both")
+        for field in ("volume", "panning"):
+            if field in params:
+                parameter = getattr(mixer, field)
+                value = finite_number(params[field], field, parameter.min, parameter.max)
+                changes.append((parameter, "value", value))
+        if "volume_db" in params:
+            changes.append((mixer.volume, "value", self._value_for_db(mixer.volume, params["volume_db"])))
+        sends = params.get("sends", {})
+        if not isinstance(sends, dict) or len(sends) > 64:
+            raise ValueError("sends must be an object with at most 64 indices")
+        for key, value in sends.items():
+            if kind == "master":
+                raise ValueError("Master track has no sends")
+            if not isinstance(key, str) or not key.isdigit():
+                raise ValueError("Send keys must be decimal indices")
+            send = mixer.sends[strict_index(int(key), "send_index", len(mixer.sends))]
+            changes.append((send, "value", finite_number(value, "send", send.min, send.max)))
+        for field in ("mute", "solo", "arm"):
+            if field in params:
+                if type(params[field]) is not bool:
+                    raise ValueError(field + " must be boolean")
+                if kind == "master" or field == "arm" and (kind != "track" or not track.can_be_armed):
+                    raise ValueError(field + " is unsupported on this track")
+                changes.append((track, field, params[field]))
+        exclusive = params.get("exclusive_solo", False)
+        if type(exclusive) is not bool:
+            raise ValueError("exclusive_solo must be boolean")
+        if exclusive and params.get("solo") is not True:
+            raise ValueError("exclusive_solo requires solo=true")
+        if exclusive:
+            for other in list(self._song.tracks) + list(self._song.return_tracks):
+                if not same_live_object(other, track) and other.solo:
+                    changes.append((other, "solo", False))
+        if not changes:
+            raise ValueError("No mixer changes requested")
+        return self._transaction(changes, lambda: self._mixer_record(track, kind, index))
+
 
     def _transaction(self, changes, report=None):
         """Verify async Live property writes after a tick; rollback is also verified later."""

@@ -1629,6 +1629,10 @@ def record_audition(
 
 
 
+from .integration_tools import register_tools as _register_integration_tools
+_register_integration_tools(mcp, get_ableton_connection)
+
+
 # Main execution
 def main():
     """Run the MCP server"""
