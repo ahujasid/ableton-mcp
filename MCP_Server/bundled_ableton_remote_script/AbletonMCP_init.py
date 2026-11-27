@@ -89,6 +89,8 @@ ROUTING_FIELDS = (("input_type", "input_routing_type"), ("input_channel", "input
                   ("output_type", "output_routing_type"), ("output_channel", "output_routing_channel"))
 
 INTEGRATION_COMMANDS = {
+    "get_notes": ("_cmd_get_notes", False),
+    "modify_notes": ("_cmd_modify_notes", True),
     "get_device_chain": ("_cmd_get_device_chain", False),
     "set_device_parameter_value": ("_cmd_set_device_parameter_value", True),
     "get_rack": ("_cmd_get_rack", False),
@@ -1191,6 +1193,111 @@ class AbletonMCP(ControlSurface):
                 value = None
             result[name] = value
         return result
+
+    def _addressed_clip(self, params, writing=False):
+        track, kind, index = self._resolve_track(params, writing)
+        if kind != "track": raise ValueError("Clips require a regular track")
+        location = params.get("location")
+        if location not in ("session", "arrangement"):
+            raise ValueError("An explicit location (session or arrangement) is required")
+        clip_index = strict_index(params.get("clip_index"), "clip_index")
+        if location == "session":
+            slots = track.clip_slots
+            slot = slots[strict_index(clip_index, "clip_index", len(slots))]
+            if not slot.has_clip: raise ValueError("Session slot is empty")
+            clip = slot.clip
+        else:
+            try: clips = track.arrangement_clips
+            except (AttributeError, RuntimeError): raise ValueError("Arrangement addressing is unsupported on this host")
+            clip = clips[strict_index(clip_index, "clip_index", len(clips))]
+        self._check_identity(clip, params.get("clip_id"), writing)
+        if not getattr(clip, "is_midi_clip", False): raise ValueError("Clip is not MIDI")
+        self._checked_midi_clip_type_for_write(clip)
+        return clip
+
+    def _bounded_native_notes(self, clip):
+        method = getattr(clip, "get_all_notes_extended", None)
+        if not callable(method): raise ValueError("Stable note IDs are unsupported on this host")
+        notes = method()
+        if len(notes) > 10000: raise ValueError("Clip exceeds 10000-note limit")
+        return notes
+
+    def _native_note_dict(self, note):
+        result = {"note_id": int(note.note_id)}
+        for field in ("pitch", "start_time", "duration", "velocity", "mute", "probability", "velocity_deviation", "release_velocity"):
+            if hasattr(note, field): result[field] = getattr(note, field)
+        return result
+
+    def _cmd_get_notes(self, params):
+        clip = self._addressed_clip(params)
+        notes = self._bounded_native_notes(clip)
+        return self._target_record(clip, location=params["location"], clip_index=params["clip_index"],
+                                  notes=[self._native_note_dict(n) for n in notes], count=len(notes))
+
+    def _cmd_modify_notes(self, params):
+        edits = params.get("notes")
+        if not isinstance(edits, list) or not 1 <= len(edits) <= 10000:
+            raise ValueError("notes must contain 1..10000 ID-addressed edits")
+        clip = self._addressed_clip(params, True)
+        apply = getattr(clip, "apply_note_modifications", None)
+        if not callable(apply): raise ValueError("ID-preserving note modifications are unsupported")
+        native = self._bounded_native_notes(clip)
+        by_id = {int(note.note_id): note for note in native}
+        if len(by_id) != len(native): raise ValueError("Host returned duplicate note IDs")
+        before, requested, seen = {}, {}, set()
+        fields = set(NOTE_DEFAULTS) | {"pitch"}
+        for edit in edits:
+            if not isinstance(edit, dict): raise ValueError("Each note edit must be an object")
+            nid = strict_index(edit.get("note_id"), "note_id")
+            if nid in seen or nid not in by_id: raise ValueError("Duplicate or stale note_id")
+            seen.add(nid)
+            if set(edit) - fields - {"note_id"}: raise ValueError("Unknown note field")
+            note = by_id[nid]
+            original = self._native_note_dict(note)
+            merged = dict(original); merged.update(edit)
+            normalized = normalize_note_specs([merged])[0]
+            updates = {key: normalized[key] for key in edit if key != "note_id"}
+            if not updates: raise ValueError("Note edit has no changed fields")
+            if any(not hasattr(note, key) for key in updates): raise ValueError("Requested note field is unsupported")
+            before[nid] = {key: original[key] for key in updates}
+            requested[nid] = updates
+        def write_values(vector, values):
+            mapping = {int(n.note_id): n for n in vector}
+            if any(nid not in mapping for nid in values): raise ValueError("Note ID disappeared before restore")
+            for nid, updates in values.items():
+                for key, value in updates.items(): setattr(mapping[nid], key, value)
+            apply(vector)
+        state = {"error": None, "restoring": False}
+        try: write_values(native, requested)
+        except Exception as error: state["error"] = error
+        def verify(values):
+            current = {int(n.note_id): n for n in self._bounded_native_notes(clip)}
+            for nid, updates in values.items():
+                if nid not in current: raise ValueError("Note ID disappeared")
+                for key, value in updates.items():
+                    if not values_equal(getattr(current[nid], key), value): raise ValueError("Note readback mismatch")
+        def cleanup(failed):
+            if failed and not state["restoring"]:
+                write_values(self._bounded_native_notes(clip), before)
+        def step():
+            if state["restoring"]:
+                try:
+                    verify(before)
+                except Exception as error:
+                    raise CommandFailure("note_mutation_failed", str(state["error"]), {"rollback_complete": False, "rollback_error": str(error)})
+                raise CommandFailure("note_mutation_failed", str(state["error"]), {"rollback_complete": True})
+            try:
+                if state["error"]: raise state["error"]
+                verify(requested)
+                return {"modified_ids": sorted(requested), "location": params["location"], "clip_id": self._identity_for(clip)}
+            except Exception as error:
+                state["error"] = error; state["restoring"] = True
+                try: write_values(self._bounded_native_notes(clip), before)
+                except Exception as restore_error:
+                    raise CommandFailure("note_mutation_failed", str(error), {"rollback_complete": False, "rollback_error": str(restore_error)})
+                return _WAIT_FOR_TICK
+        return DeferredOperation(step, cleanup, max_ticks=4)
+
 
     def _resolve_device(self, params, writing=False):
         track, kind, index = self._resolve_track(params, writing)

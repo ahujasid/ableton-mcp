@@ -7,6 +7,8 @@ from .telemetry_decorator import rich_telemetry_tool
 from .dataset.trajectory_decorator import trajectory_tool
 
 TOOL_DESCRIPTIONS = {
+    "get_notes": (False, "Read bounded notes and stable note IDs from an explicitly addressed MIDI clip. params: track_index, location (session|arrangement), clip_index. Returns clip target_id for guarded edits. Requires extended host API."),
+    "modify_notes": (True, "Modify notes in place by note_id, preserving extended metadata. params: track_index,target_id (track),location (session|arrangement),clip_index,clip_id and notes [{note_id, changed fields}]. All edits preflight before apply; stale IDs and unsupported hosts fail closed. Never replaces clips or envelopes."),
     "get_device_chain": (False, "Read bounded nested devices/parameters/rack chains and identities. params: track_index, track_type. Paths alternate device/chain indices; use returned IDs for writes."),
     "set_device_parameter_value": (True, "Guarded parameter write. params: track_index,track_type,target_id,device_path (list),device_id,parameter_index,parameter_id, and exactly one value or display_value (e.g. 1 kHz, 250 ms). Discovery/conversion never changes parameters; ambiguous display mappings fail."),
     "get_rack": (False, "Read a rack and bounded nested chains/parameters. params: track_index,track_type,device_path."),
