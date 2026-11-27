@@ -180,6 +180,60 @@ def apply_changes(changes):
     return {"changed_fields": len(snapshots), "verified": True}
 
 
+# Safety categories adapted from PR #155; strict validation and host enforcement.
+SAFETY_CATEGORIES = ("delete", "playback", "mixer", "routing", "structure", "edit", "undo")
+SAFETY_COMMANDS = {
+    "delete": set(("delete_track", "delete_clip", "clear_notes_from_clip", "delete_device", "delete_scene", "remove_notes", "delete_arrangement_clip", "clear_drum_pad")),
+    "playback": set(("start_playback", "stop_playback", "fire_clip", "stop_clip", "fire_scene", "stop_all_clips", "jump_to_cue")),
+    "mixer": set(("set_track_mixer", "set_rack_chain")),
+    "routing": set(("set_track_routing", "set_track_monitoring", "set_device_routing")),
+    "structure": set(("create_midi_track", "create_audio_track", "create_clip", "create_audio_clip", "duplicate_track", "create_return_track", "create_scene", "duplicate_scene", "move_device", "load_browser_item", "load_instrument_or_effect", "map_rack_magnitude", "duplicate_session_clip_to_arrangement", "insert_device", "insert_rack_chain", "copy_drum_pad")),
+    "undo": set(("undo", "redo")),
+}
+
+
+def validate_safety_config(raw):
+    if not isinstance(raw, dict):
+        raise ValueError("Safety configuration must be an object")
+    allowed = set(("read_only", "allow", "saved_set_allow", "deny_commands", "allow_commands"))
+    if set(raw) - allowed:
+        raise ValueError("Unknown safety configuration fields")
+    cfg = {"read_only": False, "allow": dict((c, c != "delete") for c in SAFETY_CATEGORIES),
+           "saved_set_allow": {"delete": False}, "deny_commands": [], "allow_commands": []}
+    if "read_only" in raw:
+        if type(raw["read_only"]) is not bool:
+            raise ValueError("read_only must be a JSON boolean")
+        cfg["read_only"] = raw["read_only"]
+    for key in ("allow", "saved_set_allow"):
+        if key not in raw:
+            continue
+        value = raw[key]
+        if not isinstance(value, dict) or set(value) - set(SAFETY_CATEGORIES):
+            raise ValueError(key + " must be an object with known categories")
+        if any(type(on) is not bool for on in value.values()):
+            raise ValueError(key + " values must be JSON booleans")
+        cfg[key].update(value)
+    for key in ("deny_commands", "allow_commands"):
+        if key in raw:
+            value = raw[key]
+            if not isinstance(value, list) or any(not isinstance(c, str) or c not in SCRIPT_CAPABILITIES for c in value):
+                raise ValueError(key + " must be a list of known command names")
+            cfg[key] = list(value)
+    return cfg
+
+
+def load_safety_config():
+    explicit = os.environ.get("ABLETON_MCP_SAFETY_CONFIG")
+    path = explicit or os.path.join(os.path.expanduser("~"), ".config", "ableton-mcp", "safety.json")
+    if not explicit and not os.path.exists(path):
+        return validate_safety_config({})
+    with open(path, "r") as source:
+        text = source.read(65537)
+    if len(text) > 65536:
+        raise ValueError("Safety configuration exceeds 64 KiB")
+    return validate_safety_config(json.loads(text))
+
+
 class _CommandRequest(object):
     def __init__(self, command, deadline, client=None):
         self.client = client
@@ -670,6 +724,28 @@ class AbletonMCP(ControlSurface):
         if not isinstance(error, EXPECTED_COMMAND_ERRORS):
             self.log_message(traceback.format_exc())
 
+    def _check_safety(self, command_type):
+        mutating = self._is_mutating_command(command_type)
+        try:
+            cfg = load_safety_config()
+        except Exception as error:
+            if mutating:
+                raise CommandFailure("safety_refused", "Invalid safety configuration: " + str(error))
+            return
+        if command_type in cfg["deny_commands"]:
+            raise CommandFailure("safety_refused", "Command is denied by safety configuration")
+        if not mutating:
+            return
+        category = next((c for c, names in SAFETY_COMMANDS.items() if command_type in names), "edit")
+        if cfg["read_only"] or not cfg["allow"][category]:
+            raise CommandFailure("safety_refused", "Safety policy refuses " + category)
+        if cfg["saved_set_allow"].get(category) is False:
+            # Unknown saved state is treated as saved, never as permission.
+            path = getattr(self._song, "file_path", None)
+            if path is None or path != "":
+                raise CommandFailure("safety_refused", "Safety policy refuses this operation in saved or unknown sets")
+
+
     def _command_error_response(self, command_type, error):
         self._log_command_error("Error processing " + str(command_type), error)
         code = getattr(error, "code", "invalid_request" if isinstance(error, (ValueError, IndexError)) else "execution_failed")
@@ -688,6 +764,7 @@ class AbletonMCP(ControlSurface):
             begin = getattr(song, "begin_undo_step", None)
             end = getattr(song, "end_undo_step", None)
         try:
+            self._check_safety(command_type)
             if callable(begin) and callable(end):
                 begin()
                 try:
