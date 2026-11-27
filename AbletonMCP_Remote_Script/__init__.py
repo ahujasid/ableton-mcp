@@ -39,10 +39,11 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.8.0"
+SCRIPT_VERSION = "1.9.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
+    "get_locators",
     "get_target_identity",
     "get_script_info",
     "get_session_info",
@@ -143,8 +144,7 @@ def values_equal(left, right):
     return same_live_object(left, right)
 
 
-def apply_changes(changes):
-    """Preflight all snapshots before writing; restore even a setter that raises."""
+def preflight_changes(changes):
     if not isinstance(changes, (list, tuple)) or len(changes) > MAX_MUTATION_FIELDS:
         raise ValueError("Mutation has too many fields")
     snapshots = []
@@ -158,6 +158,12 @@ def apply_changes(changes):
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             finite_number(value, attr)
         snapshots.append((owner, attr, old, value))
+    return snapshots
+
+
+def apply_changes(changes):
+    """Synchronous verified setter for properties with immediate host readback."""
+    snapshots = preflight_changes(changes)
     attempted = []
     try:
         for owner, attr, old, value in snapshots:
@@ -232,6 +238,37 @@ def load_safety_config():
     if len(text) > 65536:
         raise ValueError("Safety configuration exceeds 64 KiB")
     return validate_safety_config(json.loads(text))
+
+
+_WAIT_FOR_TICK = object()
+
+
+class DeferredOperation(object):
+    """Owned by one request; advanced only from the bounded display callback."""
+    def __init__(self, step, cleanup=None, max_ticks=50):
+        self.step = step
+        self.cleanup = cleanup
+        self.max_ticks = max_ticks
+        self.ticks = 0
+        self.end_undo = None
+        self.closed = False
+
+    def poll(self):
+        self.ticks += 1
+        if self.ticks > self.max_ticks:
+            raise CommandFailure("completion_timeout", "Host completion was not observed; outcome unknown; do not automatically retry")
+        return self.step()
+
+    def close(self, failed=False):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            if self.cleanup:
+                self.cleanup(failed)
+        finally:
+            if self.end_undo:
+                self.end_undo()
 
 
 class _CommandRequest(object):
@@ -638,6 +675,7 @@ class AbletonMCP(ControlSurface):
         self._command_lock = threading.Lock()
         self._command_requests = set()
         self._command_stopped = False
+        self._active_deferred = None
         self._clients = set()
 
     def update_display(self):
@@ -645,21 +683,53 @@ class AbletonMCP(ControlSurface):
         ControlSurface.update_display(self)
         self._drain_commands()
 
+    def _advance_deferred(self):
+        request, operation = self._active_deferred
+        if request.completed.is_set() or self._command_stopped or self._client_disconnected(request.client) or _command_clock() >= request.deadline:
+            request.cancel("Deferred operation cancelled")
+            try:
+                operation.close(failed=True)
+            except Exception as error:
+                self._log_command_error("Deferred cancellation cleanup failed", error)
+            self._active_deferred = None
+            return
+        try:
+            result = operation.poll()
+            if result is _WAIT_FOR_TICK:
+                return
+            operation.close()
+            request.complete({"status": "success", "result": result})
+        except Exception as error:
+            response = self._command_error_response(request.command.get("type"), error)
+            try:
+                operation.close(failed=True)
+            except Exception as cleanup_error:
+                response["error"]["details"]["cleanup_error"] = str(cleanup_error)
+                response["error"]["details"]["rollback_complete"] = False
+            request.complete(response)
+        self._active_deferred = None
+
     def _drain_commands(self):
         if threading.current_thread().ident != self._command_thread:
             raise RuntimeError("Command queue must be drained on Live's main thread")
+        if self._active_deferred is not None:
+            self._advance_deferred()
+            return
         for _ in range(MAX_COMMANDS_PER_TICK):
             try:
                 request = self._command_queue.get_nowait()
             except queue.Empty:
                 break
-            # Check EOF here too: the worker may still be sleeping after its
-            # previous connection check. Peeking never consumes command bytes.
             if self._client_disconnected(request.client):
                 request.cancel("Client disconnected")
-            # Deadline and cancellation are checked atomically before execution.
             elif request.begin():
-                request.complete(self._execute_command(request.command))
+                result = self._execute_command(request.command)
+                if isinstance(result, DeferredOperation):
+                    self._active_deferred = (request, result)
+                    break
+                request.complete(result)
+
+
 
     def _shutdown_commands(self):
         with self._command_lock:
@@ -668,6 +738,13 @@ class AbletonMCP(ControlSurface):
             for request in self._command_requests:
                 request.cancel("Remote Script disconnected")
             clients = list(self._clients)
+        active = self._active_deferred
+        self._active_deferred = None
+        if active is not None:
+            try:
+                active[1].close(failed=True)
+            except Exception as error:
+                self._log_command_error("Shutdown cleanup failed", error)
         # Wake workers blocked in recv(), without joining them on Live's thread.
         for client in clients:
             try:
@@ -763,17 +840,30 @@ class AbletonMCP(ControlSurface):
             song = getattr(self, "_song", None)
             begin = getattr(song, "begin_undo_step", None)
             end = getattr(song, "end_undo_step", None)
+        opened = False
+        deferred = False
         try:
             self._check_safety(command_type)
             if callable(begin) and callable(end):
                 begin()
-                try:
-                    return self._execute_command_body(command)
-                finally:
-                    end()
-            return self._execute_command_body(command)
+                opened = True
+            response = self._execute_command_body(command)
+            operation = response.get("result") if response.get("status") == "success" else None
+            if isinstance(operation, DeferredOperation):
+                operation.end_undo = end if opened else None
+                deferred = True
+                return operation
+            return response
         except Exception as error:
             return self._command_error_response(command_type, error)
+        finally:
+            if opened and not deferred:
+                try:
+                    end()
+                except Exception as error:
+                    return self._command_error_response(command_type, error)
+
+
 
     def _execute_command_body(self, command):
         """Process a command from the client and return a response"""
@@ -790,7 +880,9 @@ class AbletonMCP(ControlSurface):
         
         try:
             # Route the command to the appropriate handler
-            if command_type == "get_target_identity":
+            if command_type == "get_locators":
+                response["result"] = self._get_locators(params)
+            elif command_type == "get_target_identity":
                 response["result"] = self._get_target_identity(params)
             elif command_type == "get_script_info":
                 response["result"] = self._get_script_info()
@@ -1074,6 +1166,59 @@ class AbletonMCP(ControlSurface):
                 value = None
             result[name] = value
         return result
+
+    def _transaction(self, changes, report=None):
+        """Verify async Live property writes after a tick; rollback is also verified later."""
+        snapshots = preflight_changes(changes)
+        state = {"error": None, "phase": "verify", "attempted": [], "restoring": False}
+        def restore():
+            failures = []
+            for owner, attr, old, value in reversed(state["attempted"]):
+                try:
+                    setattr(owner, attr, old)
+                except Exception as error:
+                    failures.append({"field": attr, "message": str(error)})
+            return failures
+        def cleanup(failed):
+            if failed and not state["restoring"]:
+                failures = restore()
+                if failures:
+                    raise CommandFailure("rollback_failed", "Restore failed", {"rollback_complete": False, "rollback_failures": failures})
+        def step():
+            if state["phase"] == "verify":
+                try:
+                    if state["error"]:
+                        raise state["error"]
+                    for owner, attr, old, value in snapshots:
+                        if not values_equal(getattr(owner, attr), value):
+                            raise ValueError("Readback mismatch for " + attr)
+                    return report() if report else {"changed_fields": len(snapshots), "verified": True}
+                except Exception as error:
+                    state["error"] = error
+                    state["restoring"] = True
+                    state["failures"] = restore()
+                    state["phase"] = "rollback"
+                    return _WAIT_FOR_TICK
+            failures = state["failures"]
+            for owner, attr, old, value in state["attempted"]:
+                try:
+                    if not values_equal(getattr(owner, attr), old):
+                        raise ValueError("restore readback mismatch")
+                except Exception as error:
+                    failures.append({"field": attr, "message": str(error)})
+            raise CommandFailure("mutation_failed", str(state["error"]), {
+                "rollback_complete": not failures, "rollback_failures": failures,
+                "attempted_fields": len(state["attempted"])})
+        for entry in snapshots:
+            owner, attr, old, value = entry
+            state["attempted"].append(entry)
+            try:
+                setattr(owner, attr, value)
+            except Exception as error:
+                state["error"] = error
+                break
+        return DeferredOperation(step, cleanup, max_ticks=4)
+
 
     def _identity_for(self, obj):
         # Equality matters: Live may return distinct Python wrappers for one LOM object.
@@ -1670,58 +1815,57 @@ class AbletonMCP(ControlSurface):
             raise
 
     def _create_locator(self, name, time_val):
-        """Create (or rename) a named locator at the given beat position.
-
-        Uses Live's Song.set_or_delete_cue(), which toggles a cue at the
-        current_song_time. We temporarily move the playhead, toggle, then
-        restore. If a cue already exists at that time we just rename it
-        instead of toggling (which would delete it).
-        """
-        try:
-            song = self._song
-            target_time = float(time_val)
-            tolerance = 1e-3
-
-            # See if a cue already exists at (or near) the target time
-            existing = None
-            for cue in song.cue_points:
-                if abs(cue.time - target_time) < tolerance:
-                    existing = cue
-                    break
-
-            original_time = song.current_song_time
-
-            if existing is None:
-                # Move playhead, toggle to create, then locate the new cue
-                song.current_song_time = target_time
+        """Move, toggle and discover on separate ticks; never toggle an existing cue."""
+        target = finite_number(time_val, "time", 0, 1e9)
+        if not isinstance(name, str) or len(name) > 256:
+            raise ValueError("Locator name must be a string of at most 256 characters")
+        song = self._song
+        if song.is_playing:
+            raise ValueError("Stop playback before creating a locator")
+        original = float(song.current_song_time)
+        existing = [cue for cue in song.cue_points if abs(cue.time - target) < 1e-3]
+        if len(existing) > 1:
+            raise ValueError("Multiple locators at this time")
+        if existing:
+            apply_changes([(existing[0], "name", name)])
+            return {"success": True, "time": existing[0].time, "name": existing[0].name, "created": False}
+        state = {"phase": "position", "cue": None}
+        before = list(song.cue_points)
+        def cleanup(failed):
+            # Restore only a playhead position still owned by this operation.
+            if abs(song.current_song_time - target) < 1e-3:
+                song.current_song_time = original
+        def step():
+            if song.is_playing:
+                raise CommandFailure("state_changed", "Playback started during locator creation")
+            if state["phase"] == "position":
+                if abs(song.current_song_time - target) >= 1e-3:
+                    return _WAIT_FOR_TICK
+                if any(abs(cue.time - target) < 1e-3 for cue in song.cue_points):
+                    raise CommandFailure("state_changed", "A locator appeared before creation")
                 song.set_or_delete_cue()
-                for cue in song.cue_points:
-                    if abs(cue.time - target_time) < tolerance:
-                        existing = cue
-                        break
-                # Restore playhead
-                try:
-                    song.current_song_time = original_time
-                except Exception:
-                    pass
-
-            if existing is None:
-                raise Exception("Failed to create cue at time " + str(target_time))
-
-            if name:
-                try:
-                    existing.name = str(name)
-                except Exception as e:
-                    self.log_message("Could not rename locator: " + str(e))
-
-            return {
-                "success": True,
-                "time": existing.time,
-                "name": existing.name,
-            }
-        except Exception as e:
-            self.log_message("Error creating locator: " + str(e))
+                state["phase"] = "lookup"
+                return _WAIT_FOR_TICK
+            matches = [cue for cue in song.cue_points if abs(cue.time - target) < 1e-3 and
+                       not any(same_live_object(cue, old) for old in before)]
+            if not matches:
+                return _WAIT_FOR_TICK
+            if len(matches) != 1:
+                raise CommandFailure("ambiguous_target", "Cannot identify created locator")
+            cue = matches[0]
+            apply_changes([(cue, "name", name)])
+            return {"success": True, "time": cue.time, "name": cue.name, "created": True}
+        try:
+            song.current_song_time = target
+        except Exception:
+            cleanup(True)
             raise
+        return DeferredOperation(step, cleanup, max_ticks=20)
+
+    def _get_locators(self, params):
+        return {"locators": [self._target_record(cue, time=float(cue.time)) for cue in list(self._song.cue_points)[:1024]]}
+
+
 
     # ── Browser implementations ───────────────────────────────────────────────
 
@@ -1823,38 +1967,43 @@ class AbletonMCP(ControlSurface):
         return self._load_browser_item(track_index, uri)
 
     def _load_browser_item(self, track_index, item_uri):
-        """Load a browser item onto a track by its URI"""
+        strict_index(track_index, "track_index", len(self._song.tracks))
+        track = self._song.tracks[track_index]
+        app = self.application()
+        item = self._find_browser_item_by_uri(app.browser, item_uri)
+        if item is None or not getattr(item, "is_loadable", False):
+            raise ValueError("Browser item is unavailable or not loadable")
+        before = list(track.devices)
+        if len(before) > 128:
+            raise ValueError("Device chain exceeds completion-check bound")
+        def fingerprint(devices):
+            return [tuple(float(p.value) for p in list(d.parameters)[:256]) for d in devices]
+        old_values = fingerprint(before)
+        view = self._song.view
+        selected = view.selected_track
+        def cleanup(failed):
+            if same_live_object(view.selected_track, track):
+                view.selected_track = selected
+        def step():
+            if not any(same_live_object(track, current) for current in self._song.tracks):
+                raise CommandFailure("stale_target", "Load target disappeared")
+            after = list(track.devices)
+            changed = len(after) != len(before) or any(not same_live_object(a, b) for a, b in zip(after, before))
+            if not changed and fingerprint(after) == old_values:
+                return _WAIT_FOR_TICK
+            return {"loaded": True, "settled": True, "item_name": item.name,
+                    "track_name": track.name, "uri": item_uri,
+                    "new_devices": [d.name for d in after if not any(same_live_object(d, old) for old in before)]}
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            
-            track = self._song.tracks[track_index]
-            
-            # Access the application's browser instance instead of creating a new one
-            app = self.application()
-            
-            # Find the browser item by URI
-            item = self._find_browser_item_by_uri(app.browser, item_uri)
-            
-            if not item:
-                raise ValueError("Browser item with URI '{0}' not found".format(item_uri))
-            
-            # Select the track
-            self._song.view.selected_track = track
-            
-            # Load the item
+            view.selected_track = track
             app.browser.load_item(item)
-            
-            result = {
-                "loaded": True,
-                "item_name": item.name,
-                "track_name": track.name,
-                "uri": item_uri
-            }
-            return result
-        except Exception as e:
-            self._log_command_error("Error loading browser item", e)
+        except Exception:
+            cleanup(True)
             raise
+        # No change is not proof of completion (including identical preset reload).
+        return DeferredOperation(step, cleanup, max_ticks=50)
+
+
     
     # Substring markers that point a URI at a likely root. Unmatched URIs fall
     # back to the default search order.

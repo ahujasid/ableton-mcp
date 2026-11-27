@@ -383,7 +383,7 @@ def test_script_error_keeps_connection_and_message():
 # --------------------------------------------------------------------------
 
 def test_script_and_server_versions_match(rs):
-    assert rs.SCRIPT_VERSION == EXPECTED_REMOTE_SCRIPT_VERSION == "1.8.0"
+    assert rs.SCRIPT_VERSION == EXPECTED_REMOTE_SCRIPT_VERSION
 
 
 # --------------------------------------------------------------------------

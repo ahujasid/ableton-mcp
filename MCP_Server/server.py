@@ -345,6 +345,13 @@ def get_ableton_connection():
 # Core Tool endpoints
 
 @mcp.tool()
+@rich_telemetry_tool("get_locators")
+def get_locators(ctx: Context, user_prompt: str = "") -> str:
+    """List timeline locators with stable identities."""
+    return json.dumps(get_ableton_connection().send_command("get_locators", {}))
+
+
+@mcp.tool()
 @rich_telemetry_tool("get_target_identity")
 def get_target_identity(ctx: Context, track_index: int = 0, track_type: str = "track", clip_index: int = None, user_prompt: str = "") -> str:
     """Read opaque target IDs before guarded edits; re-read after a stale-target error."""
