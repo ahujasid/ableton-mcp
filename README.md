@@ -375,3 +375,9 @@ This is a third-party integration and not made by Ableton. Made by [Siddharth](h
 </div>
 
 Session metadata includes `root_note`, `scale_name`, and project `name`. Missing or unsupported key/scale properties return `null`; an unavailable name returns `Untitled`. These properties are detected at runtime.
+
+### Optional audio capture and analysis
+
+Install `ableton-mcp[audio]` for NumPy-based WAV analysis. Core startup does not require scientific libraries. Capture currently supports macOS avfoundation only and requires ffmpeg plus an explicitly configured loopback input such as BlackHole 2ch. Route Live's output to the loopback device using Audio MIDI Setup; capture does not start playback or change routing. Windows/Linux capture is unsupported.
+
+`record_audio` records at most 30 seconds. Analysis accepts temporary 16-bit WAVs up to 120 seconds, 8 channels and 4 million samples, whichever limit is reached first. Recording and analysis run off the event loop. Failed/cancelled captures clean their owned temporary output; successful recordings last until analysis or server shutdown. Existing output paths are never overwritten. Real capture support remains unverified until tested with the user's configured loopback device.

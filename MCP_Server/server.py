@@ -2,6 +2,8 @@
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.fastmcp.exceptions import ToolError
 import socket
+import asyncio
+from . import audio
 import json
 import logging
 import os
@@ -1631,6 +1633,69 @@ def record_audition(
 
 from .integration_tools import register_tools as _register_integration_tools
 _register_integration_tools(mcp, get_ableton_connection)
+
+
+@mcp.tool()
+@telemetry_tool("record_audio")
+async def record_audio(ctx: Context, seconds: float = 4.0, device: str = audio.DEFAULT_DEVICE, user_prompt: str = "") -> str:
+    """
+    Record what Live is playing to a WAV file, so it can be analyzed with analyze_audio.
+
+    This only records; it does not start playback. Start playback first (start_playback
+    or fire_clip), and solo a track first if you want to hear just that track.
+    Capture begins about 0.5 s after the call, so start playback a little before the
+    part you want. Recording happens in real time, so keep it short (2-8 seconds is
+    usually enough). It runs in a worker thread, so other tools stay responsive.
+
+    Requires macOS, ffmpeg and a loopback device (BlackHole 2ch) that receives Live's
+    output through a Multi-Output Device. See the "Hearing your session" section of
+    the README.
+
+    Parameters:
+    - seconds: How long to record (max 30)
+    - device: Name of the loopback input to record from (default "BlackHole 2ch")
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        recording = asyncio.create_task(asyncio.to_thread(audio.record, seconds, device))
+        try:
+            path = await asyncio.shield(recording)
+        except asyncio.CancelledError:
+            def cleanup_finished(task):
+                if not task.cancelled() and task.exception() is None:
+                    audio.cleanup_recording(task.result())
+            recording.add_done_callback(cleanup_finished)
+            raise
+        return f"Recorded {seconds:g}s from '{device}' to {path}"
+    except Exception as e:
+        logger.error(f"Error recording audio: {str(e)}")
+        return f"Error recording audio: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("analyze_audio")
+async def analyze_audio(ctx: Context, path: str, user_prompt: str = "") -> str:
+    """
+    Analyze a WAV file recorded with record_audio.
+
+    Returns peak and RMS level (dBFS), crest factor, clipped sample count, stereo
+    balance and correlation (1 = mono, near 0 = wide, negative = phase problems),
+    and the share of energy in low (<250 Hz), mid (250 Hz-4 kHz) and high (>4 kHz)
+    bands. Use it to check levels, compare before/after a change, or spot a muddy
+    or harsh mix.
+
+    Parameters:
+    - path: The WAV path returned by record_audio (only files in the temp directory
+      are read, up to 120 seconds long)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return json.dumps(await asyncio.to_thread(audio.analyze, path), indent=2, allow_nan=False)
+    except Exception as e:
+        logger.error(f"Error analyzing audio: {str(e)}")
+        return f"Error analyzing audio: {str(e)}"
+    finally:
+        audio.cleanup_recording(path)
 
 
 # Main execution

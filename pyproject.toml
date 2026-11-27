@@ -18,6 +18,9 @@ dependencies = [
     "supabase>=2.0.0",
 ]
 
+[project.optional-dependencies]
+audio = ["numpy>=1.24"]
+
 [project.scripts]
 ableton-mcp = "MCP_Server.server:main"
 ableton-mcp-install-script = "MCP_Server.remote_script_install:main"
