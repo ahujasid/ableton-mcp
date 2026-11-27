@@ -85,7 +85,12 @@ SCRIPT_CAPABILITIES = [
     "set_device_parameter",
 ]
 
+ROUTING_FIELDS = (("input_type", "input_routing_type"), ("input_channel", "input_routing_channel"),
+                  ("output_type", "output_routing_type"), ("output_channel", "output_routing_channel"))
+
 INTEGRATION_COMMANDS = {
+    "get_track_routing": ("_cmd_get_track_routing", False),
+    "set_track_routing": ("_cmd_set_track_routing", True),
     "get_mixer_state": ("_cmd_get_mixer_state", False),
     "set_track_mixer": ("_cmd_set_track_mixer", True),
 }
@@ -1178,6 +1183,63 @@ class AbletonMCP(ControlSurface):
             result[name] = value
         return result
 
+    def _routing_record(self, track, kind, index):
+        result = self._target_record(track, track_type=kind, track_index=index)
+        for key, attr in ROUTING_FIELDS:
+            try:
+                options = list(getattr(track, "available_" + attr + "s"))
+                if len(options) > 256:
+                    raise ValueError("Too many routing choices")
+                current = getattr(track, attr)
+                result[key] = str(current.display_name)
+                result["available_" + key] = [str(option.display_name) for option in options]
+            except (AttributeError, RuntimeError, ValueError) as error:
+                result[key] = None
+                result.setdefault("unavailable", {})[key] = str(error)
+        return result
+
+    def _cmd_get_track_routing(self, params):
+        return self._routing_record(*self._resolve_track(params))
+
+    def _routing_choice(self, wanted, options):
+        if not isinstance(wanted, str):
+            raise ValueError("Routing choices must be exact display-name strings")
+        matches = [choice for choice in options if choice.display_name == wanted]
+        if len(matches) != 1:
+            raise ValueError("Routing choice is missing or ambiguous; use the current available list")
+        return matches[0]
+
+    def _cmd_set_track_routing(self, params):
+        fields = dict(ROUTING_FIELDS)
+        if set(params) - set(fields) - {"track_index", "track_type", "target_id", "expected_track_name"}:
+            raise ValueError("Unknown routing field")
+        track, kind, index = self._resolve_track(params, True)
+        changes = []
+        restore = []
+        for direction in ("input", "output"):
+            type_key, channel_key = direction + "_type", direction + "_channel"
+            if type_key not in params and channel_key not in params:
+                continue
+            type_attr, channel_attr = fields[type_key], fields[channel_key]
+            old_type, old_channel = getattr(track, type_attr), getattr(track, channel_attr)
+            restore.extend([(track, type_attr, old_type), (track, channel_attr, old_channel)])
+            new_type = old_type
+            if type_key in params:
+                options = list(getattr(track, "available_" + type_attr + "s"))
+                if len(options) > 256: raise ValueError("Too many routing choices")
+                new_type = self._routing_choice(params[type_key], options)
+                changes.append((track, type_attr, new_type))
+            if channel_key in params:
+                if not same_live_object(new_type, old_type):
+                    raise ValueError("Change routing type first, then read its channels before selecting a channel")
+                options = list(getattr(track, "available_" + channel_attr + "s"))
+                if len(options) > 256: raise ValueError("Too many routing choices")
+                changes.append((track, channel_attr, self._routing_choice(params[channel_key], options)))
+        if not changes:
+            raise ValueError("No routing change requested")
+        return self._transaction(changes, lambda: self._routing_record(track, kind, index), restore_changes=restore)
+
+
     def _parameter_report(self, param, unit=None):
         value = finite_number(param.value, "parameter value")
         display = str(param.str_for_value(value)) if callable(getattr(param, "str_for_value", None)) else str(param)
@@ -1277,13 +1339,16 @@ class AbletonMCP(ControlSurface):
         return self._transaction(changes, lambda: self._mixer_record(track, kind, index))
 
 
-    def _transaction(self, changes, report=None):
+    def _transaction(self, changes, report=None, restore_changes=None):
         """Verify async Live property writes after a tick; rollback is also verified later."""
         snapshots = preflight_changes(changes)
+        if restore_changes is not None:
+            preflight_changes(restore_changes)
         state = {"error": None, "phase": "verify", "attempted": [], "restoring": False}
         def restore():
             failures = []
-            for owner, attr, old, value in reversed(state["attempted"]):
+            restore_entries = restore_changes if restore_changes is not None else [(o, a, old) for o, a, old, value in reversed(state["attempted"])]
+            for owner, attr, old in restore_entries:
                 try:
                     setattr(owner, attr, old)
                 except Exception as error:
@@ -1310,7 +1375,8 @@ class AbletonMCP(ControlSurface):
                     state["phase"] = "rollback"
                     return _WAIT_FOR_TICK
             failures = state["failures"]
-            for owner, attr, old, value in state["attempted"]:
+            verify_entries = restore_changes if restore_changes is not None else [(o, a, old) for o, a, old, value in state["attempted"]]
+            for owner, attr, old in verify_entries:
                 try:
                     if not values_equal(getattr(owner, attr), old):
                         raise ValueError("restore readback mismatch")

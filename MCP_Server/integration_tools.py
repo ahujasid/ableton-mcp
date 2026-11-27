@@ -7,6 +7,8 @@ from .telemetry_decorator import rich_telemetry_tool
 from .dataset.trajectory_decorator import trajectory_tool
 
 TOOL_DESCRIPTIONS = {
+    "get_track_routing": (False, "Read current/available audio or MIDI routing names. params: track_index, track_type. Unsupported routes are reported explicitly."),
+    "set_track_routing": (True, "Guarded routing edit. params: track_index, track_type, target_id, input_type/input_channel/output_type/output_channel (exact available names). Type and dependent channel changes require separate calls with an intervening read; unsafe compound requests fail before any write."),
     "get_mixer_state": (False, "Read one track/return/master mixer and its target_id. params: track_index (default 0), track_type (track|return|master). Pan and dB displays are separate; silence is JSON null plus silence=true."),
     "set_track_mixer": (True, "Guarded mixer edit. params: track_index, track_type, target_id from get_mixer_state; volume (parameter units) OR volume_db (number or 'silence'), panning, sends (index strings to values), mute/solo/arm booleans, optional exclusive_solo. Every field is preflighted; failures report rollback status."),
 }
