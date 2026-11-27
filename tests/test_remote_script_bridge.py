@@ -502,7 +502,8 @@ def test_handshake_advertises_every_supported_command(script_module):
     info = inst._get_script_info()
     assert set(info["capabilities"]) == supported
     assert {"start_playback", "stop_playback", "set_current_song_time", "get_browser_tree"} <= supported
-    assert info["script_version"] == "1.7.2"
+    from MCP_Server.remote_script_install import EXPECTED_REMOTE_SCRIPT_VERSION
+    assert info["script_version"] == EXPECTED_REMOTE_SCRIPT_VERSION
     assert info["protocol_version"] == 1
 
 
@@ -653,3 +654,25 @@ def test_unexpected_handler_failure_does_not_stop_dispatch(script_module):
     worker, replies = start_request(inst, {"type": "start_playback"})
     inst.update_display()
     assert finish_request(worker, replies)["result"] == {"ok": True}
+
+
+def test_session_metadata_and_missing_properties(script_module):
+    inst = make_instance(script_module)
+    inst._song = meter_song(meter_track())
+    result = inst._get_session_info()
+    assert (result["root_note"], result["scale_name"], result["name"]) == (None, None, "Untitled")
+    inst._song.root_note = 2
+    inst._song.scale_name = "Minor"
+    inst._song.name = "Disposable"
+    result = inst._get_session_info()
+    assert (result["root_note"], result["scale_name"], result["name"]) == (2, "Minor", "Disposable")
+
+
+def test_session_metadata_unsupported_property_fallback(script_module):
+    class UnsupportedSong(types.SimpleNamespace):
+        @property
+        def root_note(self):
+            raise RuntimeError("Unavailable")
+    inst = make_instance(script_module)
+    inst._song = UnsupportedSong(**vars(meter_song(meter_track())))
+    assert inst._get_session_info()["root_note"] is None

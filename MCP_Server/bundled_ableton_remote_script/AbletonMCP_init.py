@@ -38,7 +38,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.7.2"
+SCRIPT_VERSION = "1.7.3"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -633,7 +633,7 @@ class AbletonMCP(ControlSurface):
         Catches only narrow exceptions so genuine bugs still surface."""
         try:
             return cast(getattr(self._song, attr))
-        except (AttributeError, TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError, RuntimeError, OverflowError):
             return default
 
     def _get_session_info(self):
@@ -659,6 +659,11 @@ class AbletonMCP(ControlSurface):
                 "loop_start":        self._safe_song_property("loop_start",        float, 0.0),
                 "loop_length":       self._safe_song_property("loop_length",       float, 0.0),
             }
+            result.update({
+                "root_note": self._safe_song_property("root_note", int, None),
+                "scale_name": self._safe_song_property("scale_name", str, None),
+                "name": self._safe_song_property("name", str, "Untitled"),
+            })
             result["master_track"].update(self._output_meters(self._song.master_track))
             return result
         except Exception as e:

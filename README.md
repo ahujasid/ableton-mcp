@@ -373,3 +373,5 @@ This is a third-party integration and not made by Ableton. Made by [Siddharth](h
 **If Ableton MCP is useful to you, consider starring the repo**
 
 </div>
+
+Session metadata includes `root_note`, `scale_name`, and project `name`. Missing or unsupported key/scale properties return `null`; an unavailable name returns `Untitled`. These properties are detected at runtime.
