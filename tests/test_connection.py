@@ -119,3 +119,24 @@ def test_failed_connect_closes_created_socket(monkeypatch):
     assert not connection.connect()
     assert sock.closed
     assert connection.sock is None
+
+
+@pytest.mark.parametrize("payload", [b'{bad json}', b'[]', b'null'])
+def test_malformed_response_closes_socket_and_can_reconnect(payload, monkeypatch):
+    sock = ResponseSocket([payload])
+    connection = AbletonConnection("localhost", 9877, sock=sock)
+    with pytest.raises(Exception):
+        connection.send_command("get_session_info")
+    assert sock.closed
+    assert connection.sock is None
+    replacement = ResponseSocket([response_bytes({"tempo": 120})])
+    monkeypatch.setattr(socket, "socket", lambda *args: replacement)
+    assert connection.send_command("get_session_info") == {"tempo": 120}
+
+
+def test_json_response_fragmented_byte_by_byte():
+    payload = response_bytes({"name": "café", "tempo": 120})
+    sock = ResponseSocket([payload[i:i + 1] for i in range(len(payload))])
+    connection = AbletonConnection("localhost", 9877, sock=sock)
+    assert connection.send_command("get_session_info") == {"name": "café", "tempo": 120}
+    assert len(sock.commands) == 1
