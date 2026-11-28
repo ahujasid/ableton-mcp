@@ -125,6 +125,7 @@ DEVICE_LIST = """\
 
 @pytest.fixture
 def fake_ffmpeg(monkeypatch):
+    monkeypatch.setattr(audio.sys, "platform", "darwin")
     calls = []
 
     def run(cmd, **kwargs):
@@ -183,6 +184,7 @@ def test_record_audio_tool_runs_off_the_event_loop(fake_ffmpeg, monkeypatch):
 
 
 def test_record_without_ffmpeg(monkeypatch):
+    monkeypatch.setattr(audio.sys, "platform", "darwin")
     monkeypatch.setattr(audio.shutil, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="brew install ffmpeg"):
         audio.record(2)

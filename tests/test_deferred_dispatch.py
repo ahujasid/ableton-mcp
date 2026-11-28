@@ -77,7 +77,9 @@ class Song:
         self.toggles = []
     def set_or_delete_cue(self):
         self.toggles.append(self.current_song_time)
-        self.cue_points.append(types.SimpleNamespace(time=self.current_song_time, name=''))
+        matches = [c for c in self.cue_points if c.time == self.current_song_time]
+        if matches: self.cue_points.remove(matches[0])
+        else: self.cue_points.append(types.SimpleNamespace(time=self.current_song_time, name=''))
 
 
 def test_locator_phases_and_restore(rs):
@@ -149,3 +151,24 @@ def test_transaction_verifies_rollback_on_later_tick(rs):
     with pytest.raises(rs.CommandFailure) as exc: op.poll()
     assert exc.value.details['rollback_complete']
     op.close(failed=True)
+
+
+def test_locator_cancel_after_toggle_removes_only_created_cue(rs):
+    inst = make_instance(rs); inst._song = Song()
+    existing = types.SimpleNamespace(time=4, name='Keep')
+    inst._song.cue_points = [existing]
+    op = inst._create_locator('Cancel', 16)
+    assert op.poll() is rs._WAIT_FOR_TICK
+    assert len(inst._song.cue_points) == 2
+    op.close(failed=True)
+    assert inst._song.cue_points == [existing]
+    assert inst._song.current_song_time == 8
+
+
+def test_locator_cancel_does_not_toggle_at_changed_playhead(rs):
+    inst = make_instance(rs); inst._song = Song()
+    op = inst._create_locator('Cancel', 16); op.poll()
+    inst._song.current_song_time = 32
+    with pytest.raises(rs.CommandFailure, match='safely removed'): op.close(failed=True)
+    assert inst._song.current_song_time == 32
+    assert inst._song.toggles == [16]

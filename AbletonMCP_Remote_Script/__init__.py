@@ -1586,6 +1586,8 @@ class AbletonMCP(ControlSurface):
         return value
 
     def _cmd_set_device_parameter_value(self, params):
+        if set(params) - {"track_index", "track_type", "target_id", "expected_track_name", "device_path", "device_index", "device_id", "expected_class", "parameter_index", "parameter_id", "value", "display_value"}:
+            raise ValueError("Unknown device edit field")
         track, device, path = self._resolve_device(params, True)
         parameters = device.parameters
         index = strict_index(params.get("parameter_index"), "parameter_index", len(parameters))
@@ -1604,6 +1606,8 @@ class AbletonMCP(ControlSurface):
         return self._device_record(rack, path, [128])
 
     def _cmd_set_rack_chain(self, params):
+        if set(params) - {"track_index", "track_type", "target_id", "expected_track_name", "device_path", "device_index", "device_id", "expected_class", "chain_index", "chain_id", "mute", "solo", "volume", "panning"}:
+            raise ValueError("Unknown device edit field")
         _, rack, path = self._resolve_device(params, True)
         if not getattr(rack, "can_have_chains", False): raise ValueError("Selected device is not a rack")
         index = strict_index(params.get("chain_index"), "chain_index", len(rack.chains))
@@ -1674,6 +1678,26 @@ class AbletonMCP(ControlSurface):
         elif matches:
             raise CommandFailure("cleanup_failed", "Owned track identity is ambiguous")
 
+    def _create_owned(self, collection, create, remove):
+        before = list(collection())
+        try:
+            create()
+        except Exception as error:
+            fresh = [obj for obj in collection() if not any(same_live_object(obj, old) for old in before)]
+            details = {"rollback_requested": False, "rollback_complete": not fresh}
+            if len(fresh) == 1:
+                try:
+                    remove(fresh[0])
+                    details["rollback_requested"] = True
+                    details["rollback_complete"] = not any(same_live_object(fresh[0], obj) for obj in collection())
+                except Exception as cleanup_error:
+                    details["cleanup_error"] = str(cleanup_error)
+            raise CommandFailure("create_failed", str(error), details)
+        fresh = [obj for obj in collection() if not any(same_live_object(obj, old) for old in before)]
+        if len(fresh) != 1:
+            raise CommandFailure("ownership_unknown", "Cannot identify created object; inspect the set before retrying")
+        return fresh[0]
+
     def _cmd_edit_structure(self, params):
         action = params.get("action")
         actions = {"create_track", "create_scene", "duplicate_track", "duplicate_scene", "duplicate_clip", "delete_track", "delete_scene", "delete_clip", "rename_track", "rename_scene", "rename_clip"}
@@ -1694,12 +1718,8 @@ class AbletonMCP(ControlSurface):
             length = finite_number(params["clip_length"], "clip_length", .001, 65536) if "clip_length" in params else None
             if length is not None and (kind != "midi" or not self._song.scenes):
                 raise ValueError("Compound clip creation needs a MIDI track and an existing scene")
-            before = list(self._song.tracks)
-            getattr(self._song, "create_" + kind + "_track")(-1)
-            created = [t for t in self._song.tracks if not any(same_live_object(t, old) for old in before)]
-            if len(created) != 1:
-                raise CommandFailure("ownership_unknown", "Cannot identify the newly created track; inspect the set before retrying")
-            track = created[0]
+            track = self._create_owned(lambda: self._song.tracks,
+                lambda: getattr(self._song, "create_" + kind + "_track")(-1), self._owned_track_cleanup)
             try:
                 if name is not None: track.name = name
                 if length is not None:
@@ -1727,12 +1747,11 @@ class AbletonMCP(ControlSurface):
                         raise CommandFailure("delete_unverified", "Scene deletion not observed; do not automatically retry")
                     return {"deleted": True}
                 return DeferredOperation(deleted)
-            before = list(self._song.scenes)
-            if action == "create_scene": self._song.create_scene(-1)
-            else: self._song.duplicate_scene(index)
-            created = [s for s in self._song.scenes if not any(same_live_object(s, old) for old in before)]
-            if len(created) != 1: raise CommandFailure("ownership_unknown", "Cannot identify created scene")
-            owned = created[0]
+            def remove_scene(owned):
+                matches = [i for i, scene in enumerate(self._song.scenes) if same_live_object(scene, owned)]
+                if len(matches) == 1: self._song.delete_scene(matches[0])
+            owned = self._create_owned(lambda: self._song.scenes,
+                lambda: self._song.create_scene(-1) if action == "create_scene" else self._song.duplicate_scene(index), remove_scene)
             def cleanup(failed):
                 if failed:
                     matches = [i for i, s in enumerate(self._song.scenes) if same_live_object(s, owned)]
@@ -1755,11 +1774,8 @@ class AbletonMCP(ControlSurface):
                 return {"deleted": True}
             return DeferredOperation(deleted)
         if action == "duplicate_track":
-            before = list(self._song.tracks)
-            self._song.duplicate_track(index)
-            new = [t for t in self._song.tracks if not any(same_live_object(t, old) for old in before)]
-            if len(new) != 1: raise CommandFailure("ownership_unknown", "Cannot identify duplicated track")
-            owned = new[0]
+            owned = self._create_owned(lambda: self._song.tracks,
+                lambda: self._song.duplicate_track(index), self._owned_track_cleanup)
             return DeferredOperation(lambda: self._target_record(owned, track_index=next(i for i, t in enumerate(self._song.tracks) if same_live_object(t, owned))), lambda failed: self._owned_track_cleanup(owned) if failed else None)
         slots = track.clip_slots
         slot = slots[strict_index(params.get("clip_index"), "clip_index", len(slots))]
@@ -1777,9 +1793,9 @@ class AbletonMCP(ControlSurface):
         dest = slots[strict_index(params.get("destination_index"), "destination_index", len(slots))]
         self._check_identity(dest, params.get("destination_slot_id"), True)
         if dest.has_clip: raise ValueError("Destination clip slot is occupied")
-        slot.duplicate_clip_to(dest)
-        owned = dest.clip if dest.has_clip else None
-        if owned is None: raise CommandFailure("ownership_unknown", "Clip duplication not observed; do not retry automatically")
+        owned = self._create_owned(lambda: [dest.clip] if dest.has_clip else [],
+            lambda: slot.duplicate_clip_to(dest),
+            lambda obj: dest.delete_clip() if dest.has_clip and same_live_object(dest.clip, obj) else None)
         def cleanup(failed):
             if failed and dest.has_clip and same_live_object(dest.clip, owned): dest.delete_clip()
         return DeferredOperation(lambda: self._target_record(owned), cleanup)
@@ -2563,12 +2579,23 @@ class AbletonMCP(ControlSurface):
         if existing:
             apply_changes([(existing[0], "name", name)])
             return {"success": True, "time": existing[0].time, "name": existing[0].name, "created": False}
-        state = {"phase": "position", "cue": None}
+        state = {"phase": "position", "cue": None, "toggled": False}
         before = list(song.cue_points)
         def cleanup(failed):
-            # Restore only a playhead position still owned by this operation.
-            if abs(song.current_song_time - target) < 1e-3:
-                song.current_song_time = original
+            # A cue toggle has no object-specific delete API. Only undo our cue
+            # while both its identity and the stopped playhead remain owned.
+            try:
+                if failed and state["toggled"]:
+                    matches = [cue for cue in song.cue_points if abs(cue.time - target) < 1e-3]
+                    owned = [cue for cue in matches if not any(same_live_object(cue, old) for old in before)]
+                    if matches:
+                        if (len(matches) != 1 or len(owned) != 1 or song.is_playing or
+                                abs(song.current_song_time - target) >= 1e-3):
+                            raise CommandFailure("rollback_incomplete", "Created locator could not be safely removed; inspect the set")
+                        song.set_or_delete_cue()
+            finally:
+                if not song.is_playing and abs(song.current_song_time - target) < 1e-3:
+                    song.current_song_time = original
         def step():
             if song.is_playing:
                 raise CommandFailure("state_changed", "Playback started during locator creation")
@@ -2577,6 +2604,7 @@ class AbletonMCP(ControlSurface):
                     return _WAIT_FOR_TICK
                 if any(abs(cue.time - target) < 1e-3 for cue in song.cue_points):
                     raise CommandFailure("state_changed", "A locator appeared before creation")
+                state["toggled"] = True
                 song.set_or_delete_cue()
                 state["phase"] = "lookup"
                 return _WAIT_FOR_TICK

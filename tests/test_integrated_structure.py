@@ -70,3 +70,15 @@ def test_unknown_structural_fields_and_invalid_length_write_nothing(setup):
     for params in [{'action': 'create_track', 'clip_length': float('nan')}, {'action': 'create_track', 'arbitrary': 1}]:
         with pytest.raises(ValueError): inst._cmd_edit_structure(params)
     assert len(inst._song.tracks) == 1
+
+
+def test_host_create_raises_after_write_cleans_owned_object(setup):
+    rs, inst = setup; existing = inst._song.tracks[0]
+    def create(index):
+        inst._song.tracks.append(Track('Partially created'))
+        raise RuntimeError('host failure after write')
+    inst._song.create_midi_track = create
+    with pytest.raises(rs.CommandFailure) as exc:
+        inst._cmd_edit_structure({'action': 'create_track'})
+    assert exc.value.details['rollback_complete']
+    assert inst._song.tracks == [existing]
