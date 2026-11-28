@@ -76,3 +76,6 @@ local_tests/
 
 # Local BB task artifacts
 /.bb/
+
+#Agents file
+/AGENTS.md
